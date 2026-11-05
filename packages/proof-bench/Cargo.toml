@@ -1,0 +1,20 @@
+[package]
+name = "blindfold-proof-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+age = { version = "=0.12.1", default-features = false }
+age-core = "=0.12.0"
+anyhow = "1"
+hex = "0.4"
+primitive-types = { version = "=0.12.2", default-features = false, features = ["serde_no_std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha3 = "0.10"
+tlock = { path = ".deps/tlock-rs/tlock" }
+tlock_age = { path = ".deps/tlock-rs/tlock_age" }
+
+[workspace]
+exclude = [".deps/tlock-rs", ".deps/tlock-rs/tlock", ".deps/tlock-rs/tlock_age"]

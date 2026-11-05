@@ -1,0 +1,12 @@
+[profile.default]
+test = "test"
+allow_paths = ["../../../contracts/lib", "../.deps"]
+solc = "0.8.26"
+optimizer = true
+optimizer_runs = 200
+evm_version = "cancun"
+remappings = [
+  "forge-std/=../../../contracts/lib/forge-std/src/",
+  "risc0/=../.deps/risc0-ethereum/contracts/",
+  "openzeppelin/=../../../contracts/lib/swap-vm/node_modules/@openzeppelin/"
+]

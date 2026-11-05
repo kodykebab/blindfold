@@ -1,0 +1,7 @@
+{
+  "name": "@blindfold/proof-bench",
+  "private": true,
+  "type": "module",
+  "scripts": {"interop": "node interop.mjs"},
+  "dependencies": {"tlock-js": "0.9.0", "viem": "2.21.0"}
+}

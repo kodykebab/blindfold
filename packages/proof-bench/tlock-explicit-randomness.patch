@@ -1,0 +1,52 @@
+diff --git a/tlock/src/ibe.rs b/tlock/src/ibe.rs
+index 66a8cae..e1589d8 100644
+--- a/tlock/src/ibe.rs
++++ b/tlock/src/ibe.rs
+@@ -204,19 +204,25 @@ pub fn encrypt<I: AsRef<[u8]>, M: AsRef<[u8]>>(
+     master: GAffine,
+     id: I,
+     msg: M,
++) -> anyhow::Result<Ciphertext, anyhow::Error> {
++    let mut sigma = [0u8; 16];
++    rand::rng().fill_bytes(&mut sigma);
++    encrypt_with_sigma(master, id, msg, sigma)
++}
++
++// Blindfold feasibility adapter: explicit private encryption randomness.
++pub fn encrypt_with_sigma<I: AsRef<[u8]>, M: AsRef<[u8]>>(
++    master: GAffine, id: I, msg: M, sigma: [u8; 16],
+ ) -> anyhow::Result<Ciphertext, anyhow::Error> {
+     assert!(
+         msg.as_ref().len() <= BLOCK_SIZE,
+         "plaintext too long for the block size"
+     );
+ 
+-    let mut rng = rand::rng();
+     // 1. Compute Gid = e(master,Q_id)
+     let gid = master.projective_pairing(id.as_ref())?;
+ 
+-    // 2. Derive random sigma
+-    let mut sigma = [0u8; 16];
+-    rng.fill_bytes(&mut sigma);
++    // 2. Sigma is supplied by the private witness.
+ 
+     // 3. Derive r from sigma and msg
+     let r: ScalarField = {
+diff --git a/tlock/src/lib.rs b/tlock/src/lib.rs
+index a62afc6..c75aa68 100644
+--- a/tlock/src/lib.rs
++++ b/tlock/src/lib.rs
+@@ -192,3 +192,13 @@ mod tests {
+         assert_eq!(pt, msg)
+     }
+ }
++
++/// Blindfold feasibility adapter: wrap a file key with explicit private randomness.
++pub fn encrypt_with_sigma(public_key: &[u8], round: u64, key: [u8;16], sigma: [u8;16]) -> anyhow::Result<Vec<u8>> {
++    let id = sha2::Sha256::digest(round.to_be_bytes());
++    let ct = ibe::encrypt_with_sigma(GAffine::try_from(public_key)?, id, key, sigma)?;
++    let mut out = ct.u.to_compressed()?;
++    out.extend(ct.v);
++    out.extend(ct.w);
++    Ok(out)
++}
