@@ -24,3 +24,6 @@ git submodule update --init --recursive
 cd contracts && forge test
 ```
 Court tooling: `cd packages/court-watcher && npm install && N=300 node find.mjs`, then `prove.mjs` (see its header).
+
+## Team
+Bhoumik, Kritarth, Khush. Who builds what: [`PLAN.md`](PLAN.md). How we work: [`CONTRIBUTING.md`](CONTRIBUTING.md). Design: [`CONTEXT.md`](CONTEXT.md). Status: [`HANDOFF.md`](HANDOFF.md).

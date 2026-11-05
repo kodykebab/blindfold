@@ -1,9 +1,9 @@
 # CONTEXT.md
 
-What we're building and why it's designed this way. Status and next steps: [HANDOFF.md](HANDOFF.md). How to work in the repo: [AGENTS.md](AGENTS.md).
+What we're building and why it's designed this way. Status: [HANDOFF.md](HANDOFF.md). Who builds what, by phase: [PLAN.md](PLAN.md). How to work in the repo: [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## The event
-ETHGlobal Mumbai. Team of 4, 36 hours, up to 3 partner prizes.
+ETHGlobal Mumbai. Team of 3 (Bhoumik, Kritarth, Khush), 36 hours, up to 3 partner prizes.
 
 ## One-liner
 *MEV protection without a middleman to trust: prevented by construction, punished by proof.*
@@ -89,6 +89,9 @@ Why Arkiv: keepers anywhere find reveal work with one query and no server of our
 6. **3:30 Ledger.** The Arkiv-backed Court ledger updates. Close on the one-liner.
 
 ## Scope
-- **Must:** commit → anyone-reveal → verified uniform-price settle on the sealed v4 pool; garbage-commit slashing; one Court claim on a real sandwich with an automatic refund; Arkiv-backed ledger and keeper discovery.
-- **Should:** Aqua `SealedClearing` residual route in `settle`; side-by-side "normal pool gets sandwiched"; padding orders (done).
-- **Could:** onchain drand BLS verification (EIP-2537); full victim-loss calculation; refund hook.
+Sized for three people. Every prize has one owner (see [PLAN.md](PLAN.md)).
+- **Must:** commit → anyone-reveal → verified uniform-price settle on the sealed v4 pool; garbage-commit slashing; `BondRegistry` and one Court claim with an automatic refund from the bond; Arkiv-backed ledger and keeper discovery; Aqua strategy filling at the clearing price with real token transfers (1inch's hard requirement); padding orders (done).
+- **Should:** Aqua leg inside `settle` (residual split between v4 and Aqua); side-by-side "normal pool gets sandwiched"; Court deployed on Base with a live `checkpoint()` and an anchored claim.
+- **Could:** Swarm ciphertext storage (Arkiv's Swarm bonus); onchain drand BLS verification (EIP-2537); full victim-loss calculation; refund hook.
+
+If we fall behind, cut from the bottom of Should, then Could, before touching Must.
