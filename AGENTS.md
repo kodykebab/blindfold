@@ -23,7 +23,7 @@ Every change must keep `forge test` green. Add a test with every feature.
 
 ## Rules
 - **Commit early and often, with descriptive messages.** 1inch and Arkiv judge commit history; 1inch rejects one big last-day commit. Never squash or force-push `main`.
-- End commit messages with a `Co-Authored-By:` line when an agent wrote the change.
+- Use the repository's configured user identity for commits. Do not add agent co-author trailers or assistant attribution. Keep commit subjects and descriptions plain and direct, in the user's style.
 - **Don't state facts you haven't verified.** Cite sources for numbers and incidents.
 - **Keep known limitations, concerns and open questions out of the repo.** Put them in `.workspace.md` at the repo root (gitignored, local only).
 - Don't name folders `vendor`.

@@ -45,3 +45,24 @@ This uses the upstream 3.0 receipt fixture to check the verifier's accepted prog
 The VM build layout uses the RISC Zero 3.0.6 starter structure. See [RISC Zero](https://dev.risczero.com/api/zkvm/quickstart) for tooling installation.
 
 The Solidity verifier and fixture are imported from `risc0/risc0-ethereum` release `v3.0.1` (`365e7b2db4f620fa256580c27558d2623362b9ae`); their original GPL-3.0 and Apache-2.0 notices remain in the checkout.
+
+## Admission end-to-end gate
+
+The host exports only a verified Groth16 receipt for the compiled admission program. The Solidity gate reads that export and checks acceptance, every journal byte, program identity, proof bytes and verifier selector. It fails if the generated artifact is absent.
+
+```sh
+packages/proof-bench/vm/target/release/proof-bench-host --reject-invalid
+packages/proof-bench/vm/target/release/proof-bench-host --export packages/proof-bench/results/groth16.bin packages/proof-bench/results/admission.json
+(cd packages/proof-bench/evm && FOUNDRY_PROFILE=admission forge test -vv)
+```
+
+`--reject-invalid` executes malformed statements inside the guest and requires rejection for an invalid round, insufficient budget, a changed root and a corrupted authenticated payload. It is an execution check, separate from proof verification.
+
+The four-case independent interoperability matrix covers padding, both directions, and a maximum-size order at the final allowed step:
+
+```sh
+cargo run --manifest-path packages/proof-bench/Cargo.toml --locked --release -- --matrix > packages/proof-bench/results/matrix.json
+node packages/proof-bench/interop.mjs packages/proof-bench/results/matrix.json
+```
+
+Keep generated receipts and measurements under the ignored `results/` directory. Measure guest execution, proof generation, wrapping and Solidity verification separately. Preserve toolchain versions and program identity with benchmark results. Only completed end-to-end runs can supply an end-to-end latency sample.

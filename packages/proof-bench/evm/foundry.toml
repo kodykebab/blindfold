@@ -10,3 +10,8 @@ remappings = [
   "risc0/=../.deps/risc0-ethereum/contracts/",
   "openzeppelin/=../../../contracts/lib/swap-vm/node_modules/@openzeppelin/"
 ]
+
+# Explicit end-to-end gate. Missing proof artifacts fail instead of skipping.
+[profile.admission]
+test = "admission-test"
+fs_permissions = [{ access = "read", path = "../results" }]
