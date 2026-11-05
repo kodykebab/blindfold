@@ -40,7 +40,7 @@ contract BlindfoldTest is Test {
     address solver = makeAddr("solver");
     address treasury = makeAddr("treasury");
 
-    function setUp() public {
+    function setUp() public virtual {
         manager = _manager();
         vm.warp(T0);
         MockERC20 a = new MockERC20("A", "A", 18);
