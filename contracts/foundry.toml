@@ -30,4 +30,4 @@ compilation_restrictions = [
 lint_on_build = false
 
 [rpc_endpoints]
-unichain = "${UNICHAIN_RPC_URL:-https://mainnet.unichain.org}"
+unichain = "https://mainnet.unichain.org"

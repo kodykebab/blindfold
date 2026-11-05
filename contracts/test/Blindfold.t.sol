@@ -25,7 +25,7 @@ contract BlindfoldTest is Test {
     uint256 constant TOL_BPS = 100;
     uint64 constant T0 = 1_800_000_000;
 
-    PoolManager manager;
+    IPoolManager manager;
     BlindfoldVault vault;
     BlindfoldSettlement s;
     PoolKey key;
@@ -40,8 +40,8 @@ contract BlindfoldTest is Test {
     address treasury = makeAddr("treasury");
 
     function setUp() public {
+        manager = _manager();
         vm.warp(T0);
-        manager = new PoolManager(address(this));
         MockERC20 a = new MockERC20("A", "A", 18);
         MockERC20 b = new MockERC20("B", "B", 18);
         (t0, t1) = address(a) < address(b) ? (a, b) : (b, a);
@@ -76,6 +76,11 @@ contract BlindfoldTest is Test {
         _fund(alice);
         _fund(bob);
         _fund(carol);
+    }
+
+    /// @dev Local PoolManager by default; the fork suite overrides this with Unichain's.
+    function _manager() internal virtual returns (IPoolManager) {
+        return new PoolManager(address(this));
     }
 
     // ---- end to end
