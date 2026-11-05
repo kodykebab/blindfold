@@ -1,0 +1,284 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
+import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.sol";
+import {PoolKey} from "v4-core/src/types/PoolKey.sol";
+import {PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
+import {Currency} from "v4-core/src/types/Currency.sol";
+import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
+import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
+import {TickMath} from "v4-core/src/libraries/TickMath.sol";
+import {FullMath} from "v4-core/src/libraries/FullMath.sol";
+
+import {BatchAuction} from "./BatchAuction.sol";
+import {BlindfoldVault, IERC20Like} from "./BlindfoldVault.sol";
+
+/// @title BlindfoldSettlement
+/// @notice Anyone proposes the uniform clearing price p* of a batch; the contract verifies it:
+///         1. fills follow from p*: an order fills iff its limit holds at p* (the solver picks no orders);
+///         2. the net imbalance is ONE exact-input residual swap on the sealed v4 pool, whose output
+///            must cover what the batch owes;
+///         3. the pool's marginal price after that swap must equal p* within `toleranceBps` (FM-AMM).
+///            Only this contract can swap the sealed pool, so nobody can move that price beforehand.
+///         Residual output above what is owed is donated to in-range LPs.
+///         Prices: priceX96 = token1 per token0 (raw units) * 2^96 = sqrtPriceX96^2 / 2^96.
+contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
+    using PoolIdLibrary for PoolKey;
+    using StateLibrary for IPoolManager;
+
+    uint256 internal constant Q96 = 1 << 96;
+    bytes32 internal constant ACTIVE_PRICE_SLOT = keccak256("blindfold.activePriceX96");
+
+    error Unauthorized();
+    error AlreadyInitialized();
+    error OutsideSettleWindow(uint256 nowTs, uint256 opens, uint256 closes);
+    error Finalized(uint64 batchId);
+    error NotExpired(uint256 at);
+    error ZeroPrice();
+    error NotMarginalPrice(uint256 proposedX96, uint256 poolX96);
+    error PartialResidual(uint256 wanted, uint256 used);
+    error ResidualShort(uint256 out, uint256 owed);
+    error Imbalanced();
+
+    event Filled(uint64 indexed batchId, uint256 indexed id, address indexed owner, uint256 amountIn, uint256 amountOut);
+    event Unfilled(uint64 indexed batchId, uint256 indexed id, address indexed owner);
+    event Settled(
+        uint64 indexed batchId,
+        uint256 priceX96,
+        uint256 fills,
+        bool residualZeroForOne,
+        uint256 residualIn,
+        uint256 residualOut,
+        uint256 donated,
+        address solver
+    );
+    event Expired(uint64 indexed batchId, uint256 orders);
+
+    struct Config {
+        IPoolManager manager;
+        BlindfoldVault vault;
+        address depositToken;
+        uint256 depositAmount;
+        uint256 bountyBps;
+        address treasury;
+        Schedule schedule;
+        uint256 toleranceBps;
+    }
+
+    struct Totals {
+        uint256 in0; // token0 paid by filled sells
+        uint256 in1; // token1 paid by filled buys
+        uint256 out0; // token0 owed to filled buys
+        uint256 out1; // token1 owed to filled sells
+        uint256 fills;
+    }
+
+    struct Residual {
+        bool zeroForOne;
+        uint256 amountIn;
+        uint256 amountOut;
+        uint256 donated;
+    }
+
+    IPoolManager public immutable manager;
+    uint256 public immutable toleranceBps;
+    address public immutable admin;
+
+    PoolKey internal key;
+    address public token0;
+    address public token1;
+    mapping(uint64 => bool) public finalized;
+    mapping(uint64 => uint256) public clearingPriceX96;
+
+    constructor(Config memory c)
+        BatchAuction(c.vault, c.depositToken, c.depositAmount, c.bountyBps, c.treasury, c.schedule)
+    {
+        manager = c.manager;
+        toleranceBps = c.toleranceBps;
+        admin = msg.sender;
+    }
+
+    /// @notice One-shot: the hook address is mined against this contract's address, so the key comes later.
+    function initialize(PoolKey calldata k) external {
+        if (msg.sender != admin) revert Unauthorized();
+        if (token0 != address(0)) revert AlreadyInitialized();
+        key = k;
+        token0 = Currency.unwrap(k.currency0);
+        token1 = Currency.unwrap(k.currency1);
+        IERC20Like(token0).approve(address(vault), type(uint256).max);
+        IERC20Like(token1).approve(address(vault), type(uint256).max);
+    }
+
+    function poolKey() external view returns (PoolKey memory) {
+        return key;
+    }
+
+    function poolPriceX96() public view returns (uint256) {
+        (uint160 sqrtP,,,) = manager.getSlot0(key.toId());
+        return FullMath.mulDiv(sqrtP, sqrtP, Q96);
+    }
+
+    /// @notice tokenOut per tokenIn (Q96) while a batch is being settled, else 0. Read by SealedClearing.
+    function activeClearingPriceX96(address tokenIn, address tokenOut) external view returns (uint256) {
+        uint256 p = _activePrice();
+        if (p == 0) return 0;
+        if (tokenIn == token0 && tokenOut == token1) return p;
+        if (tokenIn == token1 && tokenOut == token0) return FullMath.mulDiv(Q96, Q96, p);
+        return 0;
+    }
+
+    /// @notice Output of an order at price p (rounded down), and whether its limit holds.
+    function quote(Order memory o, uint256 priceX96) public pure returns (uint256 out, bool fills) {
+        out = o.zeroForOne ? FullMath.mulDiv(o.amountIn, priceX96, Q96) : FullMath.mulDiv(o.amountIn, Q96, priceX96);
+        fills = out != 0 && out >= o.minAmountOut;
+    }
+
+    // ---- settle
+
+    function settle(uint64 batchId, uint256 priceX96) external {
+        uint256 opens = revealCloses(batchId);
+        uint256 closes = opens + settleLength;
+        if (block.timestamp < opens || block.timestamp >= closes) revert OutsideSettleWindow(block.timestamp, opens, closes);
+        if (finalized[batchId]) revert Finalized(batchId);
+        if (priceX96 == 0) revert ZeroPrice();
+        finalized[batchId] = true;
+        clearingPriceX96[batchId] = priceX96;
+        _setActivePrice(priceX96);
+
+        uint256[] storage ids = batchOrderIds[batchId];
+        Totals memory t = _collect(ids, priceX96);
+        Residual memory r = _route(t);
+        _checkMarginal(priceX96);
+        _pay(batchId, ids, priceX96);
+
+        _setActivePrice(0);
+        emit Settled(batchId, priceX96, t.fills, r.zeroForOne, r.amountIn, r.amountOut, r.donated, msg.sender);
+    }
+
+    /// @notice If nobody settles in time, every order unlocks untouched.
+    function expire(uint64 batchId) external {
+        uint256 at = settleCloses(batchId);
+        if (block.timestamp < at) revert NotExpired(at);
+        if (finalized[batchId]) revert Finalized(batchId);
+        finalized[batchId] = true;
+        uint256[] storage ids = batchOrderIds[batchId];
+        for (uint256 i; i < ids.length; i++) {
+            Order memory o = orders[ids[i]];
+            vault.unlock(o.owner, _inputToken(o.zeroForOne), o.amountIn);
+            vault.closeCommitment(o.owner);
+        }
+        emit Expired(batchId, ids.length);
+    }
+
+    function _collect(uint256[] storage ids, uint256 priceX96) internal returns (Totals memory t) {
+        for (uint256 i; i < ids.length; i++) {
+            Order memory o = orders[ids[i]];
+            (uint256 out, bool fills) = quote(o, priceX96);
+            address tokenIn = _inputToken(o.zeroForOne);
+            vault.unlock(o.owner, tokenIn, o.amountIn);
+            if (!fills) continue;
+            vault.transferInternal(o.owner, address(this), tokenIn, o.amountIn);
+            t.fills++;
+            if (o.zeroForOne) {
+                t.in0 += o.amountIn;
+                t.out1 += out;
+            } else {
+                t.in1 += o.amountIn;
+                t.out0 += out;
+            }
+        }
+    }
+
+    function _route(Totals memory t) internal returns (Residual memory r) {
+        if (t.in0 > t.out0 && t.out1 > t.in1) {
+            r.zeroForOne = true;
+            r.amountIn = t.in0 - t.out0;
+            (r.amountOut, r.donated) = _residualSwap(true, r.amountIn, t.out1 - t.in1);
+        } else if (t.in1 > t.out1 && t.out0 > t.in0) {
+            r.amountIn = t.in1 - t.out1;
+            (r.amountOut, r.donated) = _residualSwap(false, r.amountIn, t.out0 - t.in0);
+        } else if (t.out0 > t.in0 || t.out1 > t.in1) {
+            revert Imbalanced();
+        }
+    }
+
+    function _checkMarginal(uint256 priceX96) internal view {
+        uint256 poolP = poolPriceX96();
+        uint256 diff = poolP > priceX96 ? poolP - priceX96 : priceX96 - poolP;
+        if (diff * BPS > toleranceBps * priceX96) revert NotMarginalPrice(priceX96, poolP);
+    }
+
+    function _pay(uint64 batchId, uint256[] storage ids, uint256 priceX96) internal {
+        for (uint256 i; i < ids.length; i++) {
+            uint256 id = ids[i];
+            Order memory o = orders[id];
+            (uint256 out, bool fills) = quote(o, priceX96);
+            if (fills) {
+                vault.transferInternal(address(this), o.owner, _inputToken(!o.zeroForOne), out);
+                emit Filled(batchId, id, o.owner, o.amountIn, out);
+            } else {
+                emit Unfilled(batchId, id, o.owner);
+            }
+            vault.closeCommitment(o.owner);
+        }
+    }
+
+    // ---- residual swap on the sealed pool
+
+    function _residualSwap(bool zeroForOne, uint256 amountIn, uint256 owed) internal returns (uint256 out, uint256 donated) {
+        vault.operatorPull(zeroForOne ? token0 : token1, amountIn, address(this));
+        (out, donated) = abi.decode(manager.unlock(abi.encode(zeroForOne, amountIn, owed)), (uint256, uint256));
+        vault.operatorPush(zeroForOne ? token1 : token0, owed);
+    }
+
+    function unlockCallback(bytes calldata data) external returns (bytes memory) {
+        if (msg.sender != address(manager)) revert Unauthorized();
+        (bool zeroForOne, uint256 amountIn, uint256 owed) = abi.decode(data, (bool, uint256, uint256));
+        PoolKey memory k = key;
+
+        BalanceDelta d = manager.swap(
+            k,
+            IPoolManager.SwapParams({
+                zeroForOne: zeroForOne,
+                amountSpecified: -int256(amountIn),
+                sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            ""
+        );
+        uint256 used = uint256(uint128(-(zeroForOne ? d.amount0() : d.amount1())));
+        if (used != amountIn) revert PartialResidual(amountIn, used);
+        uint256 out = uint256(uint128(zeroForOne ? d.amount1() : d.amount0()));
+        if (out < owed) revert ResidualShort(out, owed);
+
+        Currency cIn = zeroForOne ? k.currency0 : k.currency1;
+        manager.sync(cIn);
+        IERC20Like(Currency.unwrap(cIn)).transfer(address(manager), amountIn);
+        manager.settle();
+
+        uint256 surplus = out - owed;
+        if (surplus != 0) manager.donate(k, zeroForOne ? 0 : surplus, zeroForOne ? surplus : 0, "");
+        manager.take(zeroForOne ? k.currency1 : k.currency0, address(this), owed);
+        return abi.encode(out, surplus);
+    }
+
+    // ---- internals
+
+    function _setActivePrice(uint256 p) internal {
+        bytes32 slot = ACTIVE_PRICE_SLOT;
+        assembly ("memory-safe") {
+            tstore(slot, p)
+        }
+    }
+
+    function _activePrice() internal view returns (uint256 p) {
+        bytes32 slot = ACTIVE_PRICE_SLOT;
+        assembly ("memory-safe") {
+            p := tload(slot)
+        }
+    }
+
+    function _inputToken(bool zeroForOne) internal view override returns (address) {
+        return zeroForOne ? token0 : token1;
+    }
+}
