@@ -1,0 +1,33 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+fs_permissions = [{ access = "read", path = "./test" }]
+remappings = [
+  "forge-std/=lib/forge-std/src/",
+  "v4-core/=lib/v4-core/",
+  "solmate/=lib/v4-core/lib/solmate/",
+  "swap-vm/=lib/swap-vm/",
+  "@openzeppelin/contracts/=lib/swap-vm/node_modules/@openzeppelin/contracts/",
+  "@1inch/solidity-utils/=lib/swap-vm/node_modules/@1inch/solidity-utils/",
+  "@1inch/aqua/=lib/swap-vm/node_modules/@1inch/aqua/",
+  "lib/v4-core/:@openzeppelin/=lib/v4-core/lib/openzeppelin-contracts/",
+]
+
+# SwapVM is written for via-IR: compile it, and our code on top of it, with via-IR only.
+additional_compiler_profiles = [{ name = "swapvm", via_ir = true, optimizer_runs = 700 }]
+compilation_restrictions = [
+  { paths = "lib/swap-vm/**", via_ir = true },
+  { paths = "src/swapvm/**", via_ir = true },
+  { paths = "test/swapvm/**", via_ir = true },
+]
+
+[lint]
+lint_on_build = false
+
+[rpc_endpoints]
+unichain = "${UNICHAIN_RPC_URL:-https://mainnet.unichain.org}"

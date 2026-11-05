@@ -1,0 +1,6 @@
+node_modules/
+contracts/out/
+contracts/cache/
+.env
+.DS_Store
+.workspace.md
