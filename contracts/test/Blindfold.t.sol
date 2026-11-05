@@ -31,6 +31,7 @@ contract BlindfoldTest is Test {
     PoolKey key;
     MockERC20 t0;
     MockERC20 t1;
+    PoolModifyLiquidityTest lp;
 
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
@@ -66,7 +67,7 @@ contract BlindfoldTest is Test {
         manager.initialize(key, uint160(Q96));
         s.initialize(key);
 
-        PoolModifyLiquidityTest lp = new PoolModifyLiquidityTest(manager);
+        lp = new PoolModifyLiquidityTest(manager);
         t0.mint(address(this), 1e30);
         t1.mint(address(this), 1e30);
         t0.approve(address(lp), type(uint256).max);
@@ -118,6 +119,115 @@ contract BlindfoldTest is Test {
         vm.prank(alice);
         vault.withdraw(address(t1), 1);
         emit log_named_decimal_uint("clearing price", p * 1e18 / Q96, 18);
+    }
+
+    function test_batch_buyHeavySettlesAbovePoolPrice() public {
+        uint64 b = s.currentBatch();
+        BatchAuction.Order memory sell = _o(alice, true, 50e18, 45e18);
+        BatchAuction.Order memory buy = _o(bob, false, 100e18, 95e18);
+        uint256 a = _commit(alice, sell, "a");
+        uint256 c = _commit(bob, buy, "b");
+        vm.warp(s.revealOpens(b));
+        s.reveal(a, sell, "a");
+        s.reveal(c, buy, "b");
+        vm.warp(s.revealCloses(b));
+        uint256 beforeBuy = vault.balanceOf(bob, address(t0));
+        uint256 p = _solve(b);
+        assertGt(p, Q96);
+        assertEq(vault.balanceOf(bob, address(t0)) - beforeBuy, 100e18 * Q96 / p);
+        assertEq(vault.openCommitments(alice) + vault.openCommitments(bob), 0);
+        _assertSolvent();
+    }
+
+    function test_batch_maxCommitmentsSettle() public {
+        uint64 b = s.currentBatch();
+        BatchAuction.Order memory o = _o(alice, true, 1e18, 0);
+        for (uint256 i; i < s.MAX_COMMITS(); i++) {
+            _commit(alice, o, bytes32(i));
+        }
+        vm.prank(alice);
+        vm.expectRevert(BatchAuction.BatchFull.selector);
+        s.commit(b, bytes32(0), "");
+        vm.warp(s.revealOpens(b));
+        for (uint256 i; i < s.MAX_COMMITS(); i++) s.reveal(i, o, bytes32(i));
+        vm.warp(s.revealCloses(b));
+        _solve(b);
+        assertEq(vault.openCommitments(alice), 0);
+        assertEq(vault.lockedOf(alice, address(t0)), 0);
+        _assertSolvent();
+    }
+
+    function test_failedSettlement_preservesFundsAndCanExpire() public {
+        uint64 b = _twoSided();
+        uint256 balance = vault.balanceOf(alice, address(t0));
+        vm.expectRevert();
+        s.settle(b, Q96);
+        assertFalse(s.finalized(b));
+        assertEq(s.clearingPriceX96(b), 0);
+        assertEq(s.activeClearingPriceX96(address(t0), address(t1)), 0);
+        assertEq(vault.balanceOf(alice, address(t0)), balance);
+        assertEq(vault.lockedOf(alice, address(t0)), 100e18);
+        assertEq(vault.openCommitments(alice), 1);
+        vm.warp(s.settleCloses(b));
+        s.expire(b);
+        assertEq(vault.lockedOf(alice, address(t0)), 0);
+        assertEq(vault.openCommitments(alice), 0);
+        _assertSolvent();
+    }
+
+    function test_expireAndSlash_clearMixedCommitments() public {
+        uint64 b = s.currentBatch();
+        BatchAuction.Order memory o = _o(alice, true, 10e18, 1);
+        uint256 revealed = _commit(alice, o, "a");
+        uint256 unrevealed = _commit(alice, o, "b");
+        vm.warp(s.revealOpens(b));
+        s.reveal(revealed, o, "a");
+        vm.warp(s.settleCloses(b));
+        s.expire(b);
+        assertEq(vault.openCommitments(alice), 1);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(BlindfoldVault.OpenCommitments.selector, alice, 1));
+        vault.withdraw(address(t0), 1);
+        vm.prank(keeper);
+        s.slashUnrevealed(unrevealed);
+        assertEq(vault.openCommitments(alice), 0);
+        vm.prank(alice);
+        vault.withdraw(address(t0), 1_000e18);
+        _assertSolvent();
+    }
+
+    function test_liquidityRemovedAfterReveal_canExpire() public {
+        uint64 b = _twoSided();
+        lp.modifyLiquidity(key, IPoolManager.ModifyLiquidityParams(-60_000, 60_000, -1e22, 0), "");
+        vm.expectRevert();
+        s.settle(b, Q96);
+        assertFalse(s.finalized(b));
+        assertEq(vault.lockedOf(alice, address(t0)), 100e18);
+        vm.warp(s.settleCloses(b));
+        s.expire(b);
+        assertEq(vault.openCommitments(alice) + vault.openCommitments(bob), 0);
+        _assertSolvent();
+    }
+
+    function test_tightLimits_unfilledOrdersKeepTheirInputs() public {
+        uint64 b = s.currentBatch();
+        BatchAuction.Order memory sell = _o(alice, true, 10e18, 10e18 + 1);
+        BatchAuction.Order memory buy = _o(bob, false, 10e18, 10e18 + 1);
+        uint256 a = _commit(alice, sell, "a");
+        uint256 c = _commit(bob, buy, "b");
+        vm.warp(s.revealOpens(b));
+        s.reveal(a, sell, "a");
+        s.reveal(c, buy, "b");
+        uint256 a0 = vault.balanceOf(alice, address(t0));
+        uint256 b1 = vault.balanceOf(bob, address(t1));
+        vm.warp(s.revealCloses(b));
+        s.settle(b, Q96);
+        assertEq(vault.balanceOf(alice, address(t0)), a0);
+        assertEq(vault.balanceOf(bob, address(t1)), b1);
+        assertEq(vault.lockedOf(alice, address(t0)), 0);
+        assertEq(vault.lockedOf(bob, address(t1)), 0);
+        assertEq(vault.openCommitments(alice) + vault.openCommitments(bob), 0);
+        _assertSolvent();
     }
 
     // ---- reveal
@@ -275,11 +385,17 @@ contract BlindfoldTest is Test {
         vm.warp(s.revealCloses(b));
     }
 
-    /// @dev Offchain-solver stand-in: step p* down from the pool price, submit the first accepted one.
+    /// @dev Test-only bounded search in both directions; not a production price solver.
     function _solve(uint64 b) internal returns (uint256 p) {
         uint256 pool = s.poolPriceX96();
         for (uint256 k; k <= TOL_BPS; k++) {
             p = pool * (10_000 - k) / 10_000;
+            vm.prank(solver);
+            try s.settle(b, p) {
+                return p;
+            } catch {}
+            if (k == 0) continue;
+            p = pool * (10_000 + k) / 10_000;
             vm.prank(solver);
             try s.settle(b, p) {
                 return p;
@@ -289,11 +405,11 @@ contract BlindfoldTest is Test {
     }
 
     function _assertSolvent() internal view {
-        address[7] memory acc = [alice, bob, carol, keeper, solver, treasury, address(s)];
+        address[8] memory acc = [alice, bob, carol, keeper, solver, treasury, address(s), address(this)];
         MockERC20[2] memory toks = [t0, t1];
         for (uint256 j; j < 2; j++) {
             uint256 sum;
-            for (uint256 i; i < 7; i++) sum += vault.balanceOf(acc[i], address(toks[j]));
+            for (uint256 i; i < acc.length; i++) sum += vault.balanceOf(acc[i], address(toks[j]));
             assertEq(sum, toks[j].balanceOf(address(vault)), "vault invariant");
         }
     }
