@@ -1,15 +1,15 @@
 # AGENTS.md
 
-Instructions for coding agents (and humans) working in this repo. Read [CONTEXT.md](CONTEXT.md) for the product and design, [HANDOFF.md](HANDOFF.md) for current status, [PLAN.md](PLAN.md) for the phase checklist and who owns which files, and [CONTRIBUTING.md](CONTRIBUTING.md) for the team workflow. Three people work in parallel (Bhoumik, Kritarth, Khush): before editing, find out whose lane you're working in.
+Instructions for coding agents (and humans) working in this repo. Read [CONTEXT.md](CONTEXT.md) for the product and design, and [HANDOFF.md](HANDOFF.md) for current status and what to build next.
 
 ## Setup
 ```bash
-source env.sh                                   # ALWAYS first: Foundry on PATH, Node 22, clears shell node wrappers
+source env.sh                                   # ALWAYS first: this machine's shell defines a recursive `node` function
 git submodule update --init --recursive
 (cd contracts/lib/swap-vm && npm install --ignore-scripts)
 (cd packages/court-watcher && npm install)
 ```
-Needs Foundry (`foundryup`) and Node >= 22. `env.sh` warns if either is missing and switches to Node 22 through nvm if you have it.
+`env.sh` puts Node 22 and Foundry on `PATH`. If your machine has no such `node` function, it's harmless.
 
 ## Test
 ```bash
@@ -24,10 +24,6 @@ Every change must keep `forge test` green. Add a test with every feature.
 ## Rules
 - **Commit early and often, with descriptive messages.** 1inch and Arkiv judge commit history; 1inch rejects one big last-day commit. Never squash or force-push `main`.
 - End commit messages with a `Co-Authored-By:` line when an agent wrote the change.
-- **Stay in your lane.** Edit only files owned by the person you're working for ([PLAN.md](PLAN.md#team-and-lanes)). Shared files and seams (ABIs, events, deployments files, Arkiv attributes, env vars, ports) change additively, or with the owner's OK; see [CONTRIBUTING.md](CONTRIBUTING.md).
-- Work on a branch and merge by PR **without squashing** (squash merges erase the commit history judges read).
-- Never hardcode deployed addresses or hand-copy ABIs: read `deployments/*.local.json` and `contracts/out/`.
-- Don't run `forge fmt` on the whole tree: it reformats other lanes' files. Format only the files you touched.
 - **Don't state facts you haven't verified.** Cite sources for numbers and incidents.
 - **Keep known limitations, concerns and open questions out of the repo.** Put them in `.workspace.md` at the repo root (gitignored, local only).
 - Don't name folders `vendor`.
@@ -43,7 +39,7 @@ contracts/            Foundry
   lib/                forge-std v1.11.0, v4-core v4.0.0, swap-vm v1.0.2 (submodules, pinned)
 packages/court-watcher/  find.mjs (scan), prove.mjs (claim + anchor fixtures), signed.mjs, lib.mjs
 ```
-Planned (owners in [PLAN.md](PLAN.md#team-and-lanes)): `contracts/script/` (deploy scripts), `deployments/` (local addresses, gitignored), `packages/{arkiv,client,keeper,solver,demo-bots}`, `app/` (Next.js), `arkiv/*.md`, `FEEDBACK.md`.
+Planned: `packages/{client,keeper,solver,demo-bots}`, `app/` (Next.js), `arkiv/*.md`, `FEEDBACK.md`.
 
 ## Compiler setup (don't break it)
 - v4-core's `PoolManager` pins `solc =0.8.26`. Our contracts use `pragma ^0.8.24` so they compile alongside it: **don't use the `transient` keyword** (needs 0.8.28); use assembly `tstore`/`tload`.
