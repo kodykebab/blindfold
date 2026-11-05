@@ -1,0 +1,14 @@
+{
+  "name": "@blindfold/court-watcher",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "find": "node find.mjs",
+    "prove": "node prove.mjs"
+  },
+  "dependencies": {
+    "@ethereumjs/trie": "6.2.1",
+    "@ethereumjs/util": "9.1.0",
+    "viem": "2.21.0"
+  }
+}
