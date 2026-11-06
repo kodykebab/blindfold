@@ -1,9 +1,8 @@
 // Was this tx / address sandwiched on Ethereum mainnet, and what did it cost?
-// Tx hashes: our own detector (court-watcher), RPC only. Addresses: recent txs from Etherscan (or Dune's dex.sandwiched), then our detector per tx.
+// Tx hashes: our own detector (court-watcher), RPC only. Addresses: recent txs from Etherscan, then our detector per tx.
 import { readFileSync } from 'node:fs'
-import { rpc, ETH_RPC, getBlock, getReceipts, swapLogs, findSandwiches, HISTORY_WINDOW, V3_SWAP, V4_SWAP } from '../../packages/court-watcher/lib.mjs'
+import { rpc, ETH_RPC, getBlock, getReceipts, swapLogs, findSandwiches, HISTORY_WINDOW, V3_SWAP, V4_SWAP, V4_POOL_MANAGER } from '../../packages/court-watcher/lib.mjs'
 
-const DUNE = 'https://api.dune.com/api/v1'
 const ETHERSCAN = 'https://api.etherscan.io/v2/api'
 const SCAN_TXS = 40 // recent txs per address whose receipts we fetch
 const LLAMA = 'https://coins.llama.fi/prices/historical'
@@ -49,31 +48,69 @@ export function classify(q) {
   return { kind: 'invalid', value: s }
 }
 
-/** Every sandwich in `swaps` where a swap of tx `txIndex` is a victim. findSandwiches keeps only the first victim, so re-check each pair. */
+/**
+ * Every sandwich around tx `txIndex`: one bot swaps the victim's pool before it in the same direction, and after it in the other.
+ * Looser than Court's predicate, to match what MEV trackers report: a bot's swaps in one tx are netted, and the back-run may
+ * unwind only part of the front-run (bots often keep some inventory). `strict` says whether Court's predicate also holds.
+ * `profit` is in the token the front-run paid in: what the back-run got back, minus what the front-run paid, plus any
+ * inventory the bot kept, valued at the back-run's own price (an outside price feed can be off by more than the profit).
+ */
 export function matchVictim(swaps, txIndex) {
-  const mine = swaps.filter((s) => s.txIndex === txIndex)
-  const out = []
-  for (const sw of findSandwiches(swaps)) {
-    const { front: f, back: b, profitInToken0: z } = sw
-    const v = mine.find((v) => v.pool === f.pool && v.poolId === f.poolId && v.txIndex > f.txIndex && v.txIndex < b.txIndex
-      && (v.a0 > 0n) === z && v.from !== f.from) // any route: a router shared with the attacker is not the trader (S5)
-    if (v) out.push({ ...sw, victim: v })
+  const via = (s) => s.caller ?? s.trader // court-watcher calls the pool's caller `trader` before S5 and `caller` after
+  const net = new Map() // one leg per (tx, pool, signer, calling contract): a back-run split over several swaps counts once
+  for (const s of swaps) {
+    const k = `${s.txIndex}|${s.pool}|${s.poolId}|${s.from}|${via(s)}`, l = net.get(k)
+    if (l) { l.a0 += s.a0; l.a1 += s.a1 } else net.set(k, { ...s })
+  }
+  const legs = [...net.values()], strict = findSandwiches(swaps), out = []
+  for (const v of legs.filter((l) => l.txIndex === txIndex)) for (const f of legs) {
+    // any route: a router shared with the attacker is not the trader (S5), so only the signer tells them apart
+    if (f.pool !== v.pool || f.poolId !== v.poolId || f.txIndex >= v.txIndex || f.from === v.from) continue
+    const z = f.a0 > 0n
+    if ((v.a0 > 0n) !== z) continue
+    const b = legs.find((b) => b.pool === f.pool && b.poolId === f.poolId && b.txIndex > v.txIndex && b.from === f.from && via(b) === via(f) && (b.a0 > 0n) !== z)
+    const bought = -(z ? f.a1 : f.a0), sold = b ? (z ? b.a1 : b.a0) : 0n
+    if (!b || bought <= 0n || sold * 2n < bought) continue // the back-run must unwind at least half of what the front-run bought
+    const pay = z ? f.a0 : f.a1, backIn = -(z ? b.a0 : b.a1), kept = -(z ? f.a1 + b.a1 : f.a0 + b.a0)
+    const profit = backIn - pay + (kept * backIn) / sold
+    const s = strict.some((x) => x.front.txIndex === f.txIndex && x.back.txIndex === b.txIndex && x.front.pool === f.pool && x.front.poolId === f.poolId)
+    if (!s && profit <= 0n) continue // a loose match only counts when the bot came out ahead
+    out.push({ front: f, victim: v, back: b, profitInToken0: z, profit, kept, strict: s })
   }
   return out
 }
 
+// Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24, int24, address, uint160, int24)
+const V4_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438'
+const v4Keys = new Map() // poolId -> [currency0, currency1]; a pool's currencies never change
+
+/** A v4 pool's currencies, from its Initialize log. Public RPCs refuse archive getLogs, so this goes through Etherscan. */
+async function v4Currencies(poolId) {
+  if (v4Keys.has(poolId)) return v4Keys.get(poolId)
+  if (!process.env.ETHERSCAN_API_KEY) return null // shortcut: without a key, v4 sandwiches stay in raw units
+  const u = `${ETHERSCAN}?chainid=1&module=logs&action=getLogs&address=${V4_POOL_MANAGER}&topic0=${V4_INIT}&topic1=${poolId}&topic0_1_opr=and&fromBlock=0&toBlock=latest&apikey=${process.env.ETHERSCAN_API_KEY}`
+  const t = await fetch(u).then((r) => r.json()).then((j) => (j.status === '1' ? j.result[0]?.topics : null)).catch(() => null)
+  if (!t) return null
+  const key = [t[2], t[3]].map((x) => '0x' + x.slice(26))
+  v4Keys.set(poolId, key)
+  return key
+}
+
 async function token(sw) {
-  if (sw.front.v4) return null // shortcut: v4 poolId doesn't reveal currencies without an Initialize log lookup; show raw units
+  if (sw.front.v4) return (await v4Currencies(sw.front.poolId))?.[sw.profitInToken0 ? 0 : 1] ?? null
   const sel = sw.profitInToken0 ? '0x0dfe1681' : '0xd21220a7' // token0() / token1()
   const r = await rpc(ETH_RPC, 'eth_call', [{ to: sw.front.pool, data: sel }, 'latest'])
   return '0x' + r.slice(26)
 }
 
+const NATIVE = '0x' + '00'.repeat(20), WETH = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
 async function price(addr, ts) {
   try {
-    const key = `ethereum:${addr}`
+    const native = addr === NATIVE // v4 pools can hold native ETH (currency 0x0): price it as WETH
+    const key = `ethereum:${native ? WETH : addr}`
     const j = await (await fetch(`${LLAMA}/${ts}/${key}`)).json()
-    return j.coins?.[key] ?? null
+    const p = j.coins?.[key] ?? null
+    return p && native ? { ...p, symbol: 'ETH' } : p
   } catch { return null }
 }
 
@@ -92,7 +129,8 @@ export async function checkTx(hash, rc) {
       block: Number(n), time: ts, v4: sw.front.v4, pool: sw.front.pool, poolId: sw.front.poolId,
       attacker: sw.front.from, frontTx: txAt(sw.front.txIndex), backTx: txAt(sw.back.txIndex),
       profitRaw: sw.profit.toString(), token: tok, symbol: p?.symbol ?? null, amount, usd: amount !== null ? amount * p.price : null,
-      courtProvable: BigInt(head) - n <= HISTORY_WINDOW, // L1 anchor window, AGENTS.md gotcha 7
+      strict: sw.strict, // false: the bot kept inventory, which Court's predicate doesn't accept
+      courtProvable: sw.strict && BigInt(head) - n <= HISTORY_WINDOW, // Court's predicate, within the L1 anchor window (AGENTS.md gotcha 7)
     }
   }))
   return summarize({ kind: 'tx', input: hash, txs: [{ txHash: hash, block: Number(n), sandwiches }] })
@@ -104,31 +142,6 @@ function summarize(r) {
   r.lostUsd = all.reduce((a, s) => a + (s.usd ?? 0), 0)
   r.unpriced = all.filter((s) => s.usd === null).length
   return r
-}
-
-async function dune(path, init = {}) {
-  const res = await fetch(DUNE + path, { ...init, headers: { 'content-type': 'application/json', 'x-dune-api-key': process.env.DUNE_API_KEY } })
-  const j = await res.json()
-  if (!res.ok || j.error) throw new Error(`dune ${path}: ${JSON.stringify(j.error ?? j)}`)
-  return j
-}
-
-export function duneSql(addr) {
-  if (classify(addr).kind !== 'address') throw new Error('bad address') // interpolated into SQL: validate here, not only at the caller
-  return `select tx_hash, block_number, block_time, project, version, token_pair, amount_usd
-from dex.sandwiched where blockchain = 'ethereum' and tx_from = ${addr}
-order by block_time desc limit 50`
-}
-
-async function duneRows(addr) {
-  const { execution_id: id } = await dune('/sql/execute', { method: 'POST', body: JSON.stringify({ sql: duneSql(addr) }) })
-  for (let t = 0; t < 60; t++) {
-    const s = await dune(`/execution/${id}/status`)
-    if (s.state === 'QUERY_STATE_COMPLETED') return (await dune(`/execution/${id}/results`)).result.rows
-    if (s.is_execution_finished) throw new Error(`dune query ${s.state}`)
-    await new Promise((r) => setTimeout(r, 2000))
-  }
-  throw new Error('dune query timed out')
 }
 
 /** Successful txs the address sent itself: the only ones where it can be the sandwich victim. */
@@ -146,8 +159,9 @@ async function etherscanTxs(addr) {
   throw new Error(`etherscan: ${j.result}`)
 }
 
-// shortcut: only the last SCAN_TXS sent txs and MAX_ENRICH swaps, Uniswap v3/v4 only; use Dune for full history
-async function checkAddressEtherscan(addr) {
+// shortcut: only the last SCAN_TXS sent txs and MAX_ENRICH swaps, Uniswap v3/v4 only; page through Etherscan for full history
+export async function checkAddress(addr) {
+  if (!process.env.ETHERSCAN_API_KEY) return { kind: 'address', input: addr, error: 'address lookup needs ETHERSCAN_API_KEY (or OFFLINE=1 for fixtures)' }
   const txs = ownTxs(await etherscanTxs(addr), addr).slice(0, SCAN_TXS)
   const rcs = await rpcBatch('eth_getTransactionReceipt', txs.map((t) => [t.hash]))
   const swaps = rcs.filter((rc) => rc && hasSwap(rc)).slice(0, MAX_ENRICH)
@@ -155,19 +169,6 @@ async function checkAddressEtherscan(addr) {
   const hit = checked.flatMap((c) => c?.txs ?? []).filter((t) => t.sandwiches.length)
   const failed = rcs.filter((rc) => !rc).length + checked.filter((c) => !c).length
   return { ...summarize({ kind: 'address', input: addr, txs: hit }), source: 'etherscan', scannedTxs: txs.length, swapTxs: swaps.length, failed }
-}
-
-export async function checkAddress(addr) {
-  if (process.env.ETHERSCAN_API_KEY) return checkAddressEtherscan(addr)
-  if (!process.env.DUNE_API_KEY) return { kind: 'address', input: addr, error: 'address lookup needs ETHERSCAN_API_KEY or DUNE_API_KEY (or OFFLINE=1 for fixtures)' }
-  const rows = [...new Map((await duneRows(addr)).map((r) => [r.tx_hash, r])).values()] // one row per swap; keep one per tx
-  const txs = await Promise.all(rows.map(async (r, i) => {
-    const base = { txHash: r.tx_hash, block: r.block_number, project: r.project, version: r.version, pair: r.token_pair, tradeUsd: r.amount_usd }
-    if (i >= MAX_ENRICH) return { ...base, sandwiches: [] }
-    const c = await checkTx(r.tx_hash).catch(() => null)
-    return { ...base, sandwiches: c?.txs?.[0]?.sandwiches ?? [] }
-  }))
-  return { ...summarize({ kind: 'address', input: addr, txs }), duneHits: rows.length }
 }
 
 export async function check(q) {

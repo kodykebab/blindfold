@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, matchVictim, duneSql, check, FIXTURES } from './check.mjs'
+import { classify, matchVictim, check, checkAddress, FIXTURES } from './check.mjs'
 
 const POOL = '0x' + '11'.repeat(20), ID = '0x' + '00'.repeat(32)
 // v3 pool-side amounts: a0 > 0 means token0 paid in (zeroForOne)
@@ -49,9 +49,35 @@ test('matchVictim ignores attacker, opposite-direction and outside txs', () => {
   for (const i of [1, 4, 5, 9]) assert.deepEqual(matchVictim(block, i), [])
 })
 
-test('duneSql only takes a validated address', () => {
-  assert.match(duneSql('0x' + 'ab'.repeat(20)), /tx_from = 0xabab/)
-  assert.throws(() => duneSql("0x00' or 1=1 --"))
+test('matchVictim catches a bot that keeps inventory, which Court cannot prove', () => {
+  // shape of tx 0xa5dd…6acb (block 26,352,400): the back-run sells back ~99% and re-buys a little in the same tx
+  const kept = [sw(0, 'bot', 627843n, -276006n), sw(2, 'eve', 8967n, -3882n), sw(3, 'bot', -620539n, 272778n), sw(3, 'bot', 152n, -68n)]
+  const [m, ...rest] = matchVictim(kept, 2)
+  assert.equal(rest.length, 0)
+  assert.equal(m.strict, false) // closes 98.8%, outside Court's 1%
+  assert.equal(m.kept, 3296n) // token1 the bot still holds
+  assert.equal(m.back.a0, -620539n + 152n) // the back-run's two swaps count as one leg
+  // got back 620,387, paid 627,843, kept 3,296 token1 worth 7,498 at the back-run's price
+  assert.equal(m.profit, 620387n - 627843n + (3296n * 620387n) / 272710n)
+  assert.equal(m.profit, 42n)
+})
+
+test('matchVictim skips a back-run that unwinds less than half, or loses money', () => {
+  const half = [sw(0, 'bot', 100n, -100n), sw(1, 'eve', 10n, -9n), sw(2, 'bot', -40n, 40n)]
+  assert.deepEqual(matchVictim(half, 1), [])
+  const loss = [sw(0, 'bot', 100n, -100n), sw(1, 'eve', 10n, -9n), sw(2, 'bot', -90n, 100n)]
+  assert.deepEqual(matchVictim(loss, 1), [])
+})
+
+test('matchVictim marks the strict sandwiches Court can prove', () => {
+  assert.equal(matchVictim(block, 2)[0].strict, true)
+})
+
+test('address lookup without an Etherscan key says what it needs', async () => {
+  const key = process.env.ETHERSCAN_API_KEY
+  delete process.env.ETHERSCAN_API_KEY
+  assert.match((await checkAddress('0x' + 'ab'.repeat(20))).error, /needs ETHERSCAN_API_KEY/)
+  if (key !== undefined) process.env.ETHERSCAN_API_KEY = key
 })
 
 test('OFFLINE serves fixtures and reports misses', async () => {

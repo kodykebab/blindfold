@@ -10,7 +10,8 @@
 :root{--void:#05070A;--edge:#18202A;--text:#DCE3EA;--mute:#6B7684;--seal:#2E4BFF;--atk:#FF3B5C;
   --disp:"Funnel Display",system-ui,sans-serif;--mono:"Spline Sans Mono",ui-monospace,monospace}
 *{box-sizing:border-box;margin:0}
-html{background:var(--void);color:var(--text);font:15px/1.55 var(--disp);overscroll-behavior:none}
+html,body{height:100%;overflow:hidden;overscroll-behavior:none}
+html{background:var(--void);color:var(--text);font:15px/1.55 var(--disp)}
 :focus-visible{outline:2px solid var(--seal);outline-offset:3px}
 canvas{position:fixed;inset:0;width:100vw;height:100vh;z-index:0}
 .lbl{font:400 11px/1.4 var(--mono);letter-spacing:.04em;color:var(--mute)}
@@ -18,14 +19,13 @@ nav{position:fixed;inset:0 0 auto;z-index:10;display:flex;align-items:center;gap
 nav b{font:600 15px var(--disp);display:flex;gap:8px;align-items:center} nav b i{width:12px;height:12px;background:var(--seal)}
 nav .sp{flex:1} nav a{color:var(--mute);text-decoration:none;font:400 12px var(--mono)}
 main{position:relative;z-index:2}
-.hero{position:relative;min-height:100svh;display:flex;flex-direction:column;justify-content:flex-end;padding:0 32px 64px;background:linear-gradient(90deg,rgba(5,7,10,.85),transparent 60%)}
+.hero{position:fixed;inset:0;height:100vh;height:100svh;display:flex;flex-direction:column;justify-content:flex-end;padding:0 32px 64px;background:linear-gradient(90deg,rgba(5,7,10,.85),transparent 60%)}
 h1{font:300 clamp(48px,7.4vw,118px)/.95 var(--disp);letter-spacing:-.035em;max-width:11ch}
 .hero p{color:var(--mute);margin:18px 0 28px;max-width:44ch;font-size:17px}
 form.look{display:flex;max-width:620px;background:rgba(14,19,26,.85);border:1px solid var(--edge);backdrop-filter:blur(10px)}
 form.look input{flex:1;min-width:0;background:none;border:0;outline:none;color:var(--text);font:400 14px var(--mono);padding:18px}
 form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--disp);padding:0 26px;cursor:pointer}
 .hint{margin-top:14px}
-#story{position:relative}
 .card{position:fixed;left:32px;bottom:40px;z-index:5;width:min(440px,calc(100vw - 36px));background:rgba(5,7,10,.88);border:1px solid var(--edge);padding:22px 24px;backdrop-filter:blur(8px);
   opacity:0;transform:translateY(12px);transition:opacity .4s,transform .4s;pointer-events:none}
 .card.on{opacity:1;transform:none}
@@ -35,16 +35,18 @@ form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--
 .bar{display:flex;gap:4px;margin-top:16px} .bar i{flex:1;height:6px;background:var(--edge);position:relative;overflow:hidden}
 .bar i b{position:absolute;inset:0 auto 0 0;width:calc(var(--f,0)*100%);background:var(--seal)} .card.red .bar i b{background:var(--atk)}
 .count{position:absolute;right:24px;top:22px}
-.end{min-height:100svh;display:flex;flex-direction:column;justify-content:center;padding:0 32px;background:linear-gradient(transparent,var(--void) 40%)}
+.end{position:fixed;inset:0;height:100vh;height:100svh;display:flex;flex-direction:column;justify-content:center;padding:0 32px;background:linear-gradient(transparent,var(--void) 40%)}
 .end h2{font:300 clamp(40px,6vw,96px)/1 var(--disp);letter-spacing:-.035em;max-width:14ch;margin:16px 0 32px}
 .end a{display:inline-block;margin-right:10px;padding:14px 24px;border:1px solid var(--edge);color:var(--text);text-decoration:none}
 .end a:first-of-type{background:var(--seal);border-color:var(--seal);color:#fff}
-/* lookup results: their own scroll area, so the page stepper leaves them alone */
+/* lookup results: their own scroll area (touch too), so the page stepper leaves them alone */
 .try{all:unset;cursor:pointer;color:var(--text);border-bottom:1px dotted var(--mute)}
-.res{position:absolute;right:32px;bottom:64px;width:min(600px,46vw);max-height:72svh;overflow:auto;overscroll-behavior:contain;background:rgba(5,7,10,.94);border:1px solid var(--edge)} /* no backdrop-filter: it stops wheel scrolling of this panel in Chromium */
+.res{position:absolute;right:32px;bottom:64px;width:min(600px,46vw);max-height:72svh;overflow:auto;overscroll-behavior:contain;touch-action:pan-x pan-y;background:rgba(5,7,10,.94);border:1px solid var(--edge);transition:height .5s cubic-bezier(.2,.8,.2,1)} /* no backdrop-filter: it stops wheel scrolling of this panel in Chromium */
 .res[hidden]{display:none}
+.res.enter{animation:resIn .55s cubic-bezier(.2,.8,.2,1) both}
+@keyframes resIn{from{opacity:0;transform:translateY(16px)}}
 .res header{padding:20px 22px;border-bottom:1px solid var(--edge)}
-.res header strong{display:block;font:300 clamp(36px,4vw,56px)/1 var(--disp);letter-spacing:-.03em;margin:8px 0 6px}
+.res header strong{display:block;font:300 clamp(36px,4vw,56px)/1 var(--disp);letter-spacing:-.03em;margin:8px 0 6px;font-variant-numeric:tabular-nums}
 .res .lost{color:var(--atk)} .res .clean{color:#3DDC97}
 .res table{width:100%;border-collapse:collapse;font:400 12px var(--mono)}
 .res th,.res td{padding:10px 16px 10px 0;border-bottom:1px solid var(--edge);text-align:left;white-space:nowrap}
@@ -52,8 +54,13 @@ form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--
 .res th{font-weight:400;color:var(--mute)} .res a{color:var(--text)} .res .yes{color:#3DDC97} .res .no{color:var(--mute)}
 .res footer{padding:14px 22px;display:grid;gap:6px}
 .res .more{all:unset;cursor:pointer;color:var(--seal);font:400 12px var(--mono);margin-top:4px}
-.busy::after{content:"";animation:dots 1.2s steps(4) infinite}
-@keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+.res .loading{padding:20px 22px;display:grid;gap:12px}
+.res .track{height:2px;background:var(--edge);overflow:hidden;position:relative}
+.res .track::after{content:"";position:absolute;inset:0 auto 0 0;width:35%;background:var(--seal);animation:track 1.1s cubic-bezier(.6,0,.4,1) infinite}
+@keyframes track{from{transform:translateX(-100%)}to{transform:translateX(290%)}}
+/* the result arrives like a decrypted order: a veil of grid squares sweeps off and the text resolves out of hex */
+.res canvas.veil{position:absolute;inset:0;width:100%;height:100%;z-index:1;pointer-events:none}
+@media (prefers-reduced-motion:reduce){html:not([data-motion="full"]) .res,html:not([data-motion="full"]) .res *,html:not([data-motion="full"]) .res *::after{animation:none!important;transition:none!important}}
 @media (max-width:900px){.res{position:static;width:auto;max-height:42svh;margin-top:18px}}
 @media (max-width:760px){.hero,.end{padding-inline:18px}.hero{padding-top:72px;padding-bottom:28px} h1{font-size:44px} .hero p{font-size:15px;margin:12px 0 16px} .res{max-height:40svh}.card{left:18px;bottom:18px} nav a{display:none}}
 </style>
@@ -70,7 +77,6 @@ form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--
     <div class="hint lbl">Try <button type="button" class="try" id="demo">0xcf36…4be5</button> · or scroll to see how a sandwich works, and how Blindfold stops it ↓</div>
     <section class="res" id="res" aria-live="polite" hidden></section>
   </section>
-  <div id="story"></div>
   <section class="end">
     <div class="lbl">MEV protection without a middleman to trust</div>
     <h2>Prevented by construction. Punished by proof.</h2>
@@ -84,6 +90,9 @@ form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--
 </div>
 
 <script>
+// An explicit page preference lets the animated demo run on systems that request reduced motion.
+const fullMotion = new URLSearchParams(location.search).get('motion') === 'full'
+document.documentElement.dataset.motion = fullMotion ? 'full' : 'system'
 // The swap lifecycle. Segment k animates while progress u runs from k to k+1, and rests at k + REST.
 const PH = ['Ethereum mempool', 'The attack', 'Blindfold · sealed', 'Blindfold · one price']
 const SEGS = [
@@ -102,7 +111,6 @@ const SEGS = [
 ]
 const N = SEGS.length, SEG_VH = 0.9, REST = 0.96
 const DEMO = '0xcf36363eea51f669c391eafc2ec2c3ff1b7a4be5' // a real victim wallet, see fixtures.json
-const story = document.getElementById('story')
 
 // ---- grid: every cell is a slot in the block. A frame is a pure function of progress u.
 const cv = document.getElementById('cv'), g = cv.getContext('2d')
@@ -127,7 +135,6 @@ function resize() {
     base: rows * 0.2 + i * (rows * 0.6 / 5), a1: 1.6 + rnd() * 2.4, f1: 0.05 + rnd() * 0.06, p1: rnd() * 6, a2: 0.6 + rnd() * 1.2, f2: 0.16 + rnd() * 0.12, p2: rnd() * 6,
     v: 0.5 + rnd() * 0.35, o: [rnd(), rnd()],
   }))
-  story.style.height = N * SEG_VH * H + H + 'px' // one extra screen so the last segment finishes before the footer
   dirty = true
 }
 function paint(c, r, col, a = 1) {
@@ -137,7 +144,7 @@ function paint(c, r, col, a = 1) {
 const laneRow = (l, c) => l.base + l.a1 * Math.sin(c * l.f1 + l.p1) + l.a2 * Math.sin(c * l.f2 + l.p2)
 const geo = () => ({ c0: Math.round(cols * 0.4), c1: Math.round(cols * 0.66), top: Math.round(rows * 0.12), bot: Math.round(rows * 0.88) })
 
-function render(u) {
+function render(u, time = 0, amb = 0) {
   ER.fill(0); EG.fill(0); EB.fill(0)
   const G = geo(), s = u + 2, fl = Math.floor(s * 26) // fl: ciphertext re-scrambles while moving, and freezes at rest
   const stage = clamp((u - 1) * 2) * (1 - clamp((u - 5.85) * 3)), blind = clamp((u - 5.9) * 3)
@@ -164,7 +171,7 @@ function render(u) {
     for (let c = 0; c < cols; c++) { // track; hidden where the batch holds ciphertext
       const cell = blind < 0.5 ? [laneRow(l, c), BLUE] : sealedCell(i, l, c), inBatch = sealed && c >= G.c0 && c <= G.c1
       const cleared = c > G.c1 ? conv : 0 // the converged p* line reads brighter
-      if (cell && !inBatch) paint(c, cell[0], cleared ? mix(BLUE, WHITE, conv) : BLUE, 0.07 * a + 0.18 * cleared)
+      if (cell && !inBatch) paint(c, cell[0], cleared ? mix(BLUE, WHITE, conv) : BLUE, (0.07 * a + 0.18 * cleared) * quiet(c, amb))
     }
     const span = cols + TAIL + 6
     l.o.forEach((o) => {
@@ -174,7 +181,7 @@ function render(u) {
         const cell = blind < 0.5 ? [laneRow(l, c), BLUE, 1] : sealedCell(i, l, c)
         if (!cell) continue
         const [r, col, ca] = cell
-        paint(c, r, k < 2 ? mix(col, WHITE, 0.6) : col, ca * fade * a)
+        paint(c, r, k < 2 ? mix(col, WHITE, 0.6) : col, ca * fade * a * quiet(c, amb))
       }
     })
   })
@@ -222,6 +229,7 @@ function render(u) {
     }
   }
   labels.blind = [seal, open, conv, pool]
+  if (amb > 0.01) heroEth(time, amb)
 }
 
 const labels = {}
@@ -266,43 +274,71 @@ function updateCard(u) {
 }
 
 // ---- stepping: one wheel gesture, swipe or key press moves exactly one phase, however fast or far you scroll.
+// The document never scrolls, so there is no scroll restoration on refresh and no momentum to fight. `y` is a virtual
+// scroll position: the hero sits at 0, the story starts one screen down, and the footer follows the last segment.
 // Stops: 0 = hero, 1..N = segments (each resting once its animation is done), N+1 = footer.
-const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
-const QUIET_MS = 220 // a gesture ends after this long without wheel events, so trackpad momentum can't trigger a second step
-let step = 0, tween = null, lastInput = 0, u = null, dirty = true, last = performance.now()
-const stops = () => { const top = story.offsetTop, seg = SEG_VH * innerHeight; return [0, ...SEGS.map((_, k) => top + (k + REST) * seg), top + story.offsetHeight] }
-const progress = () => (scrollY - story.offsetTop) / (SEG_VH * innerHeight)
-const nearest = () => { const p = stops(); return p.reduce((b, y, i) => (Math.abs(y - scrollY) < Math.abs(p[b] - scrollY) ? i : b), 0) }
-const inZone = () => scrollY <= stops()[N + 1] + 1
+const reduce = !fullMotion && matchMedia('(prefers-reduced-motion: reduce)').matches
+const hero = document.querySelector('.hero'), end = document.querySelector('.end')
+const QUIET_MS = 200 // wheel events closer together than this belong to the same gesture (trackpad momentum included)
+let step = 0, y = 0, tween = null, u = null, dirty = true, last = performance.now()
+let lastWheel = -Infinity, lastDelta = 0, wheelPeak = 0, wheelLow = 0, wheelTravel = 0, wheelUsed = false
+const layout = () => { const H = innerHeight, seg = SEG_VH * H; return { top: H, seg, end: H + N * seg + H } } // one spare screen before the footer
+const stops = () => { const L = layout(); return [0, ...SEGS.map((_, k) => L.top + (k + REST) * L.seg), L.end] }
+const progress = () => { const L = layout(); return (y - L.top) / L.seg }
+function place() { // move the hero and footer layers to the virtual position; off-screen layers can't be focused or clicked
+  const H = innerHeight, e = layout().end - y
+  hero.style.transform = `translate3d(0,${-y}px,0)`; hero.style.visibility = y < H ? 'visible' : 'hidden'
+  end.style.transform = `translate3d(0,${e}px,0)`; end.style.visibility = e < H ? 'visible' : 'hidden'
+}
 function go(k) {
-  const p = stops(); k = clamp(k, 0, N + 1)
+  k = clamp(k, 0, N + 1)
   if (k === step) return
-  step = k; tween = { from: scrollY, to: p[k], t0: performance.now(), dur: reduce ? 1 : 1100 }
+  step = k; tween = { from: y, to: stops()[k], t0: null, dur: reduce ? 0 : 1100 }
 }
 addEventListener('wheel', (e) => {
+  if (e.ctrlKey) return // a trackpad pinch arrives as ctrl+wheel: leave zooming to the browser
   const panel = e.target.closest?.('.res') // results scroll on their own until they reach an end
   if (panel && (e.deltaY > 0 ? panel.scrollTop + panel.clientHeight < panel.scrollHeight - 1 : panel.scrollTop > 0)) return
-  if (!inZone() || (step === N + 1 && e.deltaY > 0)) return // past the footer the page scrolls normally
   e.preventDefault()
-  const fresh = !tween && performance.now() - lastInput > QUIET_MS
-  lastInput = performance.now()
-  if (fresh && Math.abs(e.deltaY) >= 1) go(step + Math.sign(e.deltaY))
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1 // Firefox can report lines or pages
+  const d = e.deltaY * unit, abs = Math.abs(d), now = performance.now()
+  if (!d || abs < Math.abs(e.deltaX * unit)) return // sideways swipes don't step
+  // A new stroke can start gently, reverse direction, or grow out of the previous momentum tail.
+  const renewed = wheelLow < wheelPeak * 0.5 && abs >= 4 && abs > wheelLow * 2.5
+  const fresh = now - lastWheel > QUIET_MS || renewed || d * lastDelta < 0
+  if (fresh) {
+    wheelTravel = 0; wheelUsed = !!tween // don't queue a stroke made during a transition
+    wheelPeak = wheelLow = abs
+  } else if (abs >= wheelPeak) {
+    wheelPeak = wheelLow = abs
+  } else wheelLow = Math.min(wheelLow, abs)
+  lastWheel = now; lastDelta = d
+  wheelTravel += d
+  if (!wheelUsed && !tween && Math.abs(wheelTravel) >= 4) {
+    wheelUsed = true
+    go(step + Math.sign(wheelTravel))
+  }
 }, { passive: false })
 let touchY = null
-addEventListener('touchstart', (e) => { const p = e.target.closest('.res'); touchY = p && p.scrollHeight > p.clientHeight ? null : e.touches[0].clientY }, { passive: true })
-addEventListener('touchmove', (e) => { if (inZone() && touchY !== null) e.preventDefault() }, { passive: false })
+addEventListener('touchstart', (e) => {
+  const p = e.target.closest('.res')
+  touchY = e.touches.length > 1 || (p && p.scrollHeight > p.clientHeight) ? null : e.touches[0].clientY // pinch, or scrolling the results
+}, { passive: true })
+addEventListener('touchmove', (e) => { if (touchY !== null && e.cancelable) e.preventDefault() }, { passive: false })
 addEventListener('touchend', (e) => {
   if (touchY === null) return
   const dy = touchY - e.changedTouches[0].clientY; touchY = null
-  if (inZone() && !tween && Math.abs(dy) > 40) go(step + Math.sign(dy))
+  if (!tween && Math.abs(dy) > 40) go(step + Math.sign(dy))
 })
 addEventListener('keydown', (e) => {
-  if (!inZone() || e.target.closest('input, textarea, button, .res')) return
-  const d = { ArrowDown: 1, PageDown: 1, ' ': e.shiftKey ? -1 : 1, ArrowUp: -1, PageUp: -1 }[e.key]
+  if (e.altKey || e.ctrlKey || e.metaKey || e.target.closest('input, textarea, select, .res')) return
+  if (e.key === ' ' && e.target.closest('button, a')) return // space presses buttons
+  const d = { ArrowDown: 1, PageDown: 1, ' ': e.shiftKey ? -1 : 1, ArrowUp: -1, PageUp: -1, Home: -N - 1, End: N + 1 }[e.key]
   if (!d) return
-  e.preventDefault(); if (!tween) go(step + d)
+  e.preventDefault(); go(step + d) // a key press retargets a glide in progress; only wheel and touch wait for it to finish
 })
-addEventListener('scroll', () => { if (!tween) step = nearest() }, { passive: true }) // scrollbar drags and anchor links
+addEventListener('focusin', (e) => { if (e.target.closest('.hero')) go(0); else if (e.target.closest('.end')) go(N + 1) }) // keyboard users land where focus is
+addEventListener('scroll', () => { if (scrollX || scrollY) scrollTo(0, 0) }) // focus or find-in-page can still nudge the document
 document.querySelector('a[href="#story"]').onclick = (e) => { e.preventDefault(); go(1) }
 
 // ---- lookup: /api/check replays the blocks (check.mjs) and returns every sandwich it finds
@@ -311,50 +347,121 @@ const esc = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(
 const short = (h) => (h ? `${h.slice(0, 8)}…${h.slice(-4)}` : '—')
 const usd = (x) => (x == null ? 'unpriced' : `$${x.toFixed(2)}`)
 const scan = (kind, h) => `<a href="https://etherscan.io/${kind}/${esc(h)}" target="_blank" rel="noopener">${esc(short(h))}</a>`
-function show(html) { res.hidden = false; res.innerHTML = html; res.scrollTop = 0 }
+
+// Swap the panel's content without a jump: it fades in the first time, and afterwards its height eases from old to new.
+function show(html, done) {
+  const was = !res.hidden, from = was ? res.getBoundingClientRect().height : 0
+  res.hidden = false
+  res.style.height = 'auto'; res.innerHTML = html; res.scrollTop = 0
+  const to = res.getBoundingClientRect().height
+  if (!was) { res.classList.remove('enter'); void res.offsetWidth; res.classList.add('enter') }
+  else if (!reduce && Math.abs(to - from) > 1) {
+    res.style.height = from + 'px'; void res.offsetHeight; res.style.height = to + 'px'
+    res.addEventListener('transitionend', () => { res.style.height = 'auto' }, { once: true })
+  }
+  if (done) decrypt(res)
+}
+function decrypt(el) {
+  if (reduce) return
+  // a veil of grid squares over the panel, swept away from the top-left corner with a little jitter
+  const cvs = document.createElement('canvas'), w = el.clientWidth, h = el.scrollHeight, d = devicePixelRatio || 1, cell = 18
+  cvs.className = 'veil'; cvs.width = w * d; cvs.height = h * d; cvs.style.height = h + 'px'; el.append(cvs)
+  const cx = cvs.getContext('2d'); cx.scale(d, d)
+  const sq = []; for (let y = 0; y < h; y += cell) for (let x = 0; x < w; x += cell) sq.push([x, y, 0.8 * (x / w + y / h) / 2 + 0.2 * Math.random()])
+  // leaf text resolves from random hex, left to right
+  const leaves = [...el.querySelectorAll('a, td, th, strong span, .lbl, .more')].filter((x) => !x.children.length).map((x) => [x, x.textContent])
+  const hex = '0123456789abcdef'
+  let t0 = null
+  const tick = (now) => {
+    t0 ??= now
+    const x = clamp((now - t0) / 650), y = clamp((now - t0 - 120) / 700)
+    cx.clearRect(0, 0, w, h)
+    for (const [sx, sy, k] of sq) if (k > x) { cx.fillStyle = k > x + 0.12 ? '#0B1017' : '#2E4BFF'; cx.fillRect(sx + 1, sy + 1, cell - 2, cell - 2) }
+    for (const [node, text] of leaves) node.textContent = [...text].map((ch, i) => (/\s|[.,·…$]/.test(ch) || i / text.length < y ? ch : hex[Math.random() * 16 | 0])).join('')
+    if (x < 1 || y < 1) requestAnimationFrame(tick); else cvs.remove()
+  }
+  requestAnimationFrame(tick)
+}
 function result(r) {
   if (r.error) return `<header><div class="lbl">Lookup failed</div><p>${esc(r.error)}</p></header>`
   const rows = r.txs.flatMap((t) => t.sandwiches.length
     ? t.sandwiches.map((s) => `<tr><td>${scan('tx', t.txHash)}</td><td>${s.block.toLocaleString('en-US')}</td><td>${scan('address', s.attacker)}</td>
         <td>${s.amount != null ? `${s.amount.toPrecision(4)} ${esc(s.symbol)} · ${usd(s.usd)}` : `${esc(s.profitRaw)} raw${s.v4 ? ' (v4)' : ''}`}</td>
-        <td class="${s.courtProvable ? 'yes' : 'no'}" title="${s.courtProvable ? 'Within the 8,191-block L1 anchor window' : 'Older than 8,191 blocks'}">${s.courtProvable ? 'yes' : 'no'}</td></tr>`)
-    : [`<tr><td>${scan('tx', t.txHash)}</td><td>${t.block?.toLocaleString('en-US') ?? '—'}</td><td colspan="3" class="no">${t.project ? `Dune: sandwiched on ${esc(t.project)} v${esc(t.version)}; ` : ''}no Uniswap v3/v4 sandwich found by our checker</td></tr>`])
+        <td class="${s.courtProvable ? 'yes' : 'no'}" title="${s.courtProvable ? 'Within the 8,191-block L1 anchor window' : s.strict === false ? "Court's predicate needs the bot to close its position within 1%. This bot kept some." : 'Older than 8,191 blocks'}">${s.courtProvable ? 'yes' : 'no'}</td></tr>`)
+    : [`<tr><td>${scan('tx', t.txHash)}</td><td>${t.block?.toLocaleString('en-US') ?? '—'}</td><td colspan="3" class="no">no Uniswap v3/v4 sandwich found by our checker</td></tr>`])
   const n = r.sandwichCount
-  const scope = r.scannedTxs != null ? `Checked ${r.swapTxs} Uniswap v3/v4 swaps in this wallet's last ${r.scannedTxs} sent transactions.`
-    : r.duneHits != null ? `Dune lists ${r.duneHits} sandwiched swaps for this wallet. We re-checked the latest 10.` : ''
+  const scope = r.scannedTxs != null ? `Checked ${r.swapTxs} Uniswap v3/v4 swaps in this wallet's last ${r.scannedTxs} sent transactions.` : ''
   return `<header><div class="lbl">${r.kind === 'tx' ? 'Transaction' : 'Wallet'} ${esc(short(r.input))}${r.cached ? ' · cached' : ''}</div>
-      ${n ? `<strong class="lost">Lost at least ${usd(r.lostUsd)}</strong><div class="lbl">${n} sandwich${n > 1 ? 'es' : ''}${r.unpriced ? `, ${r.unpriced} unpriced` : ''}. That's the bots' gross profit, so your loss is at least this.</div>`
+      ${n && r.lostUsd > 0 ? `<strong class="lost">Lost at least <span>${usd(r.lostUsd)}</span></strong><div class="lbl">${n} sandwich${n > 1 ? 'es' : ''}${r.unpriced ? `, ${r.unpriced} unpriced` : ''}. That's the bots' gross profit, so your loss is at least this.</div>`
+        : n ? `<strong class="lost">Sandwiched ${n}×</strong><div class="lbl">We couldn't price what the bot took, so the table shows it in raw token units.</div>`
         : `<strong class="clean">No sandwich found</strong><div class="lbl">${r.kind === 'tx' ? 'No front-run and back-run wrapped this swap in its block.' : 'None of the swaps we checked were sandwiched.'}</div>`}
     </header>
     ${rows.length ? `<table><tr><th>Tx</th><th>Block</th><th>Bot</th><th>Bot took</th><th title="Can Court prove it onchain? Only within the 8,191-block L1 anchor window.">Court</th></tr>${rows.join('')}</table>` : ''}
     <footer>${scope ? `<span class="lbl">${scope}</span>` : ''}${r.failed ? `<span class="lbl">${r.failed} lookups failed. Check again for a full result.</span>` : ''}${r.fixture ? '<span class="lbl">Saved result (OFFLINE=1).</span>' : ''}
       <button class="more" type="button" onclick="go(1)">${n ? 'See how this happened, and how Blindfold stops it ↓' : 'See how a sandwich works ↓'}</button></footer>`
 }
+const loading = () => '<div class="loading"><div class="lbl">Replaying blocks on Ethereum mainnet</div><div class="track"></div><div class="lbl">A wallet takes a few seconds the first time.</div></div>'
 let asked = 0
 document.getElementById('look').onsubmit = async (e) => {
   e.preventDefault()
   const id = ++asked // only the latest lookup gets to draw
-  show('<header><div class="lbl busy">Replaying blocks on Ethereum mainnet</div><p class="lbl">A wallet takes a few seconds the first time.</p></header>')
+  show(loading())
   let r
   try { r = await (await fetch('/api/check?q=' + encodeURIComponent(q.value))).json() } catch (err) { r = { error: `Couldn't reach the lookup server (${err.message}).` } }
-  if (id === asked) show(result(r))
+  if (id === asked) show(result(r), true)
 }
 document.getElementById('demo').onclick = () => { q.value = DEMO; document.getElementById('look').requestSubmit() }
+
+// ---- hero ambient: runs on its own clock only while the hero is on screen, in the empty right half
+const quiet = (c, amb) => 1 - 0.7 * amb * (c >= cols * 0.46 ? 1 : 0) // swap lanes step back where the ambient plays
+const ETH = [ // the Ethereum logo in its 256 x 417 artboard, as strokes in drawing order
+  [[128, 0], [256, 212], [128, 288], [0, 212], [128, 0]], [[128, 0], [128, 288]],
+  [[0, 236], [128, 312], [256, 236], [128, 417], [0, 236]], [[128, 312], [128, 417]],
+]
+let ethPath = [], ethKey = ''
+function ethCells() { // raster the logo onto the grid, once per grid size
+  if (ethKey === cols + 'x' + rows) return ethPath
+  const h = rows * 0.74, sc = h / 417, x0 = cols * 0.74 - 128 * sc, y0 = rows * 0.5 - h / 2, seen = new Set()
+  ethPath = []; ethKey = cols + 'x' + rows
+  for (const stroke of ETH) for (let j = 1; j < stroke.length; j++) {
+    const [ax, ay] = stroke[j - 1], [bx, by] = stroke[j], n = Math.ceil(Math.hypot(bx - ax, by - ay) * sc * 2)
+    for (let k = 0; k <= n; k++) {
+      const c = Math.round(x0 + (ax + (bx - ax) * k / n) * sc), r = Math.round(y0 + (ay + (by - ay) * k / n) * sc)
+      if (!seen.has(c + ',' + r)) { seen.add(c + ',' + r); ethPath.push([c, r]) }
+    }
+  }
+  return ethPath
+}
+// the Ethereum logo traced pixel by pixel, glowing, circled by comets, then dissolving and starting over
+function heroEth(t, amb) {
+  const path = ethCells(), L = path.length, x = (t % 8) / 8 // 8 s loop: traced in ~2.2 s, then circled, then dissolved
+  const drawn = Math.floor(ease(clamp(x / 0.28)) * L), gone = clamp((x - 0.86) / 0.12)
+  const glow = 0.5 + 0.25 * Math.sin(t * 2.4)
+  path.forEach(([c, r], i) => { if (i < drawn && hash(c, r, 7) >= gone) paint(c, r, mix(BLUE, WHITE, drawn - i < 6 ? 0.9 : 0.2), amb * (drawn - i < 6 ? 1 : glow)) })
+  if (x > 0.28 && gone < 1) for (let m = 0; m < 3; m++) {
+    const head = (Math.floor(t * 34) + m * Math.floor(L / 3)) % L
+    for (let k = 0; k < 9; k++) { const [c, r] = path[(head - k + L) % L]; if (hash(c, r, 7) >= gone) paint(c, r, mix(BLUE, WHITE, 1 - k / 9), amb * Math.pow(1 - k / 9, 1.3)) }
+  }
+}
 
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now
   if (tween) {
-    const x = clamp((now - tween.t0) / tween.dur), e = x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2
-    scrollTo(0, tween.from + (tween.to - tween.from) * e)
+    tween.t0 ??= now
+    const x = tween.dur ? clamp((now - tween.t0) / tween.dur) : 1, e = x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2
+    y = tween.from + (tween.to - tween.from) * e; place()
     if (x >= 1) tween = null
   }
   const T = progress()
+  const changed = u === null || Math.abs(T - u) > 0.0004
   if (u === null || reduce) u = T
-  if (Math.abs(T - u) > 0.0004 || dirty) { u += (T - u) * (1 - Math.exp(-dt * 14)); dirty = false; render(u); draw(); updateCard(u) }
+  const amb = reduce ? 0 : clamp((-u - 0.55) * 4) // the hero runs on its own clock; once you scroll, only scroll moves things
+  if (changed || dirty || amb > 0) { u += (T - u) * (1 - Math.exp(-dt * 14)); dirty = false; render(u, now / 1000, amb); draw(); updateCard(u) }
   requestAnimationFrame(frame)
 }
-addEventListener('resize', () => { resize(); if (!tween) scrollTo(0, stops()[step]) })
-resize(); step = nearest(); requestAnimationFrame(frame)
+addEventListener('resize', () => { resize(); tween = null; y = stops()[step]; place() })
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
+scrollTo(0, 0); resize(); place(); requestAnimationFrame(frame)
 </script>
 </body>
 </html>
