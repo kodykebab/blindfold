@@ -1,18 +1,21 @@
 // Keyboard and mobile checks on the trading page (no chain needed: the offline page server).
-// Opt-in: A11Y_E2E=1 node --test app/haveibeensandwiched/a11y.e2e.test.mjs
+// Opt-in: A11Y_E2E=1 [BROWSER=firefox|webkit] node --test app/haveibeensandwiched/a11y.e2e.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { freePort } from './browser-stack.mjs'
-import { chromium } from '../../packages/extension-e2e/node_modules/playwright/index.mjs'
+import { chromium, firefox, webkit } from '../../packages/extension-e2e/node_modules/playwright/index.mjs'
 
 const enabled = process.env.A11Y_E2E === '1'
+// BROWSER=firefox|webkit after `npx playwright install firefox webkit`; Chromium by default.
+const engine = { chromium, firefox, webkit }[process.env.BROWSER || 'chromium']
+if (!engine) throw Error('BROWSER must be chromium, firefox or webkit')
 
 async function withPage(viewport, fn) {
   const port = await freePort()
   const server = spawn(process.execPath, ['server.mjs'], { cwd: new URL('.', import.meta.url), env: { ...process.env, PORT: String(port), OFFLINE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] })
-  const browser = await chromium.launch({ headless: true })
+  const browser = await engine.launch({ headless: true })
   try {
     await once(server.stdout, 'data')
     const page = await browser.newPage({ viewport })
