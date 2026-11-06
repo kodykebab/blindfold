@@ -11,6 +11,8 @@ import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 
+import {IExternalMarket, IERC20Balance} from "./market/IExternalMarket.sol";
+
 import {BatchAuction} from "./BatchAuction.sol";
 import {BlindfoldVault, IERC20Like} from "./BlindfoldVault.sol";
 
@@ -43,6 +45,9 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     error InvalidMarginalOrder();
     error PartialLimit(uint256 id);
     error ActiveLiquidity();
+    error MissingLiquidity();
+    error ExternalConfig();
+    error ExternalPrice();
     error PeerUnbalanced(uint256 in0, uint256 out0, uint256 in1, uint256 out1);
 
     event Filled(
@@ -60,6 +65,8 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         address solver
     );
     event PeerSettled(uint64 indexed batchId, uint256 priceX96, uint256 rounding0, uint256 rounding1);
+    event ExternalConfigured(address indexed market);
+    event ExternalSettled(uint64 indexed batchId, uint256 surplus0, uint256 surplus1);
     event Expired(uint64 indexed batchId, uint256 orders);
 
     struct Config {
@@ -103,6 +110,13 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     uint256 public immutable toleranceBps;
     address public immutable admin;
 
+    enum Route {
+        Sealed,
+        Peer,
+        External
+    }
+
+    IExternalMarket public externalMarket;
     PoolKey internal key;
     address public token0;
     address public token1;
@@ -126,6 +140,55 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         token1 = Currency.unwrap(k.currency1);
         IERC20Like(token0).approve(address(vault), type(uint256).max);
         IERC20Like(token1).approve(address(vault), type(uint256).max);
+    }
+
+    /// @notice Fix the oracle and public route before accepting any commitments.
+    function configureExternal(IExternalMarket market) external {
+        if (msg.sender != admin) revert Unauthorized();
+        if (
+            address(externalMarket) != address(0) || commitCount != 0 || token0 == address(0)
+                || market.settlement() != address(this) || market.token0() != token0 || market.token1() != token1
+                || market.maxDeviationBps() == 0 || market.maxDeviationBps() > 1000
+        ) revert ExternalConfig();
+        externalMarket = market;
+        emit ExternalConfigured(address(market));
+    }
+
+    /// @notice Solver search bound for the immutable external market configuration.
+    function externalPriceDeviationBps() external view returns (uint256) {
+        if (address(externalMarket) == address(0)) revert ExternalConfig();
+        return externalMarket.maxDeviationBps();
+    }
+
+    /// @notice Historical reference ending at this batch's reveal deadline; no stored-price fallback.
+    function referencePriceX96(uint64 batchId) public view returns (uint256) {
+        if (address(externalMarket) == address(0)) revert ExternalConfig();
+        uint256 price = externalMarket.referencePrice(revealCloses(batchId));
+        if (price == 0) revert ExternalPrice();
+        return price;
+    }
+
+    /// @notice Match at a reference-bounded price and route the residual through the configured public pool.
+    function settleExternal(uint64 batchId, uint256 priceX96) external {
+        PartialGroup memory group;
+        _settleExternal(batchId, priceX96, group);
+    }
+
+    /// @notice Use the same price-priority and equal-limit allocation with a partial boundary group.
+    function settleExternal(uint64 batchId, uint256 priceX96, uint256 marginalId, uint128 marginalAmountIn) external {
+        Order memory ref = orders[marginalId];
+        if (
+            commitments[marginalId].batchId != batchId || ref.amountIn == 0 || marginalAmountIn == 0
+                || marginalAmountIn > ref.amountIn
+        ) revert InvalidMarginalOrder();
+        _settleExternal(batchId, priceX96, PartialGroup(ref, marginalAmountIn));
+    }
+
+    function _settleExternal(uint64 batchId, uint256 priceX96, PartialGroup memory group) internal {
+        uint256 ref = referencePriceX96(batchId);
+        uint256 diff = priceX96 > ref ? priceX96 - ref : ref - priceX96;
+        if (diff > FullMath.mulDiv(ref, externalMarket.maxDeviationBps(), BPS)) revert ExternalPrice();
+        _settle(batchId, priceX96, group, Route.External);
     }
 
     function poolKey() external view returns (PoolKey memory) {
@@ -161,7 +224,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
 
     function settle(uint64 batchId, uint256 priceX96) external {
         PartialGroup memory group;
-        _settle(batchId, priceX96, group, false);
+        _settle(batchId, priceX96, group, Route.Sealed);
     }
 
     /// @notice Share a partial fill across every same-side order with the representative's limit.
@@ -187,11 +250,11 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         } else if (priceX96 > limitPrice || limitPrice - priceX96 > FullMath.mulDiv(priceX96, toleranceBps, BPS)) {
             revert InvalidMarginalOrder();
         }
-        _settle(batchId, priceX96, PartialGroup(referenceOrder, marginalAmountIn), false);
+        _settle(batchId, priceX96, PartialGroup(referenceOrder, marginalAmountIn), Route.Sealed);
     }
 
     /// @notice Match opposing orders without an AMM swap when there is no active pool liquidity.
-    /// @dev Price is the pool's stored price, not a solver-selected price. The representative
+    /// @dev Price is the configured external reference, not a solver-selected price. The representative
     ///      defines the same price-priority/proportional group as settle(), but may fill fully
     ///      or have a zero minimum. Both token budgets must cover all payouts independently.
     function settlePeer(uint64 batchId, uint256 marginalId, uint128 marginalAmountIn) external {
@@ -201,10 +264,10 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
             commitments[marginalId].batchId != batchId || ref.amountIn == 0 || marginalAmountIn == 0
                 || marginalAmountIn > ref.amountIn
         ) revert InvalidMarginalOrder();
-        _settle(batchId, poolPriceX96(), PartialGroup(ref, marginalAmountIn), true);
+        _settle(batchId, referencePriceX96(batchId), PartialGroup(ref, marginalAmountIn), Route.Peer);
     }
 
-    function _settle(uint64 batchId, uint256 priceX96, PartialGroup memory group, bool peer) internal {
+    function _settle(uint64 batchId, uint256 priceX96, PartialGroup memory group, Route route) internal {
         uint256 opens = revealCloses(batchId);
         uint256 closes = opens + settleLength;
         if (block.timestamp < opens || block.timestamp >= closes) {
@@ -212,6 +275,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         }
         if (finalized[batchId]) revert Finalized(batchId);
         if (priceX96 == 0) revert ZeroPrice();
+        if (route == Route.Sealed && manager.getLiquidity(key.toId()) == 0) revert MissingLiquidity();
         finalized[batchId] = true;
         clearingPriceX96[batchId] = priceX96;
         _setActivePrice(priceX96);
@@ -219,7 +283,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         uint256[] storage ids = batchOrderIds[batchId];
         (Totals memory t, Fill[] memory fills) = _collect(ids, priceX96, group);
         Residual memory r;
-        if (peer) {
+        if (route == Route.Peer) {
             if (t.out0 == 0 || t.out1 == 0 || t.in0 < t.out0 || t.in1 < t.out1) {
                 revert PeerUnbalanced(t.in0, t.out0, t.in1, t.out1);
             }
@@ -228,10 +292,15 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
             _returnRounding(ids, fills, t.in0 - t.out0, t.out0, true);
             _returnRounding(ids, fills, t.in1 - t.out1, t.out1, false);
             emit PeerSettled(batchId, priceX96, t.in0 - t.out0, t.in1 - t.out1);
+        } else if (route == Route.External) {
+            r = _routeExternal(t);
+            _returnRounding(ids, fills, t.in0 - t.out0, t.out0, true);
+            _returnRounding(ids, fills, t.in1 - t.out1, t.out1, false);
+            emit ExternalSettled(batchId, t.in0 - t.out0, t.in1 - t.out1);
         } else {
             r = _route(t);
+            _checkMarginal(priceX96);
         }
-        _checkMarginal(priceX96);
         _pay(batchId, ids, fills);
 
         _setActivePrice(0);
@@ -352,6 +421,37 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
             (r.amountOut, r.donated) = _residualSwap(false, r.amountIn, t.out0 - t.in0);
         } else if (t.out0 > t.in0 || t.out1 > t.in1) {
             revert Imbalanced();
+        }
+    }
+
+    function _routeExternal(Totals memory t) internal returns (Residual memory r) {
+        uint256 owed;
+        if (t.in0 > t.out0 && t.out1 > t.in1) {
+            r.zeroForOne = true;
+            r.amountIn = t.in0 - t.out0;
+            owed = t.out1 - t.in1;
+        } else if (t.in1 > t.out1 && t.out0 > t.in0) {
+            r.amountIn = t.in1 - t.out1;
+            owed = t.out0 - t.in0;
+        } else if (t.out0 > t.in0 || t.out1 > t.in1) {
+            revert Imbalanced();
+        } else {
+            return r;
+        }
+        address outToken = _inputToken(!r.zeroForOne);
+        uint256 beforeBalance = IERC20Balance(outToken).balanceOf(address(this));
+        vault.operatorPull(_inputToken(r.zeroForOne), r.amountIn, address(externalMarket));
+        r.amountOut = externalMarket.swap(r.zeroForOne, r.amountIn, owed);
+        if (r.amountOut < owed || IERC20Balance(outToken).balanceOf(address(this)) - beforeBalance != r.amountOut) {
+            revert ResidualShort(r.amountOut, owed);
+        }
+        vault.operatorPush(outToken, r.amountOut);
+        if (r.zeroForOne) {
+            t.in0 -= r.amountIn;
+            t.in1 += r.amountOut;
+        } else {
+            t.in1 -= r.amountIn;
+            t.in0 += r.amountOut;
         }
     }
 

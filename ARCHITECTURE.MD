@@ -380,7 +380,7 @@ Primary implementation references: [drand tlock](https://github.com/drand/tlock)
 
 ## Peer-only matching when active liquidity is zero
 
-`settlePeer(batchId, marginalId, marginalAmountIn)` crosses opposing funded orders without a pool swap. The contract reads the pool's stored price and requires its active liquidity to be zero. The representative identifies the price-priority boundary: eligible better same-side limits fill fully, equal limits share the input fraction, and worse limits remain unfilled. The boundary fraction may be 100%; zero-minimum orders are supported. Opposing orders retain the ordinary quote rule.
+`settlePeer(batchId, marginalId, marginalAmountIn)` crosses opposing funded orders without a pool swap. The contract reads the validated external reference ending at the batch reveal deadline and requires the sealed pool's active liquidity to be zero. The representative identifies the price-priority boundary: eligible better same-side limits fill fully, equal limits share the input fraction, and worse limits remain unfilled. The boundary fraction may be 100%; zero-minimum orders are supported. Opposing orders retain the ordinary quote rule.
 
 ```mermaid
 flowchart LR
@@ -394,3 +394,55 @@ flowchart LR
 Each base output is rounded down at the reference price, while its proportional minimum rounds up. Execution requires nonzero opposing payouts and independently sufficient token0 and token1 inputs. Rounding surplus is distributed to recipients of that token in proportion to their base quoted outputs; the smallest commitment ID receives the final indivisible remainder. Actual payouts appear in `Filled`, and `PeerSettled` records the reference price and aggregate rounding surplus. The existing finalization, commitment cleanup, and expiration lifecycle applies.
 
 The solver tries this local crossing first when the liquidity view is zero, validates the candidate onchain, and simulates again before sending. It retains AMM search if no peer candidate succeeds; liquidity can exist beyond the current tick even when active liquidity is zero.
+
+### Ethereum public-pool execution
+
+An external market is configured once, after token initialization and before the
+first commitment. The settlement checks its token pair and settlement address.
+Its configuration cannot change while users have orders pending.
+
+```mermaid
+flowchart LR
+    O[Revealed orders] --> P[Price priority and proportional allocation]
+    V3[Authenticated Uniswap v3 pool] --> R[Historical reference ending at reveal deadline]
+    R --> G[Reference validation and clearing-price band]
+    G --> P
+    P --> C[Cross opposing inputs]
+    C -->|Residual| V3
+    V3 --> B[Verify actual output covers promised payouts]
+    C -->|Peer-only, both budgets covered| B
+    B --> U[Vault credits: quoted output plus surplus]
+```
+
+`UniswapV3Market` authenticates one pool against its factory. `referencePriceX96(batch)`
+uses the geometric mean price over a fixed historical window ending at the reveal
+deadline. It checks available observation history, harmonic mean liquidity,
+latest observation age, reference age and current spot deviation. Negative mean
+ticks round down, following Uniswap's OracleLibrary. Prices stay in raw
+token1/token0 Q96 units; Ethereum USDC is token0 and WETH is token1.
+
+`settlePeer` now uses this reference and still requires zero active sealed-pool
+liquidity. It never substitutes the stored private-pool price. The original
+`settle` path requires active sealed-pool liquidity, including balanced batches.
+
+`settleExternal(batch,price)` uses the same collection, user-limit checks, vault
+accounting and finalization as sealed settlement. A four-argument overload adds
+the existing proportional boundary group. The proposed price must lie inside the
+configured external reference band. Only the unmatched exact input goes to the
+fixed public pool. The callback authenticates the pool and limits payment to that
+input. The settlement verifies the actual output balance increase and returns all
+surplus to output recipients. A short or partial swap reverts the transaction;
+normal expiry remains available.
+
+This public route uses existing LP liquidity without requiring LP commitments to
+Blindfold. It does not use the sealed pool's post-swap marginal-price condition or
+donate surplus to its LPs. `ExternalSettled` identifies this execution policy;
+`PeerSettled` identifies peer execution. `Filled.amountOut` includes returned
+surplus for both modes.
+
+The Ethereum fork fixture resolves the USDC/WETH 500-fee pool from the canonical
+factory at block 26,353,874. Its test parameters are a 600-second window,
+30-second maximum reference delay, 120-second observation-age limit, minimum
+harmonic liquidity of 10^15, and a 100-basis-point deviation band. These are
+explicit fixture parameters. The fork exercises real token transfers and public
+pool swaps with zero liquidity in the sealed pool, in both directions.
