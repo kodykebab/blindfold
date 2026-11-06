@@ -56,7 +56,7 @@ export function matchVictim(swaps, txIndex) {
   for (const sw of findSandwiches(swaps)) {
     const { front: f, back: b, profitInToken0: z } = sw
     const v = mine.find((v) => v.pool === f.pool && v.poolId === f.poolId && v.txIndex > f.txIndex && v.txIndex < b.txIndex
-      && (v.a0 > 0n) === z && v.from !== f.from && v.trader !== f.trader)
+      && (v.a0 > 0n) === z && v.from !== f.from) // any route: a router shared with the attacker is not the trader (S5)
     if (v) out.push({ ...sw, victim: v })
   }
   return out
