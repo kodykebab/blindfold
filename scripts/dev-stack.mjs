@@ -43,7 +43,9 @@ process.once('SIGINT', () => { stop(); process.exit(0) })
 process.once('SIGTERM', () => { stop(); process.exit(0) })
 try {
   const rpcPort = await freePort()
-  let webPort = await freePort()
+  // WEB_PORT pins the page for a browser preview; otherwise any free port.
+  if (process.env.WEB_PORT && !/^[1-9]\d{0,4}$/.test(process.env.WEB_PORT)) throw Error('WEB_PORT must be a port number')
+  let webPort = Number(process.env.WEB_PORT) || await freePort()
   while (webPort === rpcPort) webPort = await freePort()
   const rpc = `http://127.0.0.1:${rpcPort}`, url = `http://127.0.0.1:${webPort}`
   const dir = mkdtempSync(join(tmpdir(), 'blindfold-dev-'))
