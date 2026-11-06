@@ -378,7 +378,8 @@ function result(r) {
   const scope = r.scannedTxs != null ? `Checked ${r.swapTxs} Uniswap v3/v4 swaps in this wallet's last ${r.scannedTxs} sent transactions.`
     : r.duneHits != null ? `Dune lists ${r.duneHits} sandwiched swaps for this wallet. We re-checked the latest 10.` : ''
   return `<header><div class="lbl">${r.kind === 'tx' ? 'Transaction' : 'Wallet'} ${esc(short(r.input))}${r.cached ? ' · cached' : ''}</div>
-      ${n ? `<strong class="lost">Lost at least <span>${usd(r.lostUsd)}</span></strong><div class="lbl">${n} sandwich${n > 1 ? 'es' : ''}${r.unpriced ? `, ${r.unpriced} unpriced` : ''}. That's the bots' gross profit, so your loss is at least this.</div>`
+      ${n && r.lostUsd > 0 ? `<strong class="lost">Lost at least <span>${usd(r.lostUsd)}</span></strong><div class="lbl">${n} sandwich${n > 1 ? 'es' : ''}${r.unpriced ? `, ${r.unpriced} unpriced` : ''}. That's the bots' gross profit, so your loss is at least this.</div>`
+        : n ? `<strong class="lost">Sandwiched ${n}×</strong><div class="lbl">We couldn't price what the bot took, so the table shows it in raw token units.</div>`
         : `<strong class="clean">No sandwich found</strong><div class="lbl">${r.kind === 'tx' ? 'No front-run and back-run wrapped this swap in its block.' : 'None of the swaps we checked were sandwiched.'}</div>`}
     </header>
     ${rows.length ? `<table><tr><th>Tx</th><th>Block</th><th>Bot</th><th>Bot took</th><th title="Can Court prove it onchain? Only within the 8,191-block L1 anchor window.">Court</th></tr>${rows.join('')}</table>` : ''}

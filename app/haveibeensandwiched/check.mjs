@@ -1,7 +1,7 @@
 // Was this tx / address sandwiched on Ethereum mainnet, and what did it cost?
 // Tx hashes: our own detector (court-watcher), RPC only. Addresses: recent txs from Etherscan (or Dune's dex.sandwiched), then our detector per tx.
 import { readFileSync } from 'node:fs'
-import { rpc, ETH_RPC, getBlock, getReceipts, swapLogs, findSandwiches, HISTORY_WINDOW, V3_SWAP, V4_SWAP } from '../../packages/court-watcher/lib.mjs'
+import { rpc, ETH_RPC, getBlock, getReceipts, swapLogs, findSandwiches, HISTORY_WINDOW, V3_SWAP, V4_SWAP, V4_POOL_MANAGER } from '../../packages/court-watcher/lib.mjs'
 
 const DUNE = 'https://api.dune.com/api/v1'
 const ETHERSCAN = 'https://api.etherscan.io/v2/api'
@@ -81,18 +81,37 @@ export function matchVictim(swaps, txIndex) {
   return out
 }
 
+// Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24, int24, address, uint160, int24)
+const V4_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438'
+const v4Keys = new Map() // poolId -> [currency0, currency1]; a pool's currencies never change
+
+/** A v4 pool's currencies, from its Initialize log. Public RPCs refuse archive getLogs, so this goes through Etherscan. */
+async function v4Currencies(poolId) {
+  if (v4Keys.has(poolId)) return v4Keys.get(poolId)
+  if (!process.env.ETHERSCAN_API_KEY) return null // shortcut: without a key, v4 sandwiches stay in raw units
+  const u = `${ETHERSCAN}?chainid=1&module=logs&action=getLogs&address=${V4_POOL_MANAGER}&topic0=${V4_INIT}&topic1=${poolId}&topic0_1_opr=and&fromBlock=0&toBlock=latest&apikey=${process.env.ETHERSCAN_API_KEY}`
+  const t = await fetch(u).then((r) => r.json()).then((j) => (j.status === '1' ? j.result[0]?.topics : null)).catch(() => null)
+  if (!t) return null
+  const key = [t[2], t[3]].map((x) => '0x' + x.slice(26))
+  v4Keys.set(poolId, key)
+  return key
+}
+
 async function token(sw) {
-  if (sw.front.v4) return null // shortcut: v4 poolId doesn't reveal currencies without an Initialize log lookup; show raw units
+  if (sw.front.v4) return (await v4Currencies(sw.front.poolId))?.[sw.profitInToken0 ? 0 : 1] ?? null
   const sel = sw.profitInToken0 ? '0x0dfe1681' : '0xd21220a7' // token0() / token1()
   const r = await rpc(ETH_RPC, 'eth_call', [{ to: sw.front.pool, data: sel }, 'latest'])
   return '0x' + r.slice(26)
 }
 
+const NATIVE = '0x' + '00'.repeat(20), WETH = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
 async function price(addr, ts) {
   try {
-    const key = `ethereum:${addr}`
+    const native = addr === NATIVE // v4 pools can hold native ETH (currency 0x0): price it as WETH
+    const key = `ethereum:${native ? WETH : addr}`
     const j = await (await fetch(`${LLAMA}/${ts}/${key}`)).json()
-    return j.coins?.[key] ?? null
+    const p = j.coins?.[key] ?? null
+    return p && native ? { ...p, symbol: 'ETH' } : p
   } catch { return null }
 }
 
