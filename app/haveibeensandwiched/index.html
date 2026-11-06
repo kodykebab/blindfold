@@ -39,7 +39,7 @@ form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--
 .end h2{font:300 clamp(40px,6vw,96px)/1 var(--disp);letter-spacing:-.035em;max-width:14ch;margin:16px 0 32px}
 .end a{display:inline-block;margin-right:10px;padding:14px 24px;border:1px solid var(--edge);color:var(--text);text-decoration:none}
 .end a:first-of-type{background:var(--seal);border-color:var(--seal);color:#fff}
-/* lookup results: their own scroll area, so the page stepper leaves them alone */
+/* Lookup results have their own scroll area. */
 .try{all:unset;cursor:pointer;color:var(--text);border-bottom:1px dotted var(--mute)}
 .res{position:absolute;right:32px;bottom:64px;width:min(600px,46vw);max-height:72svh;overflow:auto;overscroll-behavior:contain;background:rgba(5,7,10,.94);border:1px solid var(--edge)} /* no backdrop-filter: it stops wheel scrolling of this panel in Chromium */
 .res[hidden]{display:none}
@@ -265,44 +265,15 @@ function updateCard(u) {
   bar.querySelectorAll('b').forEach((b, j) => b.style.setProperty('--f', clamp((u - inPh[j]) / REST)))
 }
 
-// ---- stepping: one wheel gesture, swipe or key press moves exactly one phase, however fast or far you scroll.
-// Stops: 0 = hero, 1..N = segments (each resting once its animation is done), N+1 = footer.
+// Native scrolling drives the animation; explicit story links jump to a section.
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
-const QUIET_MS = 220 // a gesture ends after this long without wheel events, so trackpad momentum can't trigger a second step
-let step = 0, tween = null, lastInput = 0, u = null, dirty = true, last = performance.now()
+let u = null, dirty = true, last = performance.now()
 const stops = () => { const top = story.offsetTop, seg = SEG_VH * innerHeight; return [0, ...SEGS.map((_, k) => top + (k + REST) * seg), top + story.offsetHeight] }
 const progress = () => (scrollY - story.offsetTop) / (SEG_VH * innerHeight)
-const nearest = () => { const p = stops(); return p.reduce((b, y, i) => (Math.abs(y - scrollY) < Math.abs(p[b] - scrollY) ? i : b), 0) }
-const inZone = () => scrollY <= stops()[N + 1] + 1
 function go(k) {
-  const p = stops(); k = clamp(k, 0, N + 1)
-  if (k === step) return
-  step = k; tween = { from: scrollY, to: p[k], t0: performance.now(), dur: reduce ? 1 : 1100 }
+  const p = stops()
+  scrollTo({ top: p[clamp(k, 0, N + 1)], behavior: reduce ? 'instant' : 'smooth' })
 }
-addEventListener('wheel', (e) => {
-  const panel = e.target.closest?.('.res') // results scroll on their own until they reach an end
-  if (panel && (e.deltaY > 0 ? panel.scrollTop + panel.clientHeight < panel.scrollHeight - 1 : panel.scrollTop > 0)) return
-  if (!inZone() || (step === N + 1 && e.deltaY > 0)) return // past the footer the page scrolls normally
-  e.preventDefault()
-  const fresh = !tween && performance.now() - lastInput > QUIET_MS
-  lastInput = performance.now()
-  if (fresh && Math.abs(e.deltaY) >= 1) go(step + Math.sign(e.deltaY))
-}, { passive: false })
-let touchY = null
-addEventListener('touchstart', (e) => { const p = e.target.closest('.res'); touchY = p && p.scrollHeight > p.clientHeight ? null : e.touches[0].clientY }, { passive: true })
-addEventListener('touchmove', (e) => { if (inZone() && touchY !== null) e.preventDefault() }, { passive: false })
-addEventListener('touchend', (e) => {
-  if (touchY === null) return
-  const dy = touchY - e.changedTouches[0].clientY; touchY = null
-  if (inZone() && !tween && Math.abs(dy) > 40) go(step + Math.sign(dy))
-})
-addEventListener('keydown', (e) => {
-  if (!inZone() || e.target.closest('input, textarea, button, .res')) return
-  const d = { ArrowDown: 1, PageDown: 1, ' ': e.shiftKey ? -1 : 1, ArrowUp: -1, PageUp: -1 }[e.key]
-  if (!d) return
-  e.preventDefault(); if (!tween) go(step + d)
-})
-addEventListener('scroll', () => { if (!tween) step = nearest() }, { passive: true }) // scrollbar drags and anchor links
 document.querySelector('a[href="#story"]').onclick = (e) => { e.preventDefault(); go(1) }
 
 // ---- lookup: /api/check replays the blocks (check.mjs) and returns every sandwich it finds
@@ -343,18 +314,14 @@ document.getElementById('demo').onclick = () => { q.value = DEMO; document.getEl
 
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now
-  if (tween) {
-    const x = clamp((now - tween.t0) / tween.dur), e = x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2
-    scrollTo(0, tween.from + (tween.to - tween.from) * e)
-    if (x >= 1) tween = null
-  }
   const T = progress()
   if (u === null || reduce) u = T
   if (Math.abs(T - u) > 0.0004 || dirty) { u += (T - u) * (1 - Math.exp(-dt * 14)); dirty = false; render(u); draw(); updateCard(u) }
   requestAnimationFrame(frame)
 }
-addEventListener('resize', () => { resize(); if (!tween) scrollTo(0, stops()[step]) })
-resize(); step = nearest(); requestAnimationFrame(frame)
+addEventListener('scroll', () => { dirty = true; updateCard(progress()) }, { passive: true })
+addEventListener('resize', resize)
+resize(); requestAnimationFrame(frame)
 </script>
 </body>
 </html>
