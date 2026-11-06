@@ -186,11 +186,11 @@ func preparationFixture(path string) PreparationCircuit {
 	must(json.Unmarshal(data, &raw))
 	var p struct {
 		Context struct {
-			Chain      uint64   `json:"chain_id"`
-			Batch      uint64   `json:"batch"`
-			Round      uint64   `json:"round"`
-			Owner      [20]byte `json:"owner"`
-			Settlement [20]byte `json:"settlement"`
+			Chain      fixtureUint64 `json:"chain_id"`
+			Batch      fixtureUint64 `json:"batch"`
+			Round      fixtureUint64 `json:"round"`
+			Owner      [20]byte      `json:"owner"`
+			Settlement [20]byte      `json:"settlement"`
 		}
 		Commitment [32]byte
 	}
@@ -205,7 +205,7 @@ func preparationFixture(path string) PreparationCircuit {
 	if len(w.Wrapper) != 128 {
 		panic("wrapper length")
 	}
-	c := PreparationCircuit{Chain: p.Context.Chain, Batch: p.Context.Batch, Round: p.Context.Round, Commitment: bytes32(p.Commitment), Blind: bytes32(w.Blind)}
+	c := PreparationCircuit{Chain: uint64(p.Context.Chain), Batch: uint64(p.Context.Batch), Round: uint64(p.Context.Round), Commitment: bytes32(p.Commitment), Blind: bytes32(w.Blind)}
 	copy(c.Owner[:], uints.NewU8Array(p.Context.Owner[:]))
 	copy(c.Settlement[:], uints.NewU8Array(p.Context.Settlement[:]))
 	copy(c.Key[:], uints.NewU8Array(w.Key[:]))

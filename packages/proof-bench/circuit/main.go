@@ -35,15 +35,15 @@ func fixture(path string) FundingCircuit {
 	must(json.Unmarshal(data, &raw))
 	var online struct {
 		Admission struct {
-			Chain      uint64    `json:"chain_id"`
-			Batch      uint64    `json:"batch"`
-			Step       uint64    `json:"step"`
-			Settlement [20]byte  `json:"settlement"`
-			Owner      [20]byte  `json:"owner"`
-			OldRoot    [32]byte  `json:"old_root"`
-			NewRoot    [32]byte  `json:"new_root"`
-			OrderHash  [32]byte  `json:"order_hash"`
-			Budgets    [2]string `json:"budgets"`
+			Chain      fixtureUint64 `json:"chain_id"`
+			Batch      fixtureUint64 `json:"batch"`
+			Step       fixtureUint64 `json:"step"`
+			Settlement [20]byte      `json:"settlement"`
+			Owner      [20]byte      `json:"owner"`
+			OldRoot    [32]byte      `json:"old_root"`
+			NewRoot    [32]byte      `json:"new_root"`
+			OrderHash  [32]byte      `json:"order_hash"`
+			Budgets    [2]string     `json:"budgets"`
 		}
 	}
 	var witness struct {
@@ -60,7 +60,7 @@ func fixture(path string) FundingCircuit {
 	must(json.Unmarshal(raw[2], &online))
 	must(json.Unmarshal(raw[3], &witness))
 	s, w := online.Admission, witness.Order
-	c := FundingCircuit{Chain: s.Chain, Batch: s.Batch, Step: s.Step, Direction: 0, Amount: number(string(w.Amount)), Minimum: number(string(w.Minimum)), OldRoot: bytes32(s.OldRoot), NewRoot: bytes32(s.NewRoot), OrderHash: bytes32(s.OrderHash), Salt: bytes32(w.Salt), OldBlind: bytes32(w.OldBlind), NewBlind: bytes32(w.NewBlind)}
+	c := FundingCircuit{Chain: uint64(s.Chain), Batch: uint64(s.Batch), Step: uint64(s.Step), Direction: 0, Amount: number(string(w.Amount)), Minimum: number(string(w.Minimum)), OldRoot: bytes32(s.OldRoot), NewRoot: bytes32(s.NewRoot), OrderHash: bytes32(s.OrderHash), Salt: bytes32(w.Salt), OldBlind: bytes32(w.OldBlind), NewBlind: bytes32(w.NewBlind)}
 	if w.Direction {
 		c.Direction = 1
 	}
@@ -76,6 +76,9 @@ func fixture(path string) FundingCircuit {
 	return c
 }
 func main() {
+	if localCommand(os.Args[1:]) {
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == "--export-tests" {
 		regenerateVerifierTests(os.Args[2])
 		return
