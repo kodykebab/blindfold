@@ -821,3 +821,20 @@ Search reads and simulations use one block, followed by a fresh simulation befor
 Validation on 2026-11-06: 15 offline Node tests pass; the separate integration test passes against a real local PoolManager with the actual CLI. The fixed 300-batch model corpus contains 49 all-or-none gaps and the proportional solver rescues all 49. Integration covers sell and buy groups, then liquidity removal, a nonzero CLI exit, and expiration returning the locked input. The local searches used 13 simulations in 44 ms for sells, 13 in 43 ms for buys, and 139 in 375 ms for the no-liquidity case; these are local search measurements, not live-network or proving latency claims.
 
 The integration uses generated contract artifacts and a test-only CREATE2 factory. Artifact resolution supports fresh Foundry builds with compiler-suffixed filenames. The complete batching/order contract branch passed 198 contract test executions including Unichain forks with 4,096 fuzz runs, separately from the Node checks. Merge requires the solver owner and shared-interface review; the ongoing proof work is unchanged.
+
+
+## Peer-only solver integration (issue #18)
+
+The user selected peer-only matching with no mandatory LP locks. On `kritarth/peer-solver`, the CLI detects the additive `settlePeer` API and reads active liquidity at the same pinned block as its other search inputs. With zero active liquidity it first computes a price-priority crossing locally at the stored pool price, verifies both token budgets and partial minimums, simulates the candidate, and simulates again before submission. It still tries the ordinary AMM search if no peer candidate succeeds, because liquidity can exist beyond the current tick. Deploying this behavior requires the contract on `kritarth/peer-clearing`.
+
+This matches available opposing flow, not absent counterparties. The stored price can be stale; user limits remain enforced. Local integer search is not a proof of maximum-volume completeness. The chosen rounding-surplus policy and additive API are specified in the contract branch's PLAN.md and ARCHITECTURE.MD. No proof inputs, LP lockups, external feeds, or collateral requirements were added.
+
+
+Peer-only validation (2026-11-06):
+- `forge test --fuzz-runs 4096 -vv`: 260 passing test executions across twelve suites, including Unichain forks. Inherited suites repeat baseline scenarios; the count is not 260 distinct behaviors.
+- `npm test` in the peer solver: 23 offline tests pass; the opt-in integration test is skipped there and was run separately successfully.
+- The actual CLI runs normal AMM sells/buys, zero-active-liquidity peer crossings in both directions, and one-sided expiry/recovery on a fresh local anvil. Peer executions emit no pool Swap event and leave no new token balances in settlement.
+- Both token rounding-surplus paths, commitment-ID tie-breaking independent of reveal order, bad representatives, both budget deficits, user minimums, active-liquidity rejection, finalization, and window checks pass. Peer accounting fuzz tests run 4,096 cases locally and again on the fork. A 64-order peer batch is included.
+- Local peer candidate search: one simulation, approximately 2 ms in each direction. This excludes setup, state reads, the CLI's fresh pre-send check, submission, and confirmation, and is not a live-network latency claim.
+- The local 64-order settlement call consumed 1,577,677 gas in warm test state. This excludes setup and is not a cold transaction gas estimate. The size check reported 18,513 runtime bytes for the selected build.
+- Touched Solidity files pass formatting checks; both patches pass `git diff --check`.

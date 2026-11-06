@@ -56,7 +56,7 @@ export function limitGroups(orders) {
 /** Match the proportional contract rule, including priority and input dust. */
 export function allocationsAt(orders, p, marginal) {
   const ref = marginal && orders.find((o) => o.id === marginal.id)
-  if (marginal && (!ref || marginal.amountIn <= 0n || marginal.amountIn >= ref.amountIn)) {
+  if (marginal && (!ref || marginal.amountIn <= 0n || marginal.amountIn > ref.amountIn)) {
     throw new Error('invalid marginal representative or fraction')
   }
   return orders.map((o) => {

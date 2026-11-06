@@ -10,6 +10,7 @@ import { createPublicClient, createWalletClient, defineChain, http,
   getCreate2Address, toHex, parseEventLogs } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
 import { solve, Q96, allocationsAt } from '../price.mjs'
+import { solvePeer } from '../peer.mjs'
 import { artifactPath } from '../artifacts.mjs'
 
 const enabled = process.env.SOLVER_E2E === '1'
@@ -18,7 +19,7 @@ const artifact = (name) => JSON.parse(readFileSync(artifactPath(join(contracts, 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // No external RPC, real keys, or live funds: this test owns its fresh anvil process.
-test('solver CLI executes proportional groups and preserves recovery without liquidity', { skip: !enabled, timeout: 180_000 }, async (t) => {
+test('solver CLI executes AMM and peer-only groups and preserves one-sided recovery', { skip: !enabled, timeout: 180_000 }, async (t) => {
   const listener = createServer()
   await new Promise((r) => listener.listen(0, '127.0.0.1', r))
   const port = listener.address().port
@@ -96,10 +97,10 @@ test('solver CLI executes proportional groups and preserves recovery without liq
     const deploymentPath = join(directory, 'deployment.json')
     writeFileSync(deploymentPath, JSON.stringify({ chainId: 31337, settlement }))
     let snapshot = await client.request({ method: 'evm_snapshot' })
-    for (const scenario of [{ sell: true }, { sell: false }, { sell: true, noLiquidity: true }]) {
-      const { sell, noLiquidity = false } = scenario
+    for (const scenario of [{ sell: true }, { sell: false }, { sell: true, noLiquidity: true }, { sell: true, noLiquidity: true, peerMode: true }, { sell: false, noLiquidity: true, peerMode: true }]) {
+      const { sell, noLiquidity = false, peerMode = false } = scenario
       const batch = await read(settlement, 'BlindfoldSettlement', 'currentBatch')
-      const orders = [1000n, 500n].map((amount, i) => ({ id: BigInt(i), owner: account.address, zeroForOne: sell,
+      const orders = [1000n, 500n].map((amount, i) => ({ id: BigInt(i), owner: account.address, zeroForOne: peerMode && i === 1 ? !sell : sell,
         amountIn: amount * 10n ** 18n, minAmountOut: amount * 9n * 10n ** 17n }))
       for (const o of orders) {
         const salt = toHex(o.id + 1n, { size: 32 })
@@ -111,11 +112,11 @@ test('solver CLI executes proportional groups and preserves recovery without liq
       await warp(await read(settlement, 'BlindfoldSettlement', 'revealCloses', [batch]))
       if (noLiquidity) await send(lp, 'PoolModifyLiquidityTest', 'modifyLiquidity', [key, { tickLower: -60000, tickUpper: 60000, liquidityDelta: -(10n ** 22n), salt: toHex(0n, { size: 32 }) }, '0x'])
       let simulations = 0
-      const simulate = async (p, m) => {
+      const simulate = async (p, m, peer = false) => {
         simulations++
         try {
-          await client.simulateContract({ address: settlement, abi: load('BlindfoldSettlement').abi, functionName: 'settle',
-            args: m ? [batch, p, m.id, m.amountIn] : [batch, p], account })
+          await client.simulateContract({ address: settlement, abi: load('BlindfoldSettlement').abi, functionName: peer ? 'settlePeer' : 'settle',
+            args: peer ? [batch, m.id, m.amountIn] : m ? [batch, p, m.id, m.amountIn] : [batch, p], account })
           return { ok: true }
         } catch (e) {
           const err = e.walk?.((v) => v.data?.errorName)
@@ -124,9 +125,18 @@ test('solver CLI executes proportional groups and preserves recovery without liq
         }
       }
       const searchStarted = performance.now()
-      const solution = await solve({ simulate, poolX96: await read(settlement, 'BlindfoldSettlement', 'poolPriceX96'), toleranceBps: 100, orders })
+      let solution = await solve({ simulate, poolX96: await read(settlement, 'BlindfoldSettlement', 'poolPriceX96'), toleranceBps: 100, orders })
       t.diagnostic(`${noLiquidity ? 'no liquidity' : sell ? 'sell' : 'buy'} search: ${simulations} simulations, ${Math.round(performance.now() - searchStarted)} ms on local anvil`)
-      if (noLiquidity) assert.equal(solution, null)
+      if (peerMode) {
+        assert.equal(solution, null, 'AMM paths cannot clear this unequal crossing without liquidity')
+        const beforePeerCalls = simulations
+        const peerStarted = performance.now()
+        solution = await solvePeer({ orders, priceX96: Q96, simulate: (m) => simulate(Q96, m, true) })
+        t.diagnostic(`peer ${sell ? 'sell' : 'buy'} crossing: ${simulations - beforePeerCalls} simulation, ${Math.round(performance.now() - peerStarted)} ms locally`)
+        assert.equal(simulations - beforePeerCalls, 1)
+        assert.ok(solution?.peer)
+        assert.equal(solution.peer.amountIn, 500n * 10n ** 18n)
+      } else if (noLiquidity) assert.equal(solution, null)
       else {
         assert.ok(solution?.marginal, 'solver rescues the all-or-none gap')
         assert.ok((await simulate(solution.priceX96, solution.marginal)).ok)
@@ -142,8 +152,8 @@ test('solver CLI executes proportional groups and preserves recovery without liq
       cli.stdout.on('data', (b) => { output += b })
       cli.stderr.on('data', (b) => { output += b })
       const [exitCode] = await once(cli, 'exit')
-      assert.equal(exitCode, noLiquidity ? 1 : 0, output)
-      if (noLiquidity) {
+      assert.equal(exitCode, noLiquidity && !peerMode ? 1 : 0, output)
+      if (noLiquidity && !peerMode) {
         assert.match(output, /search found no executable candidate/)
         assert.equal(await read(settlement, 'BlindfoldSettlement', 'finalized', [batch]), false)
         await warp(await read(settlement, 'BlindfoldSettlement', 'settleCloses', [batch]))
@@ -155,11 +165,20 @@ test('solver CLI executes proportional groups and preserves recovery without liq
       assert.equal(await read(vault, 'BlindfoldVault', 'lockedOf', [account.address, sell ? token0 : token1]), 0n)
       const logs = await client.getLogs({ address: settlement, fromBlock: startBlock, toBlock: 'latest' })
       const fills = parseEventLogs({ abi: load('BlindfoldSettlement').abi, logs, eventName: 'Filled' })
-      assert.equal(fills.length, noLiquidity ? 0 : 2)
-      if (!noLiquidity) assert.equal(fills[0].args.amountIn, fills[1].args.amountIn * 2n)
+      assert.equal(fills.length, noLiquidity && !peerMode ? 0 : 2)
+      if (peerMode) assert.equal(fills[0].args.amountIn, fills[1].args.amountIn)
+      else if (!noLiquidity) assert.equal(fills[0].args.amountIn, fills[1].args.amountIn * 2n)
       for (let i = 0; i < fills.length; i++) {
-        assert.ok(fills[i].args.amountIn < orders[i].amountIn)
+        assert.ok(fills[i].args.amountIn <= orders[i].amountIn)
         assert.ok(fills[i].args.amountOut * orders[i].amountIn >= orders[i].minAmountOut * fills[i].args.amountIn)
+      }
+      if (peerMode) {
+        assert.match(output, /peer-only match/)
+        const poolLogs = await client.getLogs({ address: manager, fromBlock: startBlock, toBlock: 'latest' })
+        assert.equal(parseEventLogs({ abi: load('PoolManager').abi, logs: poolLogs, eventName: 'Swap' }).length, 0)
+        assert.equal(await read(settlement, 'BlindfoldSettlement', 'poolPriceX96'), Q96)
+        assert.equal(await read(vault, 'BlindfoldVault', 'balanceOf', [settlement, token0]), 0n)
+        assert.equal(await read(vault, 'BlindfoldVault', 'balanceOf', [settlement, token1]), 0n)
       }
       await client.request({ method: 'evm_revert', params: [snapshot] })
       snapshot = await client.request({ method: 'evm_snapshot' })
