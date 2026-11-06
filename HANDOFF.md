@@ -1,9 +1,14 @@
 # HANDOFF.md
 
+## Enforced local admission and private state
+
+The admission integration adds `AdmissionVault`, `AdmittedSettlement`, the reusable local direct-Groth16 prover and cumulative client state. The full local gate is `source env.sh` followed by `bash packages/proof-bench/check-admission.sh`; install the existing dependencies first. It generates development parameters once under ignored `results/`, builds generated verifiers and uses fresh proofs with an isolated Anvil deployment. Client commands remain `commit`, `export-state` and `import-state`, with `resume-admission` for interrupted submissions. See PLAN's additive seams and the client README for deployment metadata and paths. Validation: 227 Foundry tests with configured forks and 4,096 fuzz runs; Go circuit and native-wrapper tests; client unit/Anvil regressions; fresh paired proofs through independent decryption, admission, reveal, settlement, withdrawal and release. REVIEW R2/R6/S11 distinguish enforced behavior from the remaining release gates.
+
+
 Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEXT.md). Repo rules, setup and gotchas: [AGENTS.md](AGENTS.md).
 
 ## Status
-`forge test --fuzz-runs 4096`: **215/215 passing** across 11 suites, including the Unichain fork suites, proportional-clearing regressions, settlement ordering and FeesAndTiming.
+`forge test --fuzz-runs 4096`: **227/227 passing** across 13 suites, including the Unichain fork suites, proportional-clearing regressions, settlement ordering and FeesAndTiming.
 
 | Piece | State | Where |
 |---|---|---|
@@ -16,7 +21,7 @@ Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEX
 | Aqua leg inside `settle` (split residual between v4 and Aqua) | ⬜ | — |
 | `BondRegistry`: bonds, EIP-712 protection receipts, payout + slashing | ⬜ **next Must** | — |
 | Court on Base: deploy + `checkpoint()` live | ⬜ | — |
-| tlock client CLI: funding, commit, tracking, cleanup, withdrawal, saved-state import/export | ✅ Built + tested, 21 integrated client tests | `packages/client/` |
+| tlock client CLI: funding, commit, tracking, cleanup, withdrawal, saved-state import/export | ✅ Built + tested, 26 client regressions plus the fresh-proof admission gate | `packages/client/` |
 | Local two-proof circuits and Solidity composition harness | ✅ Isolated prototype, tests and interoperability verified | `packages/proof-bench/circuit/` |
 | Keeper and solver | Planned integration | `packages/` |
 | Arkiv entities (writes), Swarm ciphertext storage | ⬜ | `arkiv/` |
@@ -25,12 +30,12 @@ Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEX
 | Submission docs: `FEEDBACK.md`, `arkiv/*.md`, README line pointers, video | ⬜ | — |
 
 ## Next steps
-The current merge results and remaining sequence are in [PLAN.md](PLAN.md#review-and-release-sequence-2026-11-06). Production admission is issue #29; use the selected local two-proof design in ARCHITECTURE.MD. Current validation commands: `source env.sh`, `cd contracts && forge test --fuzz-runs 4096`, then from `packages/client`, `CLIENT_E2E=1 CLIENT_RELEASE_E2E=1 npm test` using the generated artifacts. The release-policy fixture tests cleanup only. See REVIEW.md for implementation boundaries and tracked findings.
+The current merge results and remaining sequence are in [PLAN.md](PLAN.md#review-and-release-sequence-2026-11-06). The enforced local admission integration addresses #29/#17 using the selected two-proof design; advance preparation and production release requirements remain in REVIEW R6 and PLAN. Current validation commands: `source env.sh`, `cd contracts && forge test --fuzz-runs 4096`, then build deployable test helpers with `forge build --no-dynamic-test-linking` and run `CLIENT_E2E=1 CLIENT_RELEASE_E2E=1 npm test` from `packages/client`. The release-policy fixture tests cleanup only. See REVIEW.md for implementation boundaries and tracked findings.
 
 ## Interfaces to build against
 - `BlindfoldSettlement.commit(uint64 batchId, bytes32 hash, bytes ciphertext)`, `reveal(uint256 id, Order, bytes32 salt)`, `slashUnrevealed(id)`, `settle(uint64 batchId, uint256 priceX96)`, `expire(batchId)`.
 - Client hash: `orderHash(batchId, order, salt)` (view). Encrypt `abi.encode(order, salt)` to `targetRound(batchId)`.
-- Costs and policy views: `commitFee()` (non-refundable, charged in `depositToken` on every commit), `depositAmount()`, `bountyBps()`, `admissionRequired()` (false until R2's admission entry point; when true, `slashUnrevealed` releases the deposit and emits `Released` instead of `Slashed`).
+- Costs and policy views: `commitFee()` (non-refundable, charged in `depositToken` on every commit), `depositAmount()`, `bountyBps()`, `admissionRequired()` (false on the original settlement and true on `AdmittedSettlement`; when true, `slashUnrevealed` releases the deposit and emits `Released` instead of `Slashed`).
 - Schedule views: `currentBatch()`, `commitsClose(b)`, `revealOpens(b)`, `revealCloses(b)`, `settleCloses(b)`.
 - Events for keepers/indexers: `Committed(id, batchId, committer, hash, round, ciphertext)`, `Revealed`, `RevealedUnfunded`, `Slashed`, `Released`, `Filled`, `Unfilled`, `Settled`, `Expired`.
 - Solver: `poolPriceX96()`, `quote(order, p)`, and the proportional `settle(batchId, priceX96, marginalId, marginalAmountIn)` overload. The representative defines the equal-limit fraction; follow PLAN.md’s exact integer allocation seam and simulate the complete candidate. Tests search both price directions.
