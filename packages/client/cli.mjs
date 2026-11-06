@@ -12,7 +12,7 @@
 // sell = token0 in, token1 out; buy = token1 in, token0 out. Amounts are decimal token units.
 import { formatUnits, parseEventLogs, parseUnits } from 'viem'
 import { connect, encrypt, newSalt, orderHash } from './lib.mjs'
-import { balances, deadlines, exitPlan, isOpen, preflight, track } from './flow.mjs'
+import { balances, deadlines, exitPlan, fillDescription, isOpen, preflight, track } from './flow.mjs'
 import { exportState, importState, loadState, parseState, saveCommitment, validateState, writeState, withStateLock } from './state.mjs'
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead } from './admission.mjs'
@@ -22,6 +22,16 @@ const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
 const S = dep.settlement
 const me = account.address
+
+// Refuse mismatched configuration before reading user state or sending any transaction.
+async function validateDeployment() {
+  if (await pub.getChainId() !== Number(dep.chainId)) fail('RPC network differs from the deployment; select the correct RPC_URL and deployment')
+  const [vault, token0, token1, depositToken] = await Promise.all(['vault', 'token0', 'token1', 'depositToken'].map((name) => read(S, name)))
+  for (const [name, actual] of Object.entries({ vault, token0, token1, depositToken })) {
+    if (dep[name] != null && (typeof dep[name] !== 'string' || dep[name].toLowerCase() !== actual.toLowerCase())) fail(`deployment ${name} differs from the settlement; select the correct deployment`)
+  }
+  if (BigInt(token0) === 0n || BigInt(token1) === 0n || token0.toLowerCase() === token1.toLowerCase()) fail('settlement token pair is not initialized')
+}
 
 async function tokens() {
   const [t0, t1, depositToken] = await Promise.all([read(S, 'token0'), read(S, 'token1'), read(S, 'depositToken')])
@@ -73,6 +83,8 @@ async function status() {
   const t = await tokens()
   const { open, rows } = await vaultView(t)
   console.log(`account ${me}`)
+  console.log(`network ${dep.chainId}`)
+  console.log(`pair ${t.token0.symbol} / ${t.token1.symbol}`)
   for (const r of rows) {
     console.log(`  ${r.tok.symbol.padEnd(6)} wallet ${fmt(r.tok, r.wallet)} | available ${fmt(r.tok, r.available)} | reserved ${fmt(r.tok, r.reserved)} | withdrawable ${fmt(r.tok, r.withdrawable)}`)
   }
@@ -265,7 +277,7 @@ async function trackAll() {
   for (const c of mine.values()) {
     const o = c.order
     const what = o ? `${o.zeroForOne ? 'sell' : 'buy'} ${o.amountIn}` : 'sealed'
-    const fill = c.state === 'filled' ? ` → got ${fmt(o.zeroForOne ? t.token1 : t.token0, c.amountOut)}` : ''
+    const fill = fillDescription(c, (token, amount) => fmt(t[token], amount))
     console.log(`#${c.id} batch ${c.batchId}: ${c.state} (${what})${fill}`)
   }
 }
@@ -368,6 +380,7 @@ const commands = {
 if (!commands[cmd]) fail(`usage: npm start -- <${Object.keys(commands).join('|')}> ...`)
 try {
   const mutates = ['prepare-admission', 'commit', 'resume-admission', 'import-state', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
+  await validateDeployment()
   await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())
 }
 catch (e) { console.error(`client: ${e.shortMessage ?? e.message}`); process.exitCode = 1 }

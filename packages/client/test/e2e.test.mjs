@@ -287,3 +287,27 @@ test('vault-only trading refuses shortfalls and does not auto-fund the chosen si
     assert.deepEqual(await Promise.all([c.token0, c.token1].map((token) => c.read(token, 'MockERC20', 'balanceOf', [owner]))), before)
   } finally { c.stop() }
 })
+
+test('client refuses a mismatched chain, vault or pair before signing', { skip: !enabled, timeout: 120_000 }, async () => {
+  const c = await localChain({ schedule: { batchLength: 300 } })
+  const env = { PRIVATE_KEY: '', MNEMONIC: 'test test test test test test test test test test test junk' }
+  try {
+    const owner = user(10).address
+    await c.mint(owner, c.token0, parseEther('10'))
+    const dep = JSON.parse(readFileSync(c.deployments, 'utf8'))
+    const nonce = await c.pub.getTransactionCount({ address: owner })
+    for (const [change, expected] of [
+      [{ chainId: 1 }, /RPC network differs/],
+      [{ vault: user(5).address }, /deployment vault differs/],
+      [{ token0: c.token1 }, /deployment token0 differs/],
+      [{ depositToken: c.token0 }, /deployment depositToken differs/],
+    ]) {
+      const file = join(c.dir, 'wrong-deployment.json')
+      writeFileSync(file, JSON.stringify({ ...dep, ...change }))
+      const result = await c.cli(10, ['deposit', 'token0', '1'], { ...env, DEPLOYMENTS: file })
+      assert.equal(result.code, 1); assert.match(result.err, expected)
+      assert.equal(await c.pub.getTransactionCount({ address: owner }), nonce)
+      assert.equal(await c.read(c.token0, 'MockERC20', 'allowance', [owner, change.vault || c.vault]), 0n)
+    }
+  } finally { c.stop() }
+})
