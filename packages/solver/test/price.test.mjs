@@ -47,7 +47,7 @@ test('limitPriceX96 is exactly where quote starts to hold', () => {
 
 test('two-sided batch: settles at the middle of the accepted band, near the post-swap price', async () => {
   const m = market({ orders: [order(1n, true, 100n * E, 95n * E), order(2n, false, 50n * E, 45n * E)] })
-  const band = await findBand(m.simulate, m.pool, m.toleranceBps)
+  const band = await findBand(m.simulate, m.pool, m.toleranceBps, m.orders)
   assert.ok(band, 'a band exists')
   assert.ok(band.lo < band.hi && band.lo <= band.priceX96 && band.priceX96 <= band.hi)
   assert.ok((await m.simulate(band.priceX96)).ok)
@@ -65,7 +65,7 @@ test('poison order: no full-fill price exists, so one order fills partially at i
   // REVIEW.md R1: a 300 sell with limit 0.975 moves the pool ~6% if filled and keeps it near 1.0 if not
   const poison = order(2n, true, 300n * E, (300n * E * 975n) / 1000n)
   const m = market({ orders: [order(1n, false, 10n * E, 9n * E), poison] })
-  assert.equal(await findBand(m.simulate, m.pool, m.toleranceBps), null, 'no band')
+  assert.equal(await findBand(m.simulate, m.pool, m.toleranceBps, m.orders), null, "no band")
   assert.equal(await solve({ ...m, poolX96: m.pool, marginal: false }), null, 'stuck without the R1 overload')
   const s = await solve({ ...m, poolX96: m.pool })
   assert.ok(s?.marginal, 'a marginal solution')
@@ -81,4 +81,51 @@ test('a large one-sided batch still converges (price far from the pool)', async 
   assert.ok(s && !s.marginal)
   assert.ok((await m.simulate(s.priceX96)).ok)
   assert.ok(s.priceX96 > atBps(m.pool, 500), 'well above the starting pool price')
+})
+
+/** Deterministic PRNG so failures name a reproducible seed. */
+function rng(seed) {
+  let s = BigInt(seed)
+  return () => {
+    s = (s * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n)
+    return s >> 33n
+  }
+}
+
+function randomBatch(seed) {
+  const r = rng(seed)
+  const orders = []
+  for (let i = 0, n = Number(r() % 13n); i < n; i++) {
+    const sell = r() % 2n === 0n
+    const amountIn = (1n + (r() % 300n)) * E
+    const lim = 9000n + (r() % 2001n) // limit 0.90..1.10 of the starting pool price, in bps
+    const minOut = r() % 4n === 0n ? 0n : sell ? (amountIn * lim) / 10_000n : (amountIn * 10_000n) / lim
+    orders.push(order(BigInt(i), sell, amountIn, minOut))
+  }
+  return orders
+}
+
+test('random batches: never misses a full-fill price that exists, never returns one that does not settle', async () => {
+  for (let seed = 1; seed <= 300; seed++) {
+    const m = market({ orders: randomBatch(seed) })
+    const s = await solve({ ...m, poolX96: m.pool, marginal: false })
+    let feasible = null
+    for (let k = -1500; k <= 1500 && feasible === null; k++) if ((await m.simulate(atBps(m.pool, k))).ok) feasible = k
+    if (s) assert.ok((await m.simulate(s.priceX96)).ok, `seed ${seed}: returned price must settle`)
+    else assert.equal(feasible, null, `seed ${seed}: missed a feasible price at ${feasible} bps`)
+  }
+})
+
+test('random batches with the marginal fill: whatever it returns settles, and it rescues stuck batches', async (t) => {
+  let stuck = 0
+  let rescued = 0
+  for (let seed = 1; seed <= 300; seed++) {
+    const m = market({ orders: randomBatch(seed) })
+    const s = await solve({ ...m, poolX96: m.pool })
+    if (s) assert.ok((await m.simulate(s.priceX96, s.marginal)).ok, `seed ${seed}`)
+    if (s?.marginal || !s) stuck++
+    if (s?.marginal) rescued++
+  }
+  t.diagnostic(`${stuck} of 300 batches had no full-fill price; the marginal fill settled ${rescued} of them`)
+  assert.ok(stuck > 0 && rescued > 0, 'the random batches exercise the marginal path')
 })

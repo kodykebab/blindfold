@@ -18,9 +18,21 @@ const account = E.SOLVER_KEY
   ? privateKeyToAccount(E.SOLVER_KEY)
   : mnemonicToAccount(E.MNEMONIC || 'test test test test test test test test test test test junk', { addressIndex: 2 })
 
-const dep = JSON.parse(readFileSync(DEPLOYMENTS, 'utf8'))
-const { abi } = JSON.parse(readFileSync(ARTIFACT, 'utf8')) // run `forge build` first
+function readJson(path, hint) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch (e) {
+    console.error(`solver: can't read ${path} (${e.code ?? e.message}). ${hint}`)
+    process.exit(1)
+  }
+}
+const dep = readJson(DEPLOYMENTS, 'Run DeployBlindfold first, or set DEPLOYMENTS.')
+const { abi } = readJson(ARTIFACT, 'Run `forge build` in contracts/, or set SETTLEMENT_ARTIFACT.')
 const address = dep.settlement
+if (!address) {
+  console.error(`solver: ${DEPLOYMENTS} has no "settlement" address`)
+  process.exit(1)
+}
 const hasMarginal = abi.some((f) => f.type === 'function' && f.name === 'settle' && f.inputs.length === 4)
 const chain = defineChain({
   id: dep.chainId, name: 'blindfold', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
@@ -78,6 +90,7 @@ async function settleBatch({ b, ids }) {
 }
 
 const once = process.argv.includes('--once')
+const reported = new Map() // batch -> last error, so a stuck batch is logged once, not every poll
 for (;;) {
   let failed = false
   try {
@@ -86,12 +99,14 @@ for (;;) {
         await settleBatch(d)
       } catch (e) {
         failed = true
-        console.error(e.shortMessage ?? e.message)
+        const msg = e.shortMessage ?? e.message
+        if (reported.get(d.b) !== msg) console.error(msg)
+        reported.set(d.b, msg)
       }
     }
   } catch (e) {
     failed = true
-    console.error(e.shortMessage ?? e.message)
+    console.error(`solver: ${e.shortMessage ?? e.message} (RPC_URL ${RPC_URL})`)
   }
   if (once) process.exit(failed ? 1 : 0)
   await new Promise((r) => setTimeout(r, POLL_MS))
