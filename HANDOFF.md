@@ -76,6 +76,45 @@ A claim pays only if it passes every gate. Each gate has its own offline tests: 
 | `incidents` (incident accounting) | Claims on one front swap share one budget; each back swap closes one incident; claims register inside the claim window; each weighs `min(maxPayout, budget)` and collects its share | ✅ Built | `BondRegistryUnit.t.sol` (unit, fuzz and the `incidentNeverOverpays` invariant) |
 | `funding` (payout funding) | Payouts come only from the signing RPC's bond; a claim reserves its weight when it registers; unbonding waits a delay, at least the ~27.3 h a sandwich stays provable, and leaves reservations behind; `collect` pays the beneficiary once, after the window; the prover's gas comes from the unreserved bond. A registry with no pools, no verifier code, no WETH, a zero or oversized window, or another chain to judge without an L1 anchor doesn't deploy (S18, #24) | ✅ Built | `BondRegistry.t.sol`, `BondRegistryUnit.t.sol` (including the bond invariants); `court-demo.sh` (bond, claim, collect, beneficiary paid) |
 
+## Trading page / Arkiv / Court demo
+
+### Done
+- Trading page shows the configured pair (symbols, or a short address when that is what status printed), and wallet, available (vault), reserved (open commitments) and withdrawable balances on separate labels.
+- Amount boxes state decimals when status includes `token0`/`token1` meta lines, the uint128 cap and the 1-base-unit minimum. Over-precise input is rejected and not rounded.
+- Review step restates side, amount, minimum (worst-case output), batch and deadlines, plus fee, deposit, approvals and gas when the client printed them. A public or external quote is shown with its age and marked stale after 15 seconds when the client prints a `quote` line. Liquidity is shown only when the client prints it, labelled as an estimate.
+- One active batch is explained on the form and blocks confirm when the preflight says it applies. Confirm re-runs the preview and requires a fresh confirm if balances or the quote changed or went stale.
+- Filled orders show executed, unused and received amounts parsed from the client's fill numbers. The activity pane no longer prints the CLI transcript.
+- A token other than `token0` or `token1` is rejected as not supported. After a deposit, the next status compare refuses a vault credit smaller than the amount sent (fee-on-transfer or rebasing).
+- Web commit and preview still pass `--vault-only` and `--both-funded`. A shortfall says fund first with the amount from the preview. The page does not deposit it.
+- `packages/arkiv` mirrors public settled-batch rows. `ARKIV=off` is in-memory. Testnet without `ARKIV_RPC` and `ARKIV_KEY` is `history unavailable`. The page still serves trade, track and withdraw. Batch phase, a committed-count mempool view, and a Court ledger (hidden until a Court deployment exists) are on `/trade`.
+- `scripts/court-demo.sh` prints transaction hashes per step. `scripts/demo-multi.sh` ran three accounts through commit, keeper reveal, solver settle and withdraw (see DEMO.md). Swarm is out. Aqua-in-settle is out of this demo.
+
+### Left
+- The client does not yet print decimals, a pool or external price, liquidity, or gas, so those panels say they are not reported until the lines below exist.
+- Arkiv testnet writes are not sent. The SDK is not bundled; a configured testnet reports history unavailable rather than writing.
+- `scripts/court-demo.sh` prints a hash list per step. The empty build step prints `tx hashes: none in this step`.
+
+### Requests from the trading page
+For the client owner, additive status lines (or `status --json`):
+
+- `token0 <symbol> <decimals> <address>` and the same for `token1`. If `symbol()` fails, print the address so the page can shorten it.
+- `quote pool <price> age <seconds>s` and, when a reference exists, `quote external <price> age <seconds>s`. Price is token1 per token0. Include when the sample was taken.
+- `liquidity <amount> estimate <amount> <symbol>` only for a real estimate. Do not invent one.
+- `gas estimate <units>` on commit `--dry-run`.
+
+`track --json` with `amountIn`, `amountOut` and the order's `amountIn` would replace parsing the fill sentence.
+
+A deposit check that compares the vault's token balance increase with the amount sent, and refuses fee-on-transfer and rebasing tokens, would make that check happen before the page's follow-up status read.
+
+For the solver and keeper owners: after a successful settle, call `mirrorSettled` in `packages/arkiv` with `batchId`, `pair`, `clearingPrice` (`priceX96`), `orderCount`, `settleTx`. No order bodies. The page reads that for Recent batches.
+
+### Commands
+- `npm test --prefix app/haveibeensandwiched` — pass (39 pass, 1 skipped without `WEB_E2E`).
+- `WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs` — pass.
+- `npm test --prefix packages/arkiv` — pass.
+- `source env.sh && node scripts/demo-multi.mjs` — pass (exit 0, about 5s).
+- `scripts/court-demo.sh` — pass (exit 0, about 27s). Claim `0xd37e69330908947fdba0572c59a5f865773ed5fdc05e3e8145878e0ec87db4f9`. Collect `0xa52a1f173bfeec27fa034a20c3674f6045ad4601708687ff64e74cf28ca38dcf`.
+
 ## Needs a person
 - An **Arkiv access key** (hub.arkiv.network/access-keys) and faucet **tGLM** for a team wallet.
 - A **Swarm postage batch** (Arkiv/Swarm booth, or a funded Bee light node).
