@@ -11,8 +11,12 @@ export function balances({ balance, locked, open }) {
  * The deposit and fee leave the vault at commit; the order's input is locked only at reveal, so it must still be
  * free then. Shortfalls are covered from the wallet, which may need an approval first.
  */
-export function preflight({ order, tokenIn, depositToken, depositAmount, fee, free, wallet, allowance, batch, minLead = 3n }) {
+export function preflight({ order, tokenIn, depositToken, depositAmount, fee, free, wallet, allowance, batch, openBatches = [], minLead = 3n }) {
   const problems = []
+  // One active batch per account (REVIEW S11, R10): a commit into a new batch while an older one is open takes another
+  // deposit from the same free balance its order still needs, so that order can end up unfunded.
+  const other = openBatches.filter((b) => b !== batch.id)
+  if (other.length) problems.push(`open commitments in batch ${other.join(', ')}: one active batch per account; wait for it to finish or run cleanup`)
   const need = { [depositToken]: depositAmount + fee }
   if (order.amountIn > 0n) need[tokenIn] = (need[tokenIn] ?? 0n) + order.amountIn
   const funding = Object.entries(need).map(([token, amount]) => {

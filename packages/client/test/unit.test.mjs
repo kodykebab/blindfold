@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { decrypt, drandClient, encrypt, orderHash, encodePayload, decodePayload } from '../lib.mjs'
+import { validateState } from '../state.mjs'
 import { balances, exitPlan, preflight, track, isOpen } from '../flow.mjs'
 
 const fixture = fileURLToPath(new URL('./fixtures/drand.json', import.meta.url))
@@ -108,4 +109,25 @@ test('S4 exitPlan: the step that clears each open commitment', () => {
   assert.deepEqual(plan(110n), [['reveal', undefined], ['wait', 124n], ['wait', 184n]]) // #2 has no saved order
   assert.deepEqual(plan(124n), [['slash', undefined], ['slash', undefined], ['wait', 184n]])
   assert.deepEqual(plan(184n), [['slash', undefined], ['slash', undefined], ['expire', undefined]])
+})
+
+test('S11 preflight: one active batch per account, checked before any proving or gas', () => {
+  assert.ok(preflight({ ...base, openBatches: [3n] }).ok) // more orders in the same batch are fine
+  const r = preflight({ ...base, openBatches: [2n, 3n] })
+  assert.ok(!r.ok)
+  assert.match(r.problems[0], /open commitments in batch 2: one active batch per account/)
+})
+
+test('S11 validateState: hashes, owner, deployment and chain state', () => {
+  const dep = { chainId: 31337, settlement: '0x5FbDB2315678afecb367f032d93F642f64180aa3' }
+  const hash = orderHash(dep.chainId, dep.settlement, 7n, order, salt)
+  const entry = { id: 4n, batchId: 7n, order, salt, hash }
+  const state = { chainId: dep.chainId, settlement: dep.settlement, owner, commitments: [entry] }
+  const check = (s, chain = new Map([[4n, hash]])) => validateState(s, { dep, owner, orderHash, chainHashes: chain })
+  assert.deepEqual(check(state), [])
+  assert.deepEqual(check({ ...state, commitments: [{ ...entry, id: null }] }, new Map()), []) // saved before its commit landed
+  assert.match(check({ ...state, commitments: [{ ...entry, salt: `0x${'04'.repeat(32)}` }] })[0], /do not hash/)
+  assert.match(check(state, new Map([[4n, `0x${'00'.repeat(32)}`]]))[0], /stale or foreign/)
+  assert.match(check({ ...state, settlement: owner })[0], /another chain or settlement/)
+  assert.match(check({ ...state, owner: dep.settlement }).join(), /state belongs to/)
 })

@@ -2,7 +2,7 @@
 //   CLIENT_E2E=1 npm test
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseEther } from 'viem'
 import { localChain, user, DEPOSIT } from './chain.mjs'
@@ -138,6 +138,66 @@ test('S4: cleanup clears mixed commitments in order, then every asset withdraws'
     // funding invariant: the vault holds exactly what its accounts are owed
     const owed = async (t) => (await Promise.all([u, user(9).address, c.settlement].map((a) => c.read(c.vault, 'BlindfoldVault', 'balanceOf', [a, t])))).reduce((x, y) => x + y)
     for (const t of [c.token0, c.token1]) assert.equal(await c.read(t, 'MockERC20', 'balanceOf', [c.vault]), await owed(t))
+  } finally {
+    c.stop()
+  }
+})
+
+test('S11: overlapping batch rejected before gas; state export, tamper refusal and restore', { skip: !enabled, timeout: 120_000 }, async () => {
+  const c = await localChain()
+  try {
+    const u = user(10).address
+    for (const i of [10, 11]) {
+      await c.mint(user(i).address, c.token0, parseEther('100'))
+      await c.mint(user(i).address, c.token1, parseEther('100'))
+    }
+    let r = await c.cli(10, ['commit', 'sell', '10', '9'])
+    assert.equal(r.code, 0, r.err)
+    r = await c.cli(10, ['commit', 'sell', '0', '0']) // a second order in the same batch is allowed
+    assert.equal(r.code, 0, r.err)
+    const b = savedState(c).commitments[0].batchId
+
+    // next batch open, this one not revealed yet: refused before encrypting or sending anything
+    await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'commitsClose', [b]))
+    const vaultT1 = await c.read(c.vault, 'BlindfoldVault', 'balanceOf', [u, c.token1])
+    r = await c.cli(10, ['commit', 'buy', '1', '0.5'])
+    assert.equal(r.code, 1)
+    assert.match(r.err, new RegExp(`open commitments in batch ${b}: one active batch per account`))
+    assert.equal(await c.read(c.vault, 'BlindfoldVault', 'openCommitments', [u]), 2n)
+    assert.equal(await c.read(c.vault, 'BlindfoldVault', 'balanceOf', [u, c.token1]), vaultT1)
+    assert.equal(savedState(c).commitments.length, 2)
+
+    // back up, lose local state, then restore
+    const backup = join(c.dir, 'backup.json')
+    r = await c.cli(10, ['export-state', backup])
+    assert.match(r.out, /exported 2 commitment\(s\)/)
+    const stateDir = join(c.dir, 'state')
+    rmSync(stateDir, { recursive: true })
+    await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'revealOpens', [b]))
+    r = await c.cli(10, ['blockers'])
+    assert.match(r.out, /#0 .*order and salt not saved here/)
+
+    // a tampered salt, or another account's file, is refused and changes nothing
+    const text = readFileSync(backup, 'utf8')
+    const tampered = join(c.dir, 'tampered.json')
+    writeFileSync(tampered, text.replace(/"salt": "0x[0-9a-f]{64}"/, `"salt": "0x${'00'.repeat(31)}01"`))
+    r = await c.cli(10, ['import-state', tampered])
+    assert.equal(r.code, 1)
+    assert.match(r.err, /order and salt do not hash to it/)
+    r = await c.cli(11, ['import-state', backup])
+    assert.equal(r.code, 1)
+    assert.match(r.err, /state belongs to/)
+    assert.throws(() => readdirSync(stateDir))
+
+    r = await c.cli(10, ['import-state', backup])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /imported; 2 commitment\(s\) saved/)
+    r = await c.cli(10, ['cleanup'])
+    assert.match(r.out, /#0 .*: reveal/)
+    assert.match(r.out, /#1 .*: reveal/)
+    r = await c.cli(10, ['track'])
+    assert.match(r.out, /#0 batch \d+: revealed/)
+    assert.match(r.out, /#1 batch \d+: padding/)
   } finally {
     c.stop()
   }

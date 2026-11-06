@@ -6,11 +6,14 @@
 //   npm start -- blockers                        which commitments block withdrawal and what clears each
 //   npm start -- cleanup [--dry-run]             reveal own saved orders, slash unrevealed, expire unsettled batches
 //   npm start -- withdraw <token0|token1> <amount|all>
+//   npm start -- export-state <file>             back up saved orders and salts (needed to reveal your own orders)
+//   npm start -- import-state <file>             restore them, after checking each against its hash and the chain
 // sell = token0 in, token1 out; buy = token1 in, token0 out. Amounts are decimal token units.
 import { formatUnits, parseEventLogs, parseUnits } from 'viem'
 import { connect, encrypt, newSalt, orderHash } from './lib.mjs'
 import { balances, deadlines, exitPlan, isOpen, preflight, track } from './flow.mjs'
-import { loadState, saveCommitment } from './state.mjs'
+import { exportState, importState, loadState, parseState, saveCommitment, validateState } from './state.mjs'
+import { readFileSync, writeFileSync } from 'node:fs'
 
 const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
@@ -101,6 +104,7 @@ async function commit(side, amountIn, minOut, dryRun) {
     wallet: await per((a) => read(a, 'balanceOf', [me], abi.erc20)),
     allowance: await per((a) => read(a, 'allowance', [me, dep.vault], abi.erc20)),
     batch: { id: current, current, commitsClose, now, commits: BigInt(commits.length), maxCommits },
+    openBatches: [...new Set([...(await myCommitments()).values()].filter(isOpen).map((c) => c.batchId))],
   })
   const dt = t.byAddress[t.depositToken]
   console.log(`order: ${side} ${fmt(tin, order.amountIn)} for at least ${fmt(tout, order.minAmountOut)} in batch ${current}`)
@@ -201,6 +205,24 @@ async function withdraw(name, amount) {
   console.log(`withdrew ${fmt(tok, value)}`)
 }
 
+function exportCmd(file) {
+  if (!file) fail('usage: export-state <file>')
+  writeFileSync(file, exportState(dep, me))
+  console.log(`exported ${loadState(dep, me).commitments.length} commitment(s) to ${file}`)
+}
+
+async function importCmd(file) {
+  if (!file) fail('usage: import-state <file>')
+  const state = parseState(readFileSync(file, 'utf8'))
+  const chainHashes = new Map()
+  for (const c of state.commitments ?? []) {
+    if (c.id != null) chainHashes.set(c.id, (await read(S, 'commitments', [c.id]))[3])
+  }
+  const problems = validateState(state, { dep, owner: me, orderHash, chainHashes })
+  if (problems.length) fail(`refusing to import ${file}:\n  ${problems.join('\n  ')}`)
+  console.log(`imported; ${importState(dep, me, state)} commitment(s) saved`)
+}
+
 const [cmd, ...args] = process.argv.slice(2)
 const commands = {
   status: () => status(),
@@ -210,6 +232,8 @@ const commands = {
   blockers: () => blockers(),
   cleanup: () => cleanup(args.includes('--dry-run')),
   withdraw: () => withdraw(args[0], args[1] ?? 'all'),
+  'export-state': () => exportCmd(args[0]),
+  'import-state': () => importCmd(args[0]),
 }
 if (!commands[cmd]) fail(`usage: npm start -- <${Object.keys(commands).join('|')}> ...`)
 await commands[cmd]().catch((e) => fail(e.shortMessage ?? e.message))

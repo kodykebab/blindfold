@@ -34,3 +34,35 @@ export function saveCommitment(dep, owner, c) {
   else state.commitments[i] = { ...state.commitments[i], ...c }
   writeState(dep, owner, state)
 }
+
+/**
+ * Check a state file before it replaces local state (REVIEW S11): same chain, settlement and owner; every order hashes
+ * to its saved hash; every entry with an id matches that commitment on chain. chainHashes: Map(id → onchain hash).
+ * Returns a list of problems; empty means safe to import.
+ */
+export function validateState(state, { dep, owner, orderHash, chainHashes }) {
+  const problems = []
+  if (state.chainId !== dep.chainId || state.settlement?.toLowerCase() !== dep.settlement.toLowerCase()) problems.push('state is for another chain or settlement')
+  if (state.owner?.toLowerCase() !== owner.toLowerCase()) problems.push(`state belongs to ${state.owner}`)
+  for (const c of state.commitments ?? []) {
+    if (c.order?.owner?.toLowerCase() !== owner.toLowerCase()) problems.push(`commitment ${c.hash}: order owner is not ${owner}`)
+    else if (orderHash(dep.chainId, dep.settlement, c.batchId, c.order, c.salt) !== c.hash) problems.push(`commitment ${c.hash}: order and salt do not hash to it`)
+    if (c.id != null && chainHashes.get(c.id) !== c.hash) problems.push(`commitment #${c.id}: chain has ${chainHashes.get(c.id) ?? 'nothing'} (stale or foreign state)`)
+  }
+  return problems
+}
+
+export const exportState = (dep, owner) => JSON.stringify(loadState(dep, owner), replacer, 2)
+export const parseState = (text) => JSON.parse(text, reviver)
+
+/** Merge imported entries into local state by hash; local entries the import lacks are kept. */
+export function importState(dep, owner, imported) {
+  const state = loadState(dep, owner)
+  for (const c of imported.commitments) {
+    const i = state.commitments.findIndex((x) => x.hash === c.hash)
+    if (i === -1) state.commitments.push(c)
+    else state.commitments[i] = { ...state.commitments[i], ...c }
+  }
+  writeState(dep, owner, state)
+  return state.commitments.length
+}
