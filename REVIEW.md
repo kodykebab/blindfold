@@ -714,7 +714,12 @@ The Ethereum WETH/USDC implementation adds a fixed-window v3 reference and a
 public-pool residual route; peer execution no longer uses the stored sealed price.
 Production window, liquidity and deviation thresholds still need calibration
 across volatile and quiet periods. Latest observation age is an activity check,
-not proof of an economically fresh or manipulation-resistant price. A single
+not proof of an economically fresh or manipulation-resistant price. The 24 h
+order-flow replay (`packages/solver/replay.mjs`, 2026-11-06) found that a 120 s
+limit expired 0.5–1.7% of orders on USDC/WETH 0.05%, 15–24% on WBTC/WETH 0.05%
+and 29–52% on UNI/WETH 0.3%, and that removing it expired none. The limit is now
+optional per pool (0 = off, the default); deviation, harmonic-liquidity, history
+and reference-age checks still apply. A single
 pool TWAP can be manipulated; user limits and liquidity checks bound some effects
 but do not establish oracle security.
 

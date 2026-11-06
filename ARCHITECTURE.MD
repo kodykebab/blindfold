@@ -421,7 +421,10 @@ flowchart LR
 `UniswapV3Market` authenticates one pool against its factory. `referencePriceX96(batch)`
 uses the geometric mean price over a fixed historical window ending at the reveal
 deadline. It checks available observation history, harmonic mean liquidity,
-latest observation age, reference age and current spot deviation. Negative mean
+reference age and current spot deviation. A latest-observation-age limit is an
+optional per-pool policy (`maxObservationAge`, 0 = off, the default): a pool
+nobody traded keeps its last price, and a manipulating swap refreshes the
+observation, so the age check only rejects honest quiet periods. Negative mean
 ticks round down, following Uniswap's OracleLibrary. Prices stay in raw
 token1/token0 Q96 units; Ethereum USDC is token0 and WETH is token1.
 

@@ -30,6 +30,11 @@ contract UniswapV3Market is IExternalMarket {
     address public immutable token1;
     uint32 public immutable window;
     uint32 public immutable maxDelay;
+    /// @notice Optional activity check: reject the reference when the pool's newest observation is older than this.
+    ///         0 turns it off. A quiet pool holds its last price, so a long gap since the last trade does not make the
+    ///         mean or the spot less trustworthy, and a manipulating swap refreshes the observation anyway: the bound on
+    ///         manipulation is the spot-to-mean deviation and the harmonic-liquidity floor, which always apply.
+    ///         A positive value is a per-pool policy for deployments that want to skip inactive pools.
     uint32 public immutable maxObservationAge;
     uint128 public immutable minHarmonicLiquidity;
     uint256 public immutable maxDeviationBps;
@@ -50,8 +55,8 @@ contract UniswapV3Market is IExternalMarket {
     ) {
         if (
             settlement_ == address(0) || window_ == 0 || window_ > uint32(type(int32).max) || maxDelay_ == 0
-                || uint256(window_) + maxDelay_ > type(uint32).max || maxObservationAge_ == 0
-                || minHarmonicLiquidity_ == 0 || maxDeviationBps_ == 0 || maxDeviationBps_ > 1000
+                || uint256(window_) + maxDelay_ > type(uint32).max || minHarmonicLiquidity_ == 0
+                || maxDeviationBps_ == 0 || maxDeviationBps_ > 1000
         ) revert Config();
         address a = pool_.token0();
         address b = pool_.token1();
@@ -88,11 +93,14 @@ contract UniswapV3Market is IExternalMarket {
         (spotSqrt,, index, cardinality,,,) = pool.slot0();
         if (cardinality < 2) revert InsufficientHistory();
         (uint32 observedAt,,, bool initialized) = pool.observations(index);
-        uint32 observationAge;
-        unchecked {
-            observationAge = uint32(block.timestamp) - observedAt;
+        if (!initialized) revert StaleObservation();
+        if (maxObservationAge != 0) {
+            uint32 observationAge;
+            unchecked {
+                observationAge = uint32(block.timestamp) - observedAt;
+            }
+            if (observationAge > maxObservationAge) revert StaleObservation();
         }
-        if (!initialized || observationAge > maxObservationAge) revert StaleObservation();
     }
 
     function _historicalPrice(uint32 age) internal view returns (uint256 price) {
