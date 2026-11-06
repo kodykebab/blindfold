@@ -1,0 +1,11 @@
+[profile.default]
+src = "."
+test = "."
+out = "../../results/circuit-evm-out"
+cache_path = "../../results/circuit-evm-cache"
+solc = "0.8.26"
+optimizer = true
+optimizer_runs = 200
+remappings = ["forge-std/=../../../../contracts/lib/forge-std/src/", "direct-preparation/=../../results/direct-preparation/src/", "direct-online/=../../results/direct-online/src/"]
+allow_paths = ["../../../../contracts/lib", "../../results"]
+fs_permissions = [{ access = "read", path = "../../results" }]
