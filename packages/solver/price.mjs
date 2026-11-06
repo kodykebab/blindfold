@@ -34,6 +34,25 @@ export const sameLimit = (a, b) => a.zeroForOne === b.zeroForOne &&
 const ceilDiv = (a, b) => (a + b - 1n) / b
 const gcd = (a, b) => { while (b) [a, b] = [b, a % b]; return a }
 
+export const inputLot = (o) => o.amountIn / gcd(o.amountIn, o.minAmountOut)
+export const partialInput = (o, numerator, denominator, price) => {
+  let amount = o.amountIn * numerator / denominator
+  const output = o.zeroForOne ? amount * price / Q96 : amount * Q96 / price
+  const minimum = ceilDiv(o.minAmountOut * amount, o.amountIn)
+  if (output < minimum) {
+    const lot = inputLot(o)
+    amount = amount / lot * lot
+  }
+  return amount
+}
+/** Largest representative retains the finest available fraction resolution. */
+export function limitGroups(orders) {
+  const groups = []
+  const ranked = [...orders].sort((a, b) => a.amountIn > b.amountIn ? -1 : a.amountIn < b.amountIn ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  for (const o of ranked) if (o.amountIn > 0n && !groups.some((g) => sameLimit(g, o))) groups.push(o)
+  return groups
+}
+
 /** Match the proportional contract rule, including priority and input dust. */
 export function allocationsAt(orders, p, marginal) {
   const ref = marginal && orders.find((o) => o.id === marginal.id)
@@ -45,7 +64,11 @@ export function allocationsAt(orders, p, marginal) {
       const limit = o.minAmountOut * ref.amountIn
       const boundary = ref.minAmountOut * o.amountIn
       if (limit > boundary) return 0n
-      if (limit === boundary) return o.amountIn * marginal.amountIn / ref.amountIn
+      if (limit === boundary) {
+        const amount = partialInput(o, marginal.amountIn, ref.amountIn, p)
+        const out = o.zeroForOne ? amount * p / Q96 : amount * Q96 / p
+        return out === 0n && o.minAmountOut === 0n ? 0n : amount
+      }
     }
     const out = o.zeroForOne ? o.amountIn * p / Q96 : o.amountIn * Q96 / p
     return out > 0n && out >= o.minAmountOut ? o.amountIn : 0n
@@ -59,13 +82,17 @@ export function net0At(orders, p, marginal) {
 }
 
 /** Executable-side price needed to preserve every rounded-up partial minimum. */
-export function marginalPriceX96(orders, ref, amountIn) {
+export function marginalPriceX96(orders, ref, amountIn, toleranceBps = 100) {
   let p = limitPriceX96(ref)
   for (const o of orders.filter((o) => sameLimit(o, ref))) {
     const filled = o.amountIn * amountIn / ref.amountIn
     if (filled === 0n) continue
     const minimum = ceilDiv(o.minAmountOut * filled, o.amountIn)
     const required = o.zeroForOne ? ceilDiv(minimum * Q96, filled) : filled * Q96 / minimum
+    const limit = limitPriceX96(ref)
+    const inside = o.zeroForOne ? required <= limit * (BPS + BigInt(toleranceBps)) / BPS
+      : required >= ceilDiv(limit * BPS, BPS + BigInt(toleranceBps))
+    if (!inside) continue // this member uses the contract's whole-lot fallback
     p = o.zeroForOne ? (p > required ? p : required) : (p < required ? p : required)
   }
   return p
@@ -156,7 +183,7 @@ export async function findBand(simulate, pool, toleranceBps, orders = []) {
 export async function solveMarginal(simulate, gap, orders, toleranceBps, pool = Q96) {
   const middle = gap ? (gap.lo + gap.hi) / 2n : pool
   const candidates = []
-  for (const o of [...orders].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
+  for (const o of limitGroups(orders)) {
     const p = limitPriceX96(o)
     if (p === null || o.amountIn < 2n || candidates.some((c) => sameLimit(c.o, o))) continue
     candidates.push({ o, p })
@@ -176,7 +203,7 @@ export async function solveMarginal(simulate, gap, orders, toleranceBps, pool = 
       while (lo <= hi) {
         const x = (lo + hi) / 2n
         const m = { id: o.id, amountIn: x * step }
-        const p = marginalPriceX96(orders, o, m.amountIn)
+        const p = marginalPriceX96(orders, o, m.amountIn, toleranceBps)
         if (p <= 0n) break
         const r = await simulate(p, m)
         const direction = side(r, p, orders, m)
