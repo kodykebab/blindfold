@@ -90,6 +90,34 @@ contract ExternalEthereumForkTest is Test {
         }
     }
 
+    function test_ethereum_largeResidualRevertsThenPartialFillExecutes() public {
+        uint256 snapshot = vm.snapshotState();
+        for (uint256 i; i < 2; i++) {
+            bool sell = i == 0;
+            uint256 ref = s.referencePriceX96(0);
+            uint256 proposed = sell ? ref - ref / 100 : ref + ref / 100;
+            uint128 amount = sell ? uint128(2_000_000e6) : uint128(1000e18);
+            address input = sell ? USDC : WETH;
+            deal(input, address(this), amount);
+            vault.deposit(input, amount);
+            uint256 minimum = sell ? FullMath.mulDiv(amount, proposed, Q96) : FullMath.mulDiv(amount, Q96, proposed);
+            uint256 id = _ready(sell, amount, uint128(minimum * 99 / 100));
+            uint256 beforeInput = vault.balanceOf(address(this), input);
+            vm.expectRevert(UniswapV3Market.InsufficientOutput.selector);
+            s.settleExternal(0, proposed);
+            assertFalse(s.finalized(0));
+            assertEq(vault.balanceOf(address(this), input), beforeInput);
+            assertEq(vault.lockedOf(address(this), input), amount);
+            uint128 partialInput = sell ? uint128(1000e6) : uint128(1e18);
+            s.settleExternal(0, proposed, id, partialInput);
+            assertEq(vault.balanceOf(address(this), input), beforeInput - partialInput);
+            assertEq(vault.lockedOf(address(this), input), 0);
+            assertEq(vault.openCommitments(address(this)), 0);
+            assertEq(vault.balanceOf(address(s), USDC) + vault.balanceOf(address(s), WETH), 0);
+            if (i == 0) vm.revertToState(snapshot);
+        }
+    }
+
     function test_ethereum_staleObservationFailsClosed() public {
         vm.warp(forkTime + 121);
         vm.expectRevert(UniswapV3Market.StaleObservation.selector);

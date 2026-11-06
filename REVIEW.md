@@ -542,9 +542,27 @@ but do not establish oracle security.
 
 Public liquidity remains withdrawable and changes before inclusion. Full fills
 are conditional on executable liquidity and user limits, not guaranteed. The
-solver's first external search tries full fills in one-basis-point steps and
-peer-only proportional matching; it does not yet search external partial-fill
-fractions or prove infeasibility. It must be benchmarked against a production RPC
-and the chosen batch deadline. Aqua routing is still a separate integration.
+solver now tries full fills, exact limit-price edges and proportional external
+boundary groups, with simulation and deadline bounds. Its halving/bisection search
+is a heuristic, not an infeasibility or maximum-volume proof. It must be
+benchmarked against a production RPC and the chosen batch deadline. Aqua routing is still a separate integration.
 These changes are unmerged seams pending teammate review and do not integrate
 the parallel admission-proof work.
+
+
+External-market follow-up validation: the solver's capacity-limited Anvil cases
+filled the equal-limit group at 540/270 inputs in both directions. Full-fill
+search took 20/23 simulations (82/62 ms); partial search took 341/411 simulations
+(838/977 ms). These are local timings, not production latency.
+
+The read-only sampler collected 13 Ethereum observations across blocks
+26,353,849–26,353,945: latest observation age 0–84 s, harmonic liquidity
+1.663–1.687 × 10^18, approximate spot/TWAP deviation 4.34–12.52 bps and aggregate
+read latency 545–760 ms. The public endpoint rejected older archive requests with
+HTTP 403 requiring a personal token. Production calibration therefore remains
+open: collect quiet/volatile historical regimes using an archive endpoint and
+measure solver simulations against the actual deployed contract. A 120 s activity
+limit and 100 bps band passed the sampled regime, but this does not justify them
+as production settings. A consistent manipulation of spot and TWAP can pass
+these checks; economic attack cost has not been established. No production
+launch should be inferred from passing these implementation tests.

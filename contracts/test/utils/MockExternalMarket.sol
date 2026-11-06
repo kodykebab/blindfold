@@ -11,6 +11,11 @@ contract MockExternalMarket is IExternalMarket {
     uint256 public price = 1 << 96;
     uint256 public outputBps = 10_000;
     bool public fail;
+    uint256 public maxInput;
+
+    function setMaxInput(uint256 amount) external {
+        maxInput = amount;
+    }
 
     constructor(address s, address a, address b) {
         settlement = s;
@@ -37,6 +42,7 @@ contract MockExternalMarket is IExternalMarket {
 
     function swap(bool sell, uint256 amount, uint256 minimum) external returns (uint256 out) {
         require(msg.sender == settlement);
+        require(maxInput == 0 || amount <= maxInput, "capacity exceeded");
         out = amount * outputBps / 10_000;
         require(out >= minimum, "short output");
         IERC20Like(sell ? token1 : token0).transfer(settlement, out);
