@@ -60,7 +60,7 @@ form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--
 @keyframes track{from{transform:translateX(-100%)}to{transform:translateX(290%)}}
 /* the result arrives like a decrypted order: a veil of grid squares sweeps off and the text resolves out of hex */
 .res canvas.veil{position:absolute;inset:0;width:100%;height:100%;z-index:1;pointer-events:none}
-@media (prefers-reduced-motion:reduce){.res,.res *,.res *::after{animation:none!important;transition:none!important}}
+@media (prefers-reduced-motion:reduce){html:not([data-motion="full"]) .res,html:not([data-motion="full"]) .res *,html:not([data-motion="full"]) .res *::after{animation:none!important;transition:none!important}}
 @media (max-width:900px){.res{position:static;width:auto;max-height:42svh;margin-top:18px}}
 @media (max-width:760px){.hero,.end{padding-inline:18px}.hero{padding-top:72px;padding-bottom:28px} h1{font-size:44px} .hero p{font-size:15px;margin:12px 0 16px} .res{max-height:40svh}.card{left:18px;bottom:18px} nav a{display:none}}
 </style>
@@ -90,6 +90,9 @@ form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--
 </div>
 
 <script>
+// An explicit page preference lets the animated demo run on systems that request reduced motion.
+const fullMotion = new URLSearchParams(location.search).get('motion') === 'full'
+document.documentElement.dataset.motion = fullMotion ? 'full' : 'system'
 // The swap lifecycle. Segment k animates while progress u runs from k to k+1, and rests at k + REST.
 const PH = ['Ethereum mempool', 'The attack', 'Blindfold · sealed', 'Blindfold · one price']
 const SEGS = [
@@ -274,10 +277,11 @@ function updateCard(u) {
 // The document never scrolls, so there is no scroll restoration on refresh and no momentum to fight. `y` is a virtual
 // scroll position: the hero sits at 0, the story starts one screen down, and the footer follows the last segment.
 // Stops: 0 = hero, 1..N = segments (each resting once its animation is done), N+1 = footer.
-const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+const reduce = !fullMotion && matchMedia('(prefers-reduced-motion: reduce)').matches
 const hero = document.querySelector('.hero'), end = document.querySelector('.end')
 const QUIET_MS = 200 // wheel events closer together than this belong to the same gesture (trackpad momentum included)
-let step = 0, y = 0, tween = null, lastWheel = 0, lastAbs = 0, u = null, dirty = true, last = performance.now()
+let step = 0, y = 0, tween = null, u = null, dirty = true, last = performance.now()
+let lastWheel = -Infinity, lastDelta = 0, wheelPeak = 0, wheelLow = 0, wheelTravel = 0, wheelUsed = false
 const layout = () => { const H = innerHeight, seg = SEG_VH * H; return { top: H, seg, end: H + N * seg + H } } // one spare screen before the footer
 const stops = () => { const L = layout(); return [0, ...SEGS.map((_, k) => L.top + (k + REST) * L.seg), L.end] }
 const progress = () => { const L = layout(); return (y - L.top) / L.seg }
@@ -298,11 +302,22 @@ addEventListener('wheel', (e) => {
   e.preventDefault()
   const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1 // Firefox can report lines or pages
   const d = e.deltaY * unit, abs = Math.abs(d), now = performance.now()
-  if (abs < Math.abs(e.deltaX * unit)) return // sideways swipes don't step
-  // a new gesture starts after a pause, or with a push much stronger than a decaying momentum tail
-  const fresh = now - lastWheel > QUIET_MS || (abs > 40 && abs > lastAbs * 2.5)
-  lastWheel = now; lastAbs = abs
-  if (fresh && !tween && abs >= 4) go(step + Math.sign(d))
+  if (!d || abs < Math.abs(e.deltaX * unit)) return // sideways swipes don't step
+  // A new stroke can start gently, reverse direction, or grow out of the previous momentum tail.
+  const renewed = wheelLow < wheelPeak * 0.5 && abs >= 4 && abs > wheelLow * 2.5
+  const fresh = now - lastWheel > QUIET_MS || renewed || d * lastDelta < 0
+  if (fresh) {
+    wheelTravel = 0; wheelUsed = !!tween // don't queue a stroke made during a transition
+    wheelPeak = wheelLow = abs
+  } else if (abs >= wheelPeak) {
+    wheelPeak = wheelLow = abs
+  } else wheelLow = Math.min(wheelLow, abs)
+  lastWheel = now; lastDelta = d
+  wheelTravel += d
+  if (!wheelUsed && !tween && Math.abs(wheelTravel) >= 4) {
+    wheelUsed = true
+    go(step + Math.sign(wheelTravel))
+  }
 }, { passive: false })
 let touchY = null
 addEventListener('touchstart', (e) => {
@@ -439,9 +454,10 @@ function frame(now) {
     if (x >= 1) tween = null
   }
   const T = progress()
+  const changed = u === null || Math.abs(T - u) > 0.0004
   if (u === null || reduce) u = T
   const amb = reduce ? 0 : clamp((-u - 0.55) * 4) // the hero runs on its own clock; once you scroll, only scroll moves things
-  if (Math.abs(T - u) > 0.0004 || dirty || amb > 0) { u += (T - u) * (1 - Math.exp(-dt * 14)); dirty = false; render(u, now / 1000, amb); draw(); updateCard(u) }
+  if (changed || dirty || amb > 0) { u += (T - u) * (1 - Math.exp(-dt * 14)); dirty = false; render(u, now / 1000, amb); draw(); updateCard(u) }
   requestAnimationFrame(frame)
 }
 addEventListener('resize', () => { resize(); tween = null; y = stops()[step]; place() })

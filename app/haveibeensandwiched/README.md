@@ -31,4 +31,7 @@ npm start              # http://localhost:3100
 OFFLINE=1 npm start    # fixtures only
 npm test               # offline tests
 ```
+To preview the full animation on a system with reduced motion enabled, open `/?motion=full`.
+This page-specific setting enables the original story transitions, hero animation and result effects.
+
 Demo address: `0xcf36363eea51f669c391eafc2ec2c3ff1b7a4be5`.
