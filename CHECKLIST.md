@@ -1,7 +1,7 @@
 # Release checklist
 
 Status: `[x]` done · `[~]` partly done · `[ ]` open. Owner: **Claude** (this branch stack), **Cursor** (sections 3 and 8, see `CURSOR_PROMPT.md`), **Antigravity** (section 5 on branch `bhoumik/orders-ui`, see `ANTIGRAVITY_PROMPT.md`), **Team** (needs a decision or another lane).
-Updated after every 3 completed tasks. Last update: 2026-11-07, 68 done, 9 partly done, 16 open of 93.
+Updated after every 3 completed tasks. Last update: 2026-11-07, 69 done, 9 partly done, 15 open of 93.
 
 ## 1. Local setup and operation (Claude)
 - [x] Repeatable clean-clone setup: install, build, deploy. A fresh clone of #82 passed `check.sh` (after committing the prover-helper lockfile it caught) and every `e2e.sh` tier.
@@ -44,7 +44,7 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 68 done, 9 partl
 - [x] Real encryption, proving and submission progress. Encrypt → Prove → Submit → Included from the client's own lines, with elapsed and usual time (`prover-view.test.mjs`; `PROVER_E2E`: reload mid-commit).
 - [x] Failure, deadline and unsupported-device screens. `status.test.mjs`: "prover, deadline and busy failures each get a sentence and a next step" (out of memory, missing prover, NotCurrentBatch).
 - [x] Stale preparation and account/network/batch/parameter changes in the UI. `prover-view.test.mjs`: "preparation panel: every status line the client prints", "identity change between status reads".
-- [~] Failed or consumed preparation recovery through the page. Prepare-for-next-batch action and messages are unit-tested; no admission-on browser test yet.
+- [x] Failed or consumed preparation recovery through the page. `ADMISSION_E2E` (real proofs): a used preparation reads as none and the page offers the next batch; failure messages in `status.test.mjs`.
 - [~] Pending-admission resume and duplicate-submission acceptance through the page. Resume admission button and "already running" are unit-tested; no admission-on browser test yet.
 - [ ] Measure preparation, key loading, online proof, memory and inclusion across devices.
 - [ ] Choose release cadence and lead time from the measurements. *(Team)*
@@ -106,7 +106,7 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 68 done, 9 partl
 - [~] Keyboard, mobile and supported-browser testing. `A11Y_E2E`: Tab reaches every control with visible focus; nothing scrolls at 375 px; every field labelled. Chromium only.
 - [x] Isolated offline `scripts/check.sh` tier.
 - [x] Local `scripts/e2e.sh` tier using actual services.
-- [ ] Final fresh-proof and fork tiers on the final commit.
+- [~] Final fresh-proof and fork tiers on the final commit. Fresh-proof tier and `ADMISSION_E2E` pass; fork tier 109/111, the 2 failures are a time-dependent test in Kritarth's lane (HANDOFF). Rerun on the final commit.
 - [~] CI gates and two independent clean-clone rehearsals. Workflow written; GitHub Actions has never run in the repo (needs Kritarth). One local rehearsal passed.
 - [ ] Independent client, contract and prover review. *(Team)*
 - [ ] Production proof parameters and authenticated distribution. *(Kritarth)*
