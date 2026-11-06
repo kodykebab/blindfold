@@ -78,7 +78,7 @@ test('finds a sandwich only once it has the configured confirmations, a bounded 
   c.mine(true) // block 1
   c.mine()
   const w = createWatcher({ call: c.call, store: memoryStore(), start: 0, confirmations: 2, maxBlocks: 1 })
-  assert.deepEqual(await w.tick(), { from: 0, to: 0, found: 0, reorged: 0, proven: 0, submitted: 0 })
+  assert.deepEqual(await w.tick(), { from: 0, to: 0, found: 0, reorged: 0, proven: 0, submitted: 0, collected: 0 })
   assert.equal((await w.tick()).found, 0, 'block 1 has only one confirmation: not scanned yet')
   assert.equal(w.state.next, 1)
   c.mine()
@@ -212,6 +212,31 @@ test('submission outcomes are recorded', async () => {
   assert.equal(byBlock[1].submission.tx, '0xsubmit1')
   assert.equal(byBlock[2].status, 'failed')
   assert.match(byBlock[2].error, /ClaimWindowClosed/)
+})
+
+test('only wanted (receipted) sandwiches are proven; claims are collected once their window has closed', async () => {
+  const c = fakeChain()
+  for (let i = 0; i < 3; i++) c.mine(i > 0)
+  let now = 100
+  const w = createWatcher({
+    call: c.call, store: memoryStore(), start: 0, confirmations: 0, now: () => now,
+    wanted: (item) => item.block === 1,
+    prove: async (item) => ({ path: `claim-${item.block}.json` }),
+    submit: async (item) => ({ tx: `0xclaim${item.block}`, closesAt: 110 }),
+    collect: async () => ({ tx: '0xcollect', payout: '5' }),
+  })
+  let t = await w.tick()
+  assert.deepEqual([t.proven, t.submitted, t.collected], [1, 1, 0])
+  const byBlock = () => Object.fromEntries(items(w).map((i) => [i.block, i]))
+  assert.equal(byBlock()[2].status, 'ignored', 'no receipt: not proven')
+  now = 109
+  t = await w.tick()
+  assert.equal(t.collected, 0, 'the claim window is still open')
+  now = 110
+  t = await w.tick()
+  assert.equal(t.collected, 1)
+  assert.equal(byBlock()[1].status, 'collected')
+  assert.equal(byBlock()[1].collection.payout, '5')
 })
 
 test('mapLimit never runs more than the limit at once', async () => {
