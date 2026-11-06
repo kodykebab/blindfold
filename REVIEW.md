@@ -601,11 +601,15 @@ Separate discovery from expensive proof construction. Test restart, duplicate di
 
 ### S17. Token and arithmetic domains
 
+**Integration (auction side):** the admitted deployment accepts only its fixed pair and checks exact received and sent amounts (`AdmissionVault`); the base `BlindfoldVault` remains a test path without those checks. Bounds: order amounts are `uint128`, a batch holds at most 64 orders, deposits and fees are at most `uint128`, and `toleranceBps <= BPS` keeps the marginal-price products within 256 bits for every v4 price. The residual swap checks the signs of v4's deltas before casting them. `SealedClearing` (Aqua) quotes with 512-bit intermediates; it previously truncated high bits in `amountOut << 96`. `ConfigValidation.t.sol` and `swapvm/SealedClearingMath.t.sol` test these bounds and the unsupported-asset rejection. Fee-on-transfer and rebasing tokens remain unsupported. Court's part is tracked separately.
+
 Restrict the initial deployment to a supported token pair and transfer behavior. Reject unsupported deposits. For ordinary supported ERC-20s, verify received amounts match credited amounts; fee-on-transfer and rebasing support are separate scope.
 
 Define shared bounds for individual inputs, aggregate residuals, v4 signed deltas, prices, and quotes. Use full-precision arithmetic wherever that domain requires it, including Aqua if retained. Test boundary values and token behavior rather than assuming every ERC-20 acts identically.
 
 ### S18. Configuration validation
+
+**Integration (auction side):** constructors reject misaligned or overlapping schedules (R7/S2), an empty reveal window, a vault or deposit token without code, a zero treasury, a zero or oversized deposit, an oversized fee and a tolerance above 100% (`InvalidAuctionConfig(field)`). `initialize` requires two ERC-20 currencies in order, one of them the deposit token, and runs once, for the admin only. The admitted deployment also requires verifier and PoolManager code, a nonzero fee, the vault's pair, this settlement as vault operator, the sealed hook bound to this settlement and manager, and an initialized pool. Before `start`, commits revert and no batch window is open. No deployment script exists on `main` yet, so script-level checks wait for it. Court's part is tracked separately.
 
 Validate meaningful phase durations, admission economics, bounded price tolerance, supported tokens, the expected pool/hook relationship, initialization state, and pre-start behavior.
 
