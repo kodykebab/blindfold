@@ -15,6 +15,7 @@ import { connect, encrypt, newSalt, orderHash } from './lib.mjs'
 import { balances, deadlines, exitPlan, fillDescription, isOpen, preflight, track } from './flow.mjs'
 import { exportState, importState, loadState, parseState, saveCommitment, validateState, writeState, withStateLock } from './state.mjs'
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
+import { confirmTx, confirmationsFor, describeOutcome } from './tx.mjs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
 
@@ -52,10 +53,11 @@ function fail(msg) {
 
 async function send(address, which, functionName, args) {
   const { request } = await pub.simulateContract({ account, address, abi: which, functionName, args })
-  const hash = await wallet.writeContract(request)
-  const receipt = await pub.waitForTransactionReceipt({ hash })
-  if (receipt.status !== 'success') fail(`${functionName} reverted in ${hash}`)
-  return receipt
+  const nonce = await pub.getTransactionCount({ address: me, blockTag: 'pending' })
+  const hash = await wallet.writeContract({ ...request, nonce })
+  const outcome = await confirmTx(pub, hash, { from: me, nonce, confirmations: confirmationsFor(dep) })
+  if (outcome.status !== 'confirmed') fail(describeOutcome(functionName, outcome))
+  return outcome.receipt
 }
 
 async function vaultView(t) {
@@ -252,12 +254,21 @@ async function resumeAdmission() {
   let tx = pending.tx
   if (!tx) {
     const { request } = await pub.simulateContract({ account, address: S, abi: abi.settlement, functionName: 'admit', args: [pending.batch, pending.hash, pending.ciphertext, pending.proof] })
-    tx = await wallet.writeContract(request)
-    state.admission.pending.tx = tx
+    const nonce = await pub.getTransactionCount({ address: me, blockTag: 'pending' })
+    tx = await wallet.writeContract({ ...request, nonce })
+    Object.assign(state.admission.pending, { tx, nonce })
     writeState(dep, me, state)
   }
-  const receipt = await pub.waitForTransactionReceipt({ hash: tx })
-  if (receipt.status !== 'success') fail(`admission reverted in ${tx}; pending state retained until its batch closes`)
+  const outcome = await confirmTx(pub, tx, { from: me, nonce: pending.nonce ?? state.admission.pending.nonce, confirmations: confirmationsFor(dep) })
+  if (outcome.status === 'dropped') {
+    // Nothing reached the chain: forget the hash so the next resume-admission sends the same proof again.
+    delete state.admission.pending.tx; delete state.admission.pending.nonce
+    writeState(dep, me, state)
+    fail(`admission ${tx} was dropped before inclusion; run resume-admission again to resend it`)
+  }
+  if (outcome.status === 'replaced') fail(`${describeOutcome('admission', outcome)}; pending state retained, run resume-admission to reconcile`)
+  if (outcome.status !== 'confirmed') fail(`admission reverted in ${tx}; pending state retained until its batch closes`)
+  const receipt = outcome.receipt
   const [ev] = parseEventLogs({ abi: abi.settlement, logs: receipt.logs, eventName: 'Committed' })
   if (!ev || ev.args.hash !== pending.hash) fail('admission receipt did not contain the expected commitment; pending state retained')
   const c = state.commitments.find((c) => c.hash === pending.hash)
