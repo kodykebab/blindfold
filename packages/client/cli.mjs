@@ -121,7 +121,6 @@ async function checkNetwork() {
 
 async function prepare(batchText) {
   if (batchText !== undefined && !/^\d+$/.test(batchText)) fail('usage: prepare-admission [batch-id]')
-  await checkNetwork()
   if (!await admissionRequired()) fail('this deployment does not use proof-enforced admission')
   const current = await read(S, 'currentBatch')
   let batch
@@ -145,7 +144,7 @@ async function prepare(batchText) {
     writeState(dep, me, rest)
   }
   if ((await pub.getBlock()).timestamp >= await read(S, 'commitsClose', [batch])) fail('preparation completed after the batch closed; select a later batch')
-  await checkNetwork()
+  await checkNetwork() // again after a minute of proving: the endpoint behind RPC_URL may have changed meanwhile
   const state = loadState(dep, me)
   state.preparation = preparation
   recordProving(state, 'preparation', preparation.elapsedSeconds)
@@ -217,7 +216,6 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
   const enforced = await admissionRequired()
   let funding, minLead = 3n, target = { batch: current, prepared: false, close: commitsClose }
   if (enforced) {
-    await checkNetwork()
     if (!dep.admission?.manifestSha256) fail('this deployment requires admission; its deployment file must include the parameter manifest')
     const state = loadState(dep, me)
     funding = reconcileFunding(dep, me, state.admission, await fundingOnchain(), now)
@@ -268,9 +266,15 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
   const salt = newSalt()
   const hash = orderHash(dep.chainId, S, target.batch, order, salt)
   const round = await read(S, 'targetRound', [target.batch])
-  const ciphertext = enforced ? undefined : await encrypt(round, order, salt) // before the review, so the commit's gas can be estimated
-  await gasReview(t, check.funding, enforced ? undefined : [current, hash, ciphertext])
+  // An unchecked commit is encrypted before the review, so its gas can be estimated. Without the drand beacon a dry run
+  // still reviews everything else; a real commit stops here, before any deposit is sent.
+  let ciphertext, beacon
+  if (!enforced) {
+    try { ciphertext = await encrypt(round, order, salt) } catch (e) { beacon = e.shortMessage ?? e.message }
+  }
+  await gasReview(t, check.funding, enforced ? undefined : ciphertext ? [current, hash, ciphertext] : { why: `(can't reach the drand beacon to encrypt the order: ${beacon})` })
   if (dryRun) return console.log('dry run: nothing sent')
+  if (beacon) fail(`can't reach the drand beacon to encrypt the order (${beacon}); nothing was sent. Check the network, or set DRAND to a recorded fixture for local chains`)
   for (const f of check.funding) {
     if (!f.shortfall) continue
     if (f.approve) await send(f.token, abi.erc20, 'approve', [dep.vault, f.shortfall])
@@ -293,7 +297,7 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
       recordProving(state, prepared ? 'online' : 'inline', result.timings.elapsedSeconds)
       writeState(dep, me, state)
     }
-    await checkNetwork()
+    await checkNetwork() // again after proving, before anything is sent
     const latest = (await pub.getBlock()).timestamp
     if (latest >= target.close) fail(`proof completed after batch ${target.batch} closed; nothing submitted. This device's margin now reflects the slower proof; commit again`)
     reconcileFunding(dep, me, funding, await fundingOnchain(), latest)
@@ -314,7 +318,8 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
 
 /**
  * Gas for each transaction the order sends (T04). A step that needs an earlier one to land, or that reverts now, is shown
- * as unavailable, never as free. commitArgs: the unchecked commit's arguments; undefined for proof-enforced admission.
+ * as unavailable, never as free. commitArgs: the unchecked commit's arguments, { why } when they can't be built, or
+ * undefined for proof-enforced admission.
  */
 async function gasReview(t, funding, commitArgs) {
   const steps = []
@@ -325,13 +330,14 @@ async function gasReview(t, funding, commitArgs) {
     steps.push({ what: `deposit ${fmt(tok, f.shortfall)}`, address: dep.vault, abi: abi.vault, functionName: 'deposit', args: [f.token, f.shortfall], after: f.approve ? 'the approval lands' : undefined })
   }
   const deposits = steps.length > 0
-  steps.push(commitArgs
+  steps.push(Array.isArray(commitArgs)
     ? { what: 'commit', address: S, abi: abi.settlement, functionName: 'commit', args: commitArgs, after: deposits ? 'the deposits land' : undefined }
-    : { what: 'admit (proof-backed commit)', after: 'both proofs exist' })
+    : commitArgs?.why ? { what: 'commit', unavailable: commitArgs.why }
+      : { what: 'admit (proof-backed commit)', after: 'both proofs exist' })
   const gasPrice = await pub.getGasPrice()
   console.log(`gas: estimated units, priced at the current ${formatGwei(gasPrice)} gwei and paid in ETH by this wallet; the keeper's reveal is paid from the deposit's bounty`)
-  for (const { what, after, ...call } of steps) {
-    let gas, why = after && `until ${after}`
+  for (const { what, after, unavailable, ...call } of steps) {
+    let gas, why = unavailable ?? (after && `until ${after}`)
     if (!why) {
       try { gas = await pub.estimateContractGas({ account, ...call }) } catch (e) { why = `(reverts now: ${e.shortMessage ?? e.message})` }
     }
@@ -363,7 +369,6 @@ async function fundingOnchain() {
 }
 
 async function resumeAdmission() {
-  await checkNetwork()
   if (!dep.admission?.manifestSha256 || !await admissionRequired()) fail('this deployment does not use proof-enforced admission')
   const state = loadState(dep, me)
   const chain = await fundingOnchain(), now = (await pub.getBlock()).timestamp
@@ -560,7 +565,6 @@ async function resubmit(dryRun, slippageText) {
 
 /** Keep one preparation ready for the earliest batch this device can still make; --once does one check and exits. */
 async function keepReady(once) {
-  await checkNetwork()
   if (!await admissionRequired()) fail('this deployment does not use proof-enforced admission')
   if (!once) console.log('keeping a prepared key ready: about one preparation of CPU each time a key is used or its batch passes')
   for (;;) {
@@ -602,7 +606,8 @@ try {
   // keep-ready takes the lock only while it prepares, so the same account can commit while it runs
   const mutates = ['prepare-admission', 'commit', 'resubmit', 'resume-admission', 'import-state', 'restore-backup', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
   const before = mutates ? exportState(dep, me) : null
-  // Every command but the purely local ones needs this RPC and deployment file to agree (T01).
+  // Every command but the purely local ones needs this RPC and deployment file to agree (T01). Commands check once here;
+  // only steps that follow a long local proof check again.
   if (cmd !== 'export-state' && cmd !== 'backup') await checkNetwork()
   try {
     await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())

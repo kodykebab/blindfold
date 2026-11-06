@@ -391,3 +391,27 @@ test('fix 6: a wiped device restores from the encrypted backup, reveals its own 
     c.stop()
   }
 })
+
+test('an unreachable drand beacon: the dry run still reviews the order, a real commit sends nothing', { skip: !enabled, timeout: 120_000 }, async () => {
+  const c = await localChain()
+  try {
+    const u = user(10).address
+    for (const tok of [c.token0, c.token1]) await c.mint(u, tok, parseEther('100'))
+    const offline = { DRAND: join(c.dir, 'no-such-drand.json') }
+    let r = await c.cli(10, ['commit', 'sell', '10', '9', '--dry-run'], offline)
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /order: sell 10 TKA for at least 9 TKB/)
+    assert.match(r.out, /commit: unavailable \(can't reach the drand beacon to encrypt the order/)
+    assert.doesNotMatch(r.out, /commit: ~0 gas/)
+    assert.match(r.out, /dry run: nothing sent/)
+    r = await c.cli(10, ['commit', 'sell', '10', '9'], offline)
+    assert.notEqual(r.code, 0)
+    assert.match(r.err, /can't reach the drand beacon.*nothing was sent/)
+    for (const tok of [c.token0, c.token1]) {
+      assert.equal(await c.read(tok, 'MockERC20', 'balanceOf', [u]), parseEther('100'), 'no deposit left the wallet')
+    }
+    assert.equal(await c.read(c.settlement, 'BlindfoldSettlement', 'commitCount'), 0n)
+  } finally {
+    c.stop()
+  }
+})
