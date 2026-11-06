@@ -218,7 +218,7 @@ export function quoteReason(quote) {
   return parts.length ? parts.join('; ') : null
 }
 
-export function quoteLine(stamped, raw) {
+export function quoteLine(stamped, raw, symbols = ['token0', 'token1']) {
   if (!stamped?.price) {
     const why = quoteReason(raw)
     return why
@@ -229,7 +229,7 @@ export function quoteLine(stamped, raw) {
     ? ` External reference is not available (${raw.external.reason}).`
     : ''
   const where = stamped.detail ? ` Source: ${stamped.detail}, block ${stamped.blockNumber}.` : ''
-  return `${stamped.label}: ${stamped.price} token1 per token0, ${stamped.ageSeconds}s old${stamped.stale ? ', stale' : ''}.${where}${missed}`
+  return `${stamped.label}: ${stamped.price} ${symbols[1]} per ${symbols[0]}, ${stamped.ageSeconds}s old${stamped.stale ? ', stale' : ''}.${where}${missed}`
 }
 
 export function liquidityFromJson(liquidity) {
@@ -514,7 +514,7 @@ export function orderSummary(row) {
 }
 
 /** Readable job text. This never returns the CLI transcript. */
-export function presentJob(job, now = Date.now()) {
+export function presentJob(job, now = Date.now(), symbols) {
   if (!job) return { title: 'Ready', body: 'Run status to load this account.' }
   if (job.state === 'running') {
     const stage = jobStage(job)
@@ -532,13 +532,13 @@ export function presentJob(job, now = Date.now()) {
   if (job.action === 'preflight') {
     const review = parsePreflight(job.output, now)
     if (!review) return { title: 'Preview incomplete', body: 'The preview did not include an order this page can show. Review the order again.' }
-    return { title: review.ok ? 'Review this order' : 'Cannot submit yet', body: formatReview(review) }
+    return { title: review.ok ? 'Review this order' : 'Cannot submit yet', body: formatReview(review, symbols) }
   }
   return { title: 'Finished', body: successCopy(job) }
 }
 
-export function formatReview(review) {
-  const quote = `${quoteLine(review.quote, review.quoteRaw)} This is a reference, not your clearing price.`
+export function formatReview(review, symbols) {
+  const quote = `${quoteLine(review.quote, review.quoteRaw, symbols)} This is a reference, not your clearing price.`
   const fee = review.fee ? `Commit fee: ${review.fee}. It is not refunded.` : 'Commit fee was not in the preview.'
   const deposit = review.deposit
     ? `Deposit: ${review.deposit}. ${review.depositReturn ?? 'The preview did not say when it returns.'}`
