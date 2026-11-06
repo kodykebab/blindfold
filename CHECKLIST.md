@@ -1,7 +1,7 @@
 # Release checklist
 
 Status: `[x]` done · `[~]` partly done · `[ ]` open. Owner: **Claude** (this branch stack), **Cursor** (sections 3 and 8, see `CURSOR_PROMPT.md`), **Antigravity** (section 5 on branch `bhoumik/orders-ui`, see `ANTIGRAVITY_PROMPT.md`), **Team** (needs a decision or another lane).
-Updated after every 3 completed tasks. Last update: 2026-11-07, 63 done, 11 partly done, 19 open of 93.
+Updated after every 3 completed tasks. Last update: 2026-11-07, 64 done, 13 partly done, 16 open of 93.
 
 ## 1. Local setup and operation (Claude)
 - [x] Repeatable clean-clone setup: install, build, deploy. A fresh clone of #82 passed `check.sh` (after committing the prover-helper lockfile it caught) and every `e2e.sh` tier.
@@ -34,7 +34,7 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 63 done, 11 part
 - [x] Expected partial execution and unused input. `status.test.mjs`: "partial fills report executed and unused input from the fill numbers".
 - [x] Stale quotes and changed balances caught before submission. `status.test.mjs`: "a changed balance or a stale quote requires another confirm".
 - [x] Liquidity and estimated execution, without promising it. `status.test.mjs`: "dry-run JSON keeps the contract source and does not invent an execution estimate".
-- [ ] No raw CLI output anywhere.
+- [x] No raw CLI output anywhere. Client, server, network and wallet errors all go through `explainClientError` (`status.test.mjs`: "server and network errors never reach the page raw"); browser suites assert no `client:` text.
 - [x] Unsupported tokens and odd transfer behaviour. `e2e.test.mjs`: "a fee-on-transfer token is refused before the vault is credited". `status.test.mjs`: "a short vault credit is treated as a fee-on-transfer or rebasing token".
 - [x] No automatic order-specific shortfall deposit. e2e: "vault-only trading refuses shortfalls".
 
@@ -66,7 +66,7 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 63 done, 11 part
 - [x] Stale, foreign and tampered backups through the browser. `PROVER_E2E`: "a tampered backup is refused with a clear reason and local state is unchanged"; each kind in `prover-view.test.mjs`.
 - [ ] Concurrent-device conflicts. *(second Claude account, branch `bhoumik/release-ops-2`)*
 - [x] Chain confirmation and finality policy. 1 confirmation locally, `CLIENT_CONFIRMATIONS` or 3 elsewhere (`packages/client/tx.mjs`).
-- [ ] Reorgs and disappearing or changed receipts and roots.
+- [~] Reorgs and disappearing or changed receipts and roots. Receipts are re-read after their confirmations and reported only if still in the same block (`tx.test.mjs`); admission roots reconcile with the chain on resume. No reorg test on a live fork.
 - [x] Dropped, replaced, reverted and confirmed transactions told apart.
 - [x] Nonce, hash and onchain state reconciled before retries. Explicit nonces; a dropped admission is resent, a replaced one keeps pending state.
 - [ ] Every interruption and batch-deadline boundary tested. *(second Claude account, branch `bhoumik/release-ops-2`)*
@@ -111,5 +111,5 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 63 done, 11 part
 - [ ] Independent client, contract and prover review. *(Team)*
 - [ ] Production proof parameters and authenticated distribution. *(Kritarth)*
 - [ ] Verify deployed bytecode, configuration, verifier identities and operators. *(second Claude account, branch `bhoumik/release-ops-2`)*
-- [ ] Reconcile docs and user-facing claims with release behaviour.
+- [~] Reconcile docs and user-facing claims with release behaviour. README now covers running the stack, the page flow and test tiers; DEMO.md and HANDOFF.md still need a final pass.
 - [ ] Release handoff, demo and submission evidence.
