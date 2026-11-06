@@ -106,3 +106,7 @@ node packages/proof-bench/prepared-interop.mjs packages/proof-bench/results/prep
 ```
 
 Repeat the execution, rejection, proof, wrapping and export commands with `preparation` in place of `online` to generate the matching preparation artifact. Then run `FOUNDRY_PROFILE=prepared forge test -vv` in `evm/` to verify both proofs and their shared binding. The two-proof harness requires both real exports and rejects altered bindings and swapped proofs. Production contracts are separate from these benchmark harnesses.
+
+## Direct local funding circuit
+
+`circuit/` contains a gnark circuit for the same order hash and private funding transition. It consumes the saved prepared fixture and generates a BN254 Groth16 proof directly on the local machine. See [the circuit benchmark instructions](circuit/README.md) for its component boundaries, tests and separate setup/proving measurements.
