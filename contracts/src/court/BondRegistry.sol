@@ -6,6 +6,8 @@ import {RLPReader} from "./lib/RLPReader.sol";
 
 uint256 constant FEE_UNITS = 1e6; // Uniswap fees are in hundredths of a bip
 uint256 constant MAX_BUDGET = type(uint128).max; // wei; more than all ETH there is (S17)
+// how long a sandwich on Ethereum stays provable: EIP-2935's 8191 blocks of 12 s, directly or through an L1 anchor
+uint256 constant EVIDENCE_TIME = 8191 * 12;
 
 /// @notice An incident's budget (R8, S17): the attacker's profit, capped by the swap fee its front leg paid
 ///         (`frontIn * fee / 1e6`, rounded down) and by `MAX_BUDGET`. Exact and overflow-free for any inputs with
@@ -107,6 +109,7 @@ contract BondRegistry {
     error AlreadyCollected(bytes32 txHash);
     error UnbondNotReady(uint256 at);
     error TransferFailed();
+    error InvalidConfig(string field);
 
     event Bonded(address indexed rpc, uint256 amount, uint256 total);
     event UnbondRequested(address indexed rpc, uint256 at);
@@ -140,7 +143,19 @@ contract BondRegistry {
     mapping(bytes32 pool => bool) public covered;
     mapping(bytes32 backSwap => bool) public backUsed; // pool, pool id, back tx and its Swap log
 
+    /// @dev Rejects a registry that can't work before it takes any bond (S18).
     constructor(Config memory c) {
+        if (address(c.verifier).code.length == 0) revert InvalidConfig("verifier");
+        if (c.sourceChainId == 0) revert InvalidConfig("sourceChainId");
+        // judging another chain is only possible through the verifier's L1 anchor
+        if (c.sourceChainId != block.chainid && address(c.verifier.l1Block()) == address(0)) {
+            revert InvalidConfig("verifier");
+        }
+        if (c.weth == address(0)) revert InvalidConfig("weth");
+        if (c.claimWindow == 0 || c.claimWindow > type(uint32).max) revert InvalidConfig("claimWindow");
+        // an RPC that asks to unbond must still be there for every sandwich its victims can still prove
+        if (c.unbondDelay < EVIDENCE_TIME || c.unbondDelay > type(uint32).max) revert InvalidConfig("unbondDelay");
+        if (c.pools.length == 0) revert InvalidConfig("pools"); // nothing would ever pay
         verifier = c.verifier;
         sourceChainId = c.sourceChainId;
         weth = c.weth;
@@ -150,6 +165,7 @@ contract BondRegistry {
         unbondDelay = c.unbondDelay;
         claimWindow = c.claimWindow;
         for (uint256 i; i < c.pools.length; i++) {
+            if (c.pools[i] == 0) revert InvalidConfig("pools");
             covered[c.pools[i]] = true;
         }
     }
