@@ -4,7 +4,7 @@ A self-contained brief for whoever picks up this work, human or agent. It says w
 
 **Goal:** trading through Blindfold should be about as seamless as a normal swap, while keeping the promised privacy (sealed orders) and safety (a user's limit is always enforced; funds can always be recovered permissionlessly).
 
-**Status on 2026-11-07:** fixes 1–5 are implemented in open PRs. Fixes 6–9 are proposed, not built.
+**Status on 2026-11-07:** fixes 1–8 are implemented in open PRs. Fix 9 is open design questions.
 
 | # | Fix | Lane | Status |
 |---|---|---|---|
@@ -14,9 +14,9 @@ A self-contained brief for whoever picks up this work, human or agent. It says w
 | 3 | A slow or missing solver expires batches | Kritarth + Khush | PR [#83](https://github.com/kodykebab/blindfold/pull/83); solver payment still open |
 | 4 | Order limits: defaults and presentation | Khush | PR [#84](https://github.com/kodykebab/blindfold/pull/84) |
 | 5 | Unfilled orders: one-click or automatic resubmit | Khush | PR [#84](https://github.com/kodykebab/blindfold/pull/84); fee refund still open |
-| 6 | Automatic encrypted backup of private state | Khush | proposed |
-| 7 | Deployment defaults: batch length and oracle parameters | Kritarth | proposed |
-| 8 | Positioning and expected cost shown up front | all | proposed |
+| 6 | Automatic encrypted backup of private state | Khush | PR [#85](https://github.com/kodykebab/blindfold/pull/85) |
+| 7 | Deployment defaults: batch length and oracle parameters | Kritarth | PR [#87](https://github.com/kodykebab/blindfold/pull/87); LP seeding and SeedBatch still open |
+| 8 | Positioning and expected cost shown up front | all | PR [#86](https://github.com/kodykebab/blindfold/pull/86); browser app still open |
 | 9 | Larger structural limits (proving cost, one batch, venues) | all | open questions |
 
 ## How the system works today
