@@ -66,8 +66,9 @@ test('solver CLI executes proportional groups and preserves recovery without liq
     const vault = await deploy('BlindfoldVault')
     const now = (await client.getBlock()).timestamp
     const settlement = await deploy('BlindfoldSettlement', [{ manager, vault, depositToken: token1,
-      depositAmount: 5n * 10n ** 18n, bountyBps: 2000n, treasury: account.address,
-      schedule: { start: Number(now), batchLength: 300, revealLength: 24, settleLength: 30 }, toleranceBps: 100n }])
+      depositAmount: 5n * 10n ** 18n, bountyBps: 2000n, treasury: account.address, commitFee: 0n,
+      // start on a drand round boundary, or the constructor reverts with MisalignedSchedule
+      schedule: { start: Number(now - (now - 1692803367n) % 3n), batchLength: 300, revealLength: 24, settleLength: 30 }, toleranceBps: 100n }])
     await send(vault, 'BlindfoldVault', 'setOperator', [settlement])
     const factory = await deploy('SolverHookFactory')
     const bytecodeHash = await read(factory, 'SolverHookFactory', 'initCodeHash', [manager, settlement])
