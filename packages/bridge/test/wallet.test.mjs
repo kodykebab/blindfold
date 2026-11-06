@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import { atomicSupport, discover, ensureChain, sendCalls } from '../public/wallet.mjs'
 import { ACCOUNT, mockProvider, walletLike } from './mock-provider.mjs'
 
+// the read-only funds pre-check (fundsShortfall) runs before any send; these tests are about the sends
+const sends = (p) => p.methods().filter((m) => !['eth_getBalance', 'eth_gasPrice', 'eth_estimateGas'].includes(m))
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const fast = { interval: 1, timeout: 1000 }
 const CHAIN = { chainId: '0x7a69', chainName: 'Anvil', rpcUrls: ['http://127.0.0.1:8563'], nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 } }
@@ -94,7 +97,7 @@ test('send sequential: one transaction at a time, each mined before the next, wi
   assert.equal(r.hashes.length, 2)
   assert.deepEqual(r.receipts.map((x) => x.status), ['0x1', '0x1'])
   assert.deepEqual(sent, [{ index: 0, hash: r.hashes[0] }, { index: 1, hash: r.hashes[1] }])
-  assert.deepEqual(p.methods(), ['eth_sendTransaction', 'eth_getTransactionReceipt', 'eth_getTransactionReceipt', 'eth_getTransactionReceipt',
+  assert.deepEqual(sends(p), ['eth_sendTransaction', 'eth_getTransactionReceipt', 'eth_getTransactionReceipt', 'eth_getTransactionReceipt',
     'eth_sendTransaction', 'eth_getTransactionReceipt', 'eth_getTransactionReceipt', 'eth_getTransactionReceipt'])
   assert.deepEqual(p.wallet.sent[0], { from: ACCOUNT, chainId: '0x7a69', ...CALLS[0] })
 })
@@ -167,7 +170,29 @@ test('send atomic: a successful response without a usable ID never resends the c
       sendCalls(p, { from: ACCOUNT, chainId: '0x7a69', calls: CALLS, atomic: true }, fast),
       (e) => e.code === 'UNKNOWN_OUTCOME' && /check the wallet before retrying/.test(e.message),
     )
-    assert.deepEqual(p.methods(), ['wallet_sendCalls'])
+    assert.deepEqual(sends(p), ['wallet_sendCalls'])
     assert.equal(p.wallet.sent.length, CALLS.length) // the mock accepted the batch once
   }
+})
+
+test('funds: a balance below the first call\'s gas and value stops before anything is signed', async () => {
+  const { sendCalls, fundsShortfall } = await import('../public/wallet.mjs')
+  const { mockProvider } = await import('./mock-provider.mjs')
+  const call = { to: '0x00000000000000000000000000000000000000b2', data: '0x', value: '0x10' }
+  const p = mockProvider({ eth_getBalance: '0x100', eth_gasPrice: '0x1', eth_estimateGas: '0x100' })
+  assert.deepEqual(await fundsShortfall(p, ACCOUNT, call), { need: String(0x110), balance: String(0x100) })
+  await assert.rejects(sendCalls(p, { from: ACCOUNT, chainId: '0x7a69', calls: [call], atomic: false }), (e) => e.code === 'INSUFFICIENT_FUNDS' && e.hashes.length === 0)
+  assert.ok(!p.methods().includes('eth_sendTransaction'), 'nothing was sent')
+  p.handlers.eth_getBalance = '0x110'
+  assert.equal(await fundsShortfall(p, ACCOUNT, call), null)
+  delete p.handlers.eth_estimateGas // a wallet that cannot estimate is not blocked here
+  assert.equal(await fundsShortfall(p, ACCOUNT, call), null)
+})
+
+test('funds: a wallet\'s own insufficient-funds error becomes INSUFFICIENT_FUNDS with what was sent', async () => {
+  const { sendCalls } = await import('../public/wallet.mjs')
+  const { mockProvider } = await import('./mock-provider.mjs')
+  const p = mockProvider({ eth_sendTransaction: () => { throw { code: -32000, message: 'insufficient funds for gas * price + value' } } })
+  await assert.rejects(sendCalls(p, { from: ACCOUNT, chainId: '0x7a69', calls: [{ to: ACCOUNT, data: '0x' }], atomic: false }),
+    (e) => e.code === 'INSUFFICIENT_FUNDS' && /add ETH/.test(e.message) && e.hashes.length === 0)
 })
