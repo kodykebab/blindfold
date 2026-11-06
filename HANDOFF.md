@@ -3,7 +3,7 @@
 Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEXT.md). Repo rules, setup and gotchas: [AGENTS.md](AGENTS.md).
 
 ## Status
-`forge test`: **107/107 passing** (19 local + 19 Unichain fork + 29 ReservationModel, which re-runs the 19 local + 4 SwapVM + 18 Court verifier + 18 BondRegistry).
+`forge test`: **119/119 passing** (19 local + 19 Unichain fork + 29 ReservationModel, which re-runs the 19 local + 4 SwapVM + 18 Court verifier + 30 BondRegistry).
 
 | Piece | State | Where |
 |---|---|---|
