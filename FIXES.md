@@ -4,16 +4,16 @@ A self-contained brief for whoever picks up this work, human or agent. It says w
 
 **Goal:** trading through Blindfold should be about as seamless as a normal swap, while keeping the promised privacy (sealed orders) and safety (a user's limit is always enforced; funds can always be recovered permissionlessly).
 
-**Status on 2026-11-07:** fixes 1 and 2 are implemented in open PRs. Everything from fix 3 on is proposed, not built.
+**Status on 2026-11-07:** fixes 1–5 are implemented in open PRs. Fixes 6–9 are proposed, not built.
 
 | # | Fix | Lane | Status |
 |---|---|---|---|
 | 0 | Measure fill, unfilled and expiry rates on real order flow | Kritarth | PR [#76](https://github.com/kodykebab/blindfold/pull/76) |
 | 1 | Oracle latest-trade check rejects quiet pools | Kritarth | PR [#77](https://github.com/kodykebab/blindfold/pull/77) |
 | 2 | Proving margin and near-deadline orders | Kritarth + Khush | PR [#78](https://github.com/kodykebab/blindfold/pull/78) |
-| 3 | A slow or missing solver expires batches | Kritarth + Khush | proposed |
-| 4 | Order limits: defaults and presentation | Khush | proposed |
-| 5 | Unfilled orders: one-click or automatic resubmit | Khush | proposed |
+| 3 | A slow or missing solver expires batches | Kritarth + Khush | PR [#83](https://github.com/kodykebab/blindfold/pull/83); solver payment still open |
+| 4 | Order limits: defaults and presentation | Khush | PR [#84](https://github.com/kodykebab/blindfold/pull/84) |
+| 5 | Unfilled orders: one-click or automatic resubmit | Khush | PR [#84](https://github.com/kodykebab/blindfold/pull/84); fee refund still open |
 | 6 | Automatic encrypted backup of private state | Khush | proposed |
 | 7 | Deployment defaults: batch length and oracle parameters | Kritarth | proposed |
 | 8 | Positioning and expected cost shown up front | all | proposed |
@@ -111,6 +111,8 @@ OBS_AGE=120,0 LEAD=120,60 BATCHES=60,120,300 SLIPPAGE=30,50,100 node packages/so
 
 ## 3. A slow or missing solver expires batches
 
+**Done in PR #83:** the keeper settles a batch the solver hasn't settled within `KEEPER_SETTLE_GRACE_S` (default 15 s) of its reveal deadline, by running `solver.mjs --once` with its own key inside its gas budget. A fork test shows a 240 s-late settlement passing on the real USDC/WETH pool with `maxDelay` 300, and failing with 30. **Still open:** item 3 below (paying solvers), and choosing `maxDelay` per deployment (fix 7).
+
 **Problem.**
 - **Short deadline.** The external route can only settle within `maxDelay` of the reveal deadline: `UniswapV3Market.referencePrice` reverts `StaleReference` after that. With `maxDelay` 30 s, any settle window longer than 30 s is mostly unusable for that route; the development deployments use 30–300 s settle windows.
 - **Thin margin.** The solver submits up to 2 s before `settleCloses` (`packages/solver/solver.mjs`, `externalDeadline`). In practice the reference deadline comes first, so one slow RPC call or a missed block expires the batch.
@@ -133,6 +135,8 @@ OBS_AGE=120,0 LEAD=120,60 BATCHES=60,120,300 SLIPPAGE=30,50,100 node packages/so
 
 ## 4. Order limits: defaults and presentation
 
+**Done in PR #84:** `commit sell 10` quotes from the external market's reference at the latest block, after the pool fee, and sets the limit `--slippage` bps below it (default 50). A market that can't price refuses the order up front, and the order is shown as "at least X, or you keep your funds". **Still open:** the browser app (#62, #74).
+
 **Problem.** The CLI asks for `minAmountOut` directly. Users think in swaps (amount in, slippage), not uniform-price limits. A swap-like tight limit goes unfilled when the price drifts during the wait: in the replay, a 10 bps limit filled only about half of USDC/WETH orders, against 90–95% at 50 bps.
 
 **Proposed change** (client, then the browser app in PR [#74](https://github.com/kodykebab/blindfold/pull/74) and issue #62):
@@ -143,6 +147,8 @@ OBS_AGE=120,0 LEAD=120,60 BATCHES=60,120,300 SLIPPAGE=30,50,100 node packages/so
 **Acceptance:** unit tests for limit derivation, including decimals and both directions; the CLI e2e commits through the new flow; issue #19's stale-quote and unfavourable-pool cases are tested.
 
 ## 5. Unfilled orders: one-click or automatic resubmit
+
+**Done in PR #84:** `resubmit` re-places the last unfilled or expired order with a fresh quote, once per original. `keep-ready` keeps one preparation ready for the next reachable batch. **Still open:** item 3 below (whether a resubmit should pay the fee again; for now it does).
 
 **Problem.** An unfilled or expired order leaves the user with funds unlocked but no trade. Trying again means a new order, new proofs (about 100 s inline, or 47 s with a prepared key), another commit fee and another full wait.
 
