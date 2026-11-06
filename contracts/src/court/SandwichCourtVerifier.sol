@@ -82,7 +82,7 @@ contract SandwichCourtVerifier {
     }
 
     struct Swap {
-        address trader; // v3 recipient / v4 sender
+        address caller; // the contract that called the pool: v3 `sender`, v4 `sender` (the PoolManager's caller)
         int256 amount0; // pool side: positive = paid into the pool
         int256 amount1;
     }
@@ -124,9 +124,11 @@ contract SandwichCourtVerifier {
         address vSigner = _proveAndRecover(c.victim, h.txRoot);
         address bSigner = _proveAndRecover(c.back, h.txRoot);
 
-        (bool z, uint256 profit, uint256 frontIn) = _predicate(f, vs, b);
+        // who: one signer for both attacker legs, another for the victim. Checked before the swaps' shape, so legs
+        // borrowed from other wallets fail here even when one shared router made every swap (S5)
         if (fSigner != bSigner) revert NotSandwich(6);
         if (vSigner == fSigner) revert NotSandwich(7);
+        (bool z, uint256 profit, uint256 frontIn) = _predicate(f, vs, b);
 
         v = Verdict({
             blockNumber: h.number,
@@ -233,14 +235,14 @@ contract SandwichCourtVerifier {
         bytes32 t0 = bytes32(RLPReader.readBytes(topics[0]));
         if (c.v4) {
             if (t0 != V4_SWAP || bytes32(RLPReader.readBytes(topics[1])) != c.poolId) revert NoSwapLog(leg.index);
-            sw.trader = address(uint160(uint256(bytes32(RLPReader.readBytes(topics[2])))));
+            sw.caller = address(uint160(uint256(bytes32(RLPReader.readBytes(topics[2])))));
             (int128 a0, int128 a1) = abi.decode(data, (int128, int128));
             // v4 emits swapper-side deltas (negative = paid in); convert to the v3 pool-side convention
             sw.amount0 = -int256(a0);
             sw.amount1 = -int256(a1);
         } else {
             if (t0 != V3_SWAP) revert NoSwapLog(leg.index);
-            sw.trader = address(uint160(uint256(bytes32(RLPReader.readBytes(topics[2])))));
+            sw.caller = address(uint160(uint256(bytes32(RLPReader.readBytes(topics[1])))));
             (sw.amount0, sw.amount1) = abi.decode(data, (int256, int256));
         }
     }
@@ -256,7 +258,9 @@ contract SandwichCourtVerifier {
         z = f.amount0 > 0; // front pays token0 into the pool
         if ((v.amount0 > 0) != z) revert NotSandwich(1); // victim trades the same direction
         if ((b.amount0 > 0) == z) revert NotSandwich(1); // back trades the opposite direction
-        if (f.trader != b.trader || f.trader == v.trader) revert NotSandwich(4);
+        // S5: the attacker's legs are bound by one signer (checked in `verify`) and one contract making both swaps.
+        // The victim's route is not checked: a router's address is not the trader, and the receipt binds the tx.
+        if (f.caller != b.caller) revert NotSandwich(4);
 
         // tokens the front leg bought vs. what the back leg sold
         uint256 bought = uint256(-(z ? f.amount1 : f.amount0));

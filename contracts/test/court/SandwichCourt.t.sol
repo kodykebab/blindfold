@@ -26,6 +26,11 @@ contract VerifierHarness is SandwichCourtVerifier {
     function predicate(Swap memory f, Swap memory v, Swap memory b) external pure returns (bool, uint256, uint256) {
         return _predicate(f, v, b);
     }
+
+    /// @dev The proven Swap of a claim's front (0), victim (1) or back (2) leg.
+    function legSwap(Claim calldata c, uint256 which) external pure returns (Swap memory) {
+        return _swapOf(which == 0 ? c.front : which == 1 ? c.victim : c.back, c, _header(c.header));
+    }
 }
 
 /// @dev Fixture loading and block-hash installation, shared by the Court test contracts.
@@ -34,6 +39,11 @@ abstract contract CourtFixtures is Test {
 
     string constant V3 = "test/court/fixtures/v3.json";
     string constant V4 = "test/court/fixtures/v4.json";
+    // block 26354079: attacker and victim both trade through the v4 Universal Router (S5)
+    string constant V4_ROUTER = "test/court/fixtures/v4router.json";
+    // the same block's front and victim, with a later swap through that router by a third wallet as the "back"
+    string constant V4_ROUTER_UNRELATED = "test/court/fixtures/v4router-unrelated.json";
+    address constant UNIVERSAL_ROUTER = 0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af;
     address constant HISTORY = 0x0000F90827F1C53a10cb7A02335B175320002935;
 
     VerifierHarness court;
@@ -221,6 +231,31 @@ contract SandwichCourtTest is CourtFixtures {
         court.verify(c);
     }
 
+    // ---- router attribution (S5), on real swaps
+
+    function test_v4_sharedRouter_victimIsAVictim() public {
+        // the old predicate rejected this real sandwich: the victim's swap and the attacker's were both made by the
+        // Universal Router, and a router's address was taken to be the trader
+        (SandwichCourtVerifier.Claim memory c, string memory j) = _claim(V4_ROUTER);
+        _installBlockhash(j);
+        for (uint256 i; i < 3; i++) {
+            assertEq(court.legSwap(c, i).caller, UNIVERSAL_ROUTER, "every leg's swap was made by the router");
+        }
+        SandwichCourtVerifier.Verdict memory v = court.verify(c);
+        _assertVerdict(v, j);
+        assertTrue(v.attacker != v.victim);
+    }
+
+    function test_rejects_sharedRouter_unrelatedWallets() public {
+        // three real swaps in one pool, all made by the Universal Router, signed by three different wallets: the
+        // router is no identity, so this is no sandwich
+        (SandwichCourtVerifier.Claim memory c, string memory j) = _claim(V4_ROUTER_UNRELATED);
+        _installBlockhash(j);
+        assertEq(court.legSwap(c, 0).caller, court.legSwap(c, 2).caller, "same router on both 'attacker' legs");
+        vm.expectRevert(abi.encodeWithSelector(SandwichCourtVerifier.NotSandwich.selector, uint8(6)));
+        court.verify(c);
+    }
+
     // ---- predicate (synthetic swaps, pool-side amounts)
 
     function test_predicate() public view {
@@ -236,6 +271,16 @@ contract SandwichCourtTest is CourtFixtures {
         assertEq(frontIn, 50);
     }
 
+    function test_predicate_sharedRouter() public view {
+        // S5: attacker and victim both trade through one public router; the router is not the trader
+        address router = address(0x7247);
+        SandwichCourtVerifier.Swap memory f = SandwichCourtVerifier.Swap(router, 50, -100);
+        SandwichCourtVerifier.Swap memory v = SandwichCourtVerifier.Swap(router, 10, -18);
+        SandwichCourtVerifier.Swap memory b = SandwichCourtVerifier.Swap(router, -52, 100);
+        (, uint256 profit,) = court.predicate(f, v, b);
+        assertEq(profit, 2);
+    }
+
     function test_predicate_rejections() public {
         address bot = address(0xB07);
         address user = address(0xA11CE);
@@ -245,7 +290,7 @@ contract SandwichCourtTest is CourtFixtures {
         vm.expectRevert(abi.encodeWithSelector(SandwichCourtVerifier.NotSandwich.selector, uint8(1)));
         court.predicate(f, SandwichCourtVerifier.Swap(user, -10, 18), SandwichCourtVerifier.Swap(bot, -52, 100));
         vm.expectRevert(abi.encodeWithSelector(SandwichCourtVerifier.NotSandwich.selector, uint8(4)));
-        court.predicate(f, v, SandwichCourtVerifier.Swap(user, -52, 100));
+        court.predicate(f, v, SandwichCourtVerifier.Swap(user, -52, 100)); // back made by another contract
         vm.expectRevert(abi.encodeWithSelector(SandwichCourtVerifier.NotSandwich.selector, uint8(2)));
         court.predicate(f, v, SandwichCourtVerifier.Swap(bot, -26, 50)); // closes only half
         vm.expectRevert(abi.encodeWithSelector(SandwichCourtVerifier.NotSandwich.selector, uint8(3)));

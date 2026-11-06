@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 const BOT = '0xb07', USER = '0xa11ce', ROUTER = '0xrouter'
-const swap = (txIndex, from, trader, a0, a1) => ({ v4: false, pool: '0xpool', poolId: '0x00', txIndex, logIndex: 0, from, trader, a0, a1 })
+const swap = (txIndex, from, caller, a0, a1) => ({ v4: false, pool: '0xpool', poolId: '0x00', txIndex, logIndex: 0, from, caller, a0, a1 })
 
 test('finds a sandwich: front and victim pay token0 in, back closes it at a profit', async () => {
   const { findSandwiches } = await import('../lib.mjs')
@@ -20,6 +20,29 @@ test('rejects what the verifier rejects', async () => {
   assert.equal(findSandwiches([front, victim, swap(3, BOT, BOT, -26n, 50n)]).length, 0, 'closes only half')
   assert.equal(findSandwiches([front, victim, swap(3, BOT, BOT, -49n, 100n)]).length, 0, 'a loss')
   assert.equal(findSandwiches([front, swap(2, USER, ROUTER, -10n, 18n), swap(3, BOT, BOT, -52n, 100n)]).length, 0, 'victim trades the other way')
+  assert.equal(findSandwiches([front, victim, swap(3, BOT, '0xother', -52n, 100n)]).length, 0, 'back made by another contract')
+  assert.equal(findSandwiches([front, swap(2, BOT, ROUTER, 10n, -18n), swap(3, BOT, BOT, -52n, 100n)]).length, 0, 'victim signed by the attacker')
+  // the front pays nothing in (token1 = 0), however much the back gets: as the verifier's NotSandwich(3)
+  const free = [swap(1, BOT, BOT, -100n, 0n), swap(2, USER, ROUTER, -18n, 10n), swap(3, BOT, BOT, 100n, -52n)]
+  assert.equal(findSandwiches(free).length, 0, 'front paid nothing in')
+})
+
+test('S5: a victim on the same router as the attacker is still a victim', async () => {
+  const { findSandwiches } = await import('../lib.mjs')
+  // the attacker routes both legs through a public router that the victim also uses
+  const found = findSandwiches([swap(1, BOT, ROUTER, 50n, -100n), swap(2, USER, ROUTER, 10n, -18n), swap(3, BOT, ROUTER, -52n, 100n)])
+  assert.equal(found.length, 1)
+  assert.equal(found[0].victim.from, USER)
+})
+
+test('S5: swapLogs reads the v3 pool caller (sender), not the recipient', async () => {
+  const { swapLogs, V3_SWAP } = await import('../lib.mjs')
+  const t = (b) => '0x' + '00'.repeat(12) + b.repeat(20)
+  const receipt = {
+    status: '0x1', transactionIndex: '0x1', from: '0xABC',
+    logs: [{ address: '0xPOOL', topics: [V3_SWAP, t('aa'), t('bb')], data: '0x' + '00'.repeat(32 * 5) }],
+  }
+  assert.equal(swapLogs([receipt])[0].caller, '0x' + 'aa'.repeat(20))
 })
 
 test('V4_POOL_MANAGER selects which PoolManager logs count, and v4 amounts are negated to pool-side', async () => {
