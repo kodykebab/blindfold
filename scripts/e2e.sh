@@ -28,6 +28,7 @@ forge build --root "$root/contracts" --no-dynamic-test-linking "$root/packages/s
 echo 'Local tier (admission off): real client, web service, keeper, solver and v4 pool; recorded drand and local test tokens.'
 WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs
 STACK_E2E=1 node --test packages/solver/test/local-stack.e2e.test.mjs
+ACCEPT_E2E=1 node --test packages/solver/test/acceptance.e2e.test.mjs
 CLIENT_E2E=1 node --test packages/client/test/e2e.test.mjs
 DEADLINE_E2E=1 node --test packages/client/test/deadline.e2e.test.mjs
 KEEPER_E2E=1 node --test packages/keeper/test/e2e.test.mjs
