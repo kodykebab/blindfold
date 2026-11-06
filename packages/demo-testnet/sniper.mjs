@@ -10,12 +10,15 @@
 import { createServer } from 'node:http'
 import { decodeErrorResult, decodeFunctionData, formatEther, parseAbi, parseTransaction, recoverTransactionAddress } from 'viem'
 import { planSandwich } from '../demo-bots/lib.mjs'
+import { orderedSandwich } from './lib.mjs'
 import {
-  BLINDFOLD_FILE, MEMPOOL_PORT, ROLES, RPC_URL, SANDWICH_FILE, account, artifact, eth, mined, poolIdOf, pub, same, wallet, explorerTx,
+  BLINDFOLD_FILE, MEMPOOL_PORT, ROLES, RPC_URL, SANDWICH_FILE, account, artifact, demoArtifact, eth, mined, pub, same, v3Artifact, wallet, explorerTx,
 } from './common.mjs'
 import { readFileSync, existsSync } from 'node:fs'
 
-const ROUTER = artifact('DemoSwap.sol', 'DemoRouter')
+const ROUTER = demoArtifact('V3Demo')
+const V3POOL = v3Artifact('UniswapV3Pool')
+const ERC20 = artifact('MockERC20.sol', 'MockERC20')
 const BOT = artifact('DemoSwap.sol', 'SandwichBot')
 const SETTLEMENT = artifact('BlindfoldSettlement.sol', 'BlindfoldSettlement')
 // v4 wraps a hook's revert in WrappedError(hook, selector, reason, details); name both layers
@@ -52,33 +55,35 @@ async function rpc(method, params) {
 /** Plans the sandwich and sends the front leg; returns a function that sends the back leg, or null. */
 async function front(demo, tx) {
   const { args } = decodeFunctionData({ abi: ROUTER.abi, data: tx.data })
-  const [k, zeroForOne, victimIn, victimMin] = args
-  if (poolIdOf(k) !== demo.poolId || !zeroForOne) return null // the bot holds ETH: it fronts ETH-in swaps only
-  const [sqrtPriceX96, liquidity] = await pub.readContract({ address: demo.bot, abi: BOT.abi, functionName: 'poolState', args: [k] })
+  const [zeroForOne, victimIn, victimMin] = args
+  if (!zeroForOne) return null
+  const [slot, liquidity] = await Promise.all([pub.readContract({ address: demo.pool, abi: V3POOL.abi, functionName: 'slot0' }), pub.readContract({ address: demo.pool, abi: V3POOL.abi, functionName: 'liquidity' })])
+  const sqrtPriceX96 = slot[0]
   const plan = planSandwich({
-    sqrtPriceX96, liquidity, fee: k.fee, zeroForOne, victimIn, minOut: victimMin, maxFront: await pub.getBalance({ address: demo.bot }),
+    sqrtPriceX96, liquidity, fee: 3000, zeroForOne, victimIn, minOut: victimMin, maxFront: await pub.readContract({ address: demo.token0, abi: ERC20.abi, functionName: 'balanceOf', args: [demo.bot] }),
   })
   if (!plan) return log('bot: swap seen, slippage too tight to profit; skipping'), null
-  log(RED(`bot: victim buys DEMO with ${eth(victimIn)}, accepts ≥ ${formatEther(victimMin)} DEMO. Front-running with ${eth(plan.frontIn)}`))
+  log(RED(`bot: victim swaps ${formatEther(victimIn)} input, accepts ≥ ${formatEther(victimMin)} output. Front-running with ${formatEther(plan.frontIn)} input`))
   const tip = (tx.maxPriorityFeePerGas ?? tx.gasPrice ?? 0n)
   const maxFee = (tx.maxFeePerGas ?? tx.gasPrice ?? 0n)
   // outbid the victim's tip, not by a fixed gwei: testnet gas is ~0.001 gwei and a 1 gwei bump costs more than the sandwich earns
   const frontTip = tip * 2n + 1n
   const nonce = await pub.getTransactionCount({ address: owner.address, blockTag: 'pending' })
   const leg = (legArgs, i, t, f) => wallet(owner).writeContract({
-    address: demo.bot, abi: BOT.abi, functionName: 'swap', args: legArgs, nonce: nonce + i, gas: 300_000n,
+    address: demo.bot, abi: ROUTER.abi, functionName: 'swap', args: legArgs, nonce: nonce + i, gas: 300_000n,
     maxPriorityFeePerGas: t, maxFeePerGas: f,
   })
-  const before = await pub.getBalance({ address: demo.bot })
-  const frontHash = await leg([k, zeroForOne, plan.frontIn], 0, frontTip, maxFee + frontTip)
+  const before = await pub.readContract({ address: demo.token0, abi: ERC20.abi, functionName: 'balanceOf', args: [demo.bot] })
+  const frontHash = await leg([zeroForOne, plan.frontIn], 0, frontTip, maxFee + frontTip)
   // the back leg goes out only after the victim's tx, so it can't land before it
   return async (victimHash) => {
-    const backHash = await leg([k, !zeroForOne, 0n], 1, tip / 2n, maxFee)
+    const backHash = await leg([!zeroForOne, 0n], 1, tip / 2n, maxFee)
     const [f, v, b] = await Promise.all([frontHash, victimHash, backHash].map((h) => mined(h).catch((e) => ({ error: e }))))
     if (f.error || v.error || b.error) return log(RED(`bot: a leg failed: ${(f.error ?? v.error ?? b.error).message}`))
-    const profit = (await pub.getBalance({ address: demo.bot })) - before
+    const profit = (await pub.readContract({ address: demo.token0, abi: ERC20.abi, functionName: 'balanceOf', args: [demo.bot] })) - before
     const gas = f.gasUsed * f.effectiveGasPrice + b.gasUsed * b.effectiveGasPrice
-    log(RED(`SANDWICHED: front block ${f.blockNumber}#${f.transactionIndex}, victim ${v.blockNumber}#${v.transactionIndex}, back ${b.blockNumber}#${b.transactionIndex}; bot profit ${eth(profit)} (${eth(profit - gas)} after gas)`))
+    const outcome = orderedSandwich(f, v, b) ? 'SANDWICHED' : 'NOT SANDWICHED (legs not ordered in one block)'
+    log(RED(`${outcome}: front block ${f.blockNumber}#${f.transactionIndex}, victim ${v.blockNumber}#${v.transactionIndex}, back ${b.blockNumber}#${b.transactionIndex}; bot profit ${formatEther(profit)} input tokens; gas ${eth(gas)}`))
     log(RED(`  front ${explorerTx(f.transactionHash)}\n  back  ${explorerTx(b.transactionHash)}`))
   }
 }
@@ -95,7 +100,7 @@ async function sealed(tx, dep) {
     log(GREEN(`bot: can't decrypt (${e.message.split('\n')[0]}). No side, size or limit price`))
   }
   if (!dep.poolKey) return
-  const attempt = { address: load(SANDWICH_FILE).bot, abi: [...BOT.abi, ...ERRORS], functionName: 'swap', args: [dep.poolKey, true, 10n ** 18n] }
+  const attempt = { address: load(SANDWICH_FILE).sealedBot, abi: [...BOT.abi, ...ERRORS], functionName: 'swap', args: [dep.poolKey, true, 10n ** 18n] }
   try {
     await pub.simulateContract({ account: owner, ...attempt })
     log(RED('bot: the sealed pool accepted an outside swap?!'))

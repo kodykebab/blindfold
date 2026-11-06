@@ -1,6 +1,6 @@
 # demo-testnet
 
-Live demo on a public testnet: a sniper bot sandwiches ordinary swaps, then fails against Blindfold.
+Live demo on a public testnet: a sniper bot sandwiches ordinary Uniswap v3 swaps, then fails against Blindfold.
 
 ## Wallets (9, from one mnemonic in `.env`)
 
@@ -18,7 +18,8 @@ Never use anvil's public test mnemonic on a real chain: on Unichain Sepolia its 
 
 ```bash
 source env.sh
-(cd contracts && forge build --no-dynamic-test-linking)   # without the flag, test helpers call a cheatcode and revert on a real chain
+(cd contracts && forge build --no-dynamic-test-linking)   # required for real-chain deployment
+forge build --root packages/demo-testnet/contracts
 cd packages/demo-testnet && npm ci
 npm run wallets -- new          # writes DEMO_MNEMONIC to .env (gitignored)
 npm run wallets -- list         # fund the deployer (index 0) with 0.13 ETH from a faucet
@@ -26,9 +27,9 @@ npm run wallets -- fund         # deployer tops the others up to FUND_ETH; the s
 npm run deploy                  # both scenes; writes deployments/demo.testnet.json and blindfold.testnet.json
 ```
 
-`RPC_URL` defaults to Unichain Sepolia (`https://sepolia.unichain.org`), where both scenes use Uniswap's own v4 PoolManager (`0x00B036B58a818B1BC34d502D3fE730Db729e62AC`). On any other chain, `deploy` deploys a PoolManager.
+`RPC_URL` defaults to Unichain Sepolia (`https://sepolia.unichain.org`). Scene 1 creates a v3 pool using the factory in Uniswap's published deployment manifest; scene 2 uses the v4 PoolManager. Set `V3_FACTORY` to use a factory explicitly. Elsewhere, `deploy` creates its own v3 factory and v4 PoolManager unless configured otherwise. The v3 pool uses two freely minted demo tokens; the bot's profit and the victim's loss are in those tokens.
 
-The deployer needs 0.12 ETH at the defaults: 0.01 for each of 8 wallets, 0.02 for the bot's capital and 0.02 for the pool. Gas on Unichain Sepolia costs almost nothing (about 0.0015 gwei). Scale everything down together with `FUND_ETH`, `BOT_ETH`, `POOL_ETH` and `SWAP_ETH`.
+The deployer needs testnet ETH for wallet funding and gas. The pool, bot and victim swaps use demo tokens rather than ETH; `POOL_ETH`, `BOT_ETH` and `SWAP_ETH` specify their token amounts in 18-decimal units. The default wallet funding transfers 0.1 ETH in total. Keep additional ETH for deployment and transaction gas.
 
 ## Rehearse without a faucet
 
@@ -60,7 +61,7 @@ Terminal 2:
 ```bash
 npm run traffic -- swap
 ```
-Each victim loses about its whole slippage to a front-run and back-run in the same block. The sniper prints its profit, and every transaction gets a Uniscan link.
+Each victim is quoted an output and then swaps through the v3 pool. The sniper prints the three transaction positions and its demo-token profit. When all three land in one block, the haveibeensandwiched page on Testnet can check the victim transaction hash.
 
 ### 2. Blindfold: the same bot finds nothing
 ```bash
@@ -100,10 +101,12 @@ Each account can hold commitments in only one open batch at a time. Scenarios us
 | Var | Default |
 |---|---|
 | `RPC_URL` | `https://sepolia.unichain.org` |
-| `POOL_MANAGER` | Uniswap's on Unichain Sepolia; elsewhere, or `new`, deploys one |
+| `POOL_MANAGER` | Uniswap's v4 PoolManager on Unichain Sepolia; elsewhere, or `new`, deploys one |
+| `V3_FACTORY` | Factory from Uniswap's published Unichain Sepolia manifest; elsewhere deploys one |
 | `MEMPOOL_PORT` | `8546` |
 | `SNIPER_ONCHAIN` | `1`: land one reverted front-run per batch; `0` simulates only |
-| `FUND_ETH` / `POOL_ETH` / `BOT_ETH` | `0.01` / `0.02` / `0.02` ETH |
-| `SWAP_ETH` / `SLIPPAGE_BPS` | `0.004` ETH / `300` |
+| `FUND_ETH` | `0.01` ETH per wallet; sniper receives an additional `BOT_ETH` |
+| `POOL_ETH` / `BOT_ETH` | `0.02` / `0.02` demo tokens for pool liquidity and bot inventory |
+| `SWAP_ETH` / `SLIPPAGE_BPS` | `0.004` demo input tokens / `300` |
 | `BATCH_SECONDS` / `DEPOSIT` / `VICTIM_TOKENS` / `SEALED_LIQUIDITY` / `ORDER_SIZE` | `60` / `1` / `1000` / `10000` / `10` |
 | `SANDWICH_DEPLOYMENTS` / `DEPLOYMENTS` | `deployments/demo.testnet.json` / `deployments/blindfold.testnet.json` |

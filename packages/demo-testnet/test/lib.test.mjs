@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { getCreate2Address, keccak256, zeroAddress } from 'viem'
-import { DRAND_GENESIS, drandSchedule, mineHookSalt, parseTrack, poolIdOf } from '../lib.mjs'
+import { DRAND_GENESIS, drandSchedule, mineHookSalt, orderedSandwich, parseTrack, poolIdOf, v3FactoryFromManifest } from '../lib.mjs'
 
 test('poolIdOf matches a live mainnet v4 pool (ETH/USDC 0.05%)', () => {
   const key = { currency0: zeroAddress, currency1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', fee: 500, tickSpacing: 10, hooks: zeroAddress }
@@ -37,4 +37,17 @@ test('parseTrack reads the client\'s track lines, fills included', () => {
     { id: 4, batch: 7, state: 'unfilled', what: 'buy 10000000000000000000', fill: '' },
     { id: 5, batch: 8, state: 'committed', what: 'sealed', fill: '' },
   ])
+})
+
+test('v3 factory discovery accepts the official document and rejects a missing factory', () => {
+  const address = '0x1234567890123456789012345678901234567890'
+  assert.equal(v3FactoryFromManifest(`### Uniswap V3 Factory\n\nAddress: [${address}](https://example.com)`), address)
+  assert.throws(() => v3FactoryFromManifest('### Other Factory\nAddress: ' + address), /cannot find v3 factory/)
+})
+
+test('a detected sandwich requires three ordered transactions in one block', () => {
+  const leg = (blockNumber, transactionIndex) => ({ blockNumber, transactionIndex })
+  assert.equal(orderedSandwich(leg(12n, 0), leg(12n, 1), leg(12n, 2)), true)
+  assert.equal(orderedSandwich(leg(12n, 0), leg(12n, 1), leg(13n, 0)), false)
+  assert.equal(orderedSandwich(leg(12n, 1), leg(12n, 0), leg(12n, 2)), false)
 })

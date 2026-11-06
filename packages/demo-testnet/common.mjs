@@ -67,6 +67,9 @@ export function artifact(file, name) {
   return readJson(`${dir}/${f}`, 'Run `forge build` in contracts/.')
 }
 
+export const demoArtifact = (name) => readJson(here(`contracts/out/V3Demo.sol/${name}.json`), 'Run `forge build --root packages/demo-testnet/contracts`.')
+export const v3Artifact = (name) => readJson(here(`node_modules/@uniswap/v3-core/artifacts/contracts/${name}.sol/${name}.json`), 'Run npm ci in packages/demo-testnet/.')
+
 export async function mined(hash) {
   const rc = await pub.waitForTransactionReceipt({ hash, timeout: 120_000 })
   if (rc.status !== 'success') throw new Error(`tx ${hash} reverted`)

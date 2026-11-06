@@ -1,21 +1,20 @@
 // Deploys both demo scenes with the deployer wallet and writes their deployments files.
-//   Scene 1, the unprotected swap: a plain (no-hook) ETH/DEMO 0.3% v4 pool on Uniswap's v4 PoolManager (or a fresh one), the DemoRouter
-//     victims swap through, and the sniper's SandwichBot (deployed by the sniper wallet, holding BOT_ETH).
+//   Scene 1, the unprotected swap: a 0.3% Uniswap v3 pool with two demo tokens, a router and a funded sniper.
 //     -> deployments/demo.testnet.json
 //   Scene 2, Blindfold: two demo tokens, the vault, a BlindfoldSettlement on a drand-aligned schedule and its sealed
-//     pool (SealedPoolHook, CREATE2-mined, on the same PoolManager, so only the settlement can swap there) with
+//     pool (SealedPoolHook, CREATE2-mined on the v4 PoolManager, so only the settlement can swap there) with
 //     liquidity for the residual; every victim gets VICTIM_TOKENS of each token.
 //     -> deployments/blindfold.testnet.json (the client/keeper/solver format)
-// Env: POOL_ETH (0.02) ETH of pool liquidity, BOT_ETH (0.02), POOL_MANAGER (address, or `new`), VICTIM_TOKENS (1000), BATCH_SECONDS (60),
+// Env: POOL_ETH (0.02) demo tokens of pool liquidity, BOT_ETH (0.02), POOL_MANAGER (address, or `new`), VICTIM_TOKENS (1000), BATCH_SECONDS (60),
 //      DEPOSIT (1 token1 per commitment), SEALED_LIQUIDITY (10000 tokens). Contracts come from contracts/out: run `forge build` first.
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { parseEther, toHex, zeroAddress } from 'viem'
+import { parseEther, toHex } from 'viem'
 import {
-  BLINDFOLD_FILE, E, ROLES, SANDWICH_FILE, VICTIMS, account, artifact, chain, mined, poolIdOf, pub, readJson, victimIndex,
+  BLINDFOLD_FILE, E, ROLES, SANDWICH_FILE, VICTIMS, account, artifact, chain, demoArtifact, mined, pub, readJson, v3Artifact, victimIndex,
   wallet,
 } from './common.mjs'
-import { drandSchedule, mineHookSalt } from './lib.mjs'
+import { drandSchedule, mineHookSalt, v3FactoryFromManifest } from './lib.mjs'
 
 const deployer = account(ROLES.deployer)
 const sniper = account(ROLES.sniper)
@@ -37,27 +36,40 @@ const save = (path, obj) => {
 }
 
 async function sandwichScene() {
-  console.log('scene 1: plain v4 pool')
-  const poolEth = parseEther(E.POOL_ETH || '0.02')
+  console.log('scene 1: Uniswap v3 pool')
+  const poolAmount = parseEther(E.POOL_ETH || '0.02')
   const known = E.POOL_MANAGER === 'new' ? undefined : E.POOL_MANAGER || V4_POOL_MANAGER[chain.id]
-  if (known && !((await pub.getCode({ address: known }))?.length > 2)) throw new Error(`no code at POOL_MANAGER ${known}; POOL_MANAGER=new deploys one`)
-  if (known) console.log(`  PoolManager ${known} (existing)`)
+  if (known && !((await pub.getCode({ address: known }))?.length > 2)) throw new Error(`no code at POOL_MANAGER ${known}`)
   const pm = known ?? await deploy(deployer, 'PoolManager.sol', 'PoolManager', [deployer.address])
-  const token = await deploy(deployer, 'MockERC20.sol', 'MockERC20', ['Demo', 'DEMO', 18])
-  const lp = await deploy(deployer, 'PoolModifyLiquidityTest.sol', 'PoolModifyLiquidityTest', [pm])
-  const router = await deploy(deployer, 'DemoSwap.sol', 'DemoRouter', [pm])
-  const bot = await deploy(sniper, 'DemoSwap.sol', 'SandwichBot', [pm], parseEther(E.BOT_ETH || '0.02'))
-  const key = { currency0: zeroAddress, currency1: token, fee: 3000, tickSpacing: 60, hooks: zeroAddress }
-  await call(pm, 'PoolManager.sol', 'PoolManager', 'initialize', [key, 2n ** 96n]) // 1 DEMO per ETH
-  await call(token, 'MockERC20.sol', 'MockERC20', 'mint', [deployer.address, poolEth * 2n])
-  await call(token, 'MockERC20.sol', 'MockERC20', 'approve', [lp, poolEth * 2n])
-  // full range at price 1: liquidity L holds ~L wei of each side; the helper refunds unused ETH
-  const range = { tickLower: -887220, tickUpper: 887220, liquidityDelta: poolEth, salt: `0x${'00'.repeat(32)}` }
-  await call(lp, 'PoolModifyLiquidityTest.sol', 'PoolModifyLiquidityTest', 'modifyLiquidity', [key, range, '0x'], poolEth + poolEth / 100n)
-  save(SANDWICH_FILE, {
-    chainId: chain.id, deployBlock: Number(await pub.getBlockNumber()), poolManager: pm, token, router, bot,
-    poolKey: key, poolId: poolIdOf(key),
-  })
+  let factory = E.V3_FACTORY
+  if (!factory && chain.id === 1301) {
+    const response = await fetch('https://raw.githubusercontent.com/Uniswap/contracts/main/deployments/1301.md')
+    if (!response.ok) throw new Error('cannot fetch Uniswap deployment manifest; set V3_FACTORY')
+    const document = await response.text()
+    factory = v3FactoryFromManifest(document)
+  }
+  const FACTORY = v3Artifact('UniswapV3Factory')
+  if (!factory) {
+    factory = (await mined(await wallet(deployer).deployContract({ abi: FACTORY.abi, bytecode: FACTORY.bytecode }))).contractAddress
+  }
+  if (!((await pub.getCode({ address: factory }))?.length > 2)) throw new Error(`no code at V3_FACTORY ${factory}`)
+  const a = await deploy(deployer, 'MockERC20.sol', 'MockERC20', ['Demo Input', 'DIN', 18])
+  const b = await deploy(deployer, 'MockERC20.sol', 'MockERC20', ['Demo Output', 'DOUT', 18])
+  const [token0, token1] = [a, b].sort((x, y) => BigInt(x) < BigInt(y) ? -1 : 1)
+  await mined(await wallet(deployer).writeContract({ address: factory, abi: FACTORY.abi, functionName: 'createPool', args: [token0, token1, 3000] }))
+  const pool = await pub.readContract({ address: factory, abi: FACTORY.abi, functionName: 'getPool', args: [token0, token1, 3000] })
+  const POOL = v3Artifact('UniswapV3Pool')
+  await mined(await wallet(deployer).writeContract({ address: pool, abi: POOL.abi, functionName: 'initialize', args: [2n ** 96n] }))
+  const ACTOR = demoArtifact('V3Demo')
+  const deployActor = async (acct) => (await mined(await wallet(acct).deployContract({ abi: ACTOR.abi, bytecode: ACTOR.bytecode.object, args: [pool] }))).contractAddress
+  const router = await deployActor(deployer)
+  const bot = await deployActor(sniper)
+  const sealedBot = await deploy(sniper, 'DemoSwap.sol', 'SandwichBot', [pm])
+  for (const token of [token0, token1]) await call(token, 'MockERC20.sol', 'MockERC20', 'mint', [router, poolAmount * 2n])
+  await mined(await wallet(deployer).writeContract({ address: router, abi: ACTOR.abi, functionName: 'addLiquidity', args: [poolAmount] }))
+  await call(token0, 'MockERC20.sol', 'MockERC20', 'mint', [bot, parseEther(E.BOT_ETH || '0.02')])
+  for (let i = 0; i < VICTIMS; i++) await call(token0, 'MockERC20.sol', 'MockERC20', 'mint', [account(victimIndex(i)).address, poolAmount * 5n])
+  save(SANDWICH_FILE, { chainId: chain.id, deployBlock: Number(await pub.getBlockNumber()), poolManager: pm, factory, pool, token0, token1, router, bot, sealedBot })
 }
 
 async function blindfoldScene() {
@@ -105,3 +117,5 @@ async function blindfoldScene() {
 const only = process.argv[2]
 if (!only || only === 'sandwich') await sandwichScene()
 if (!only || only === 'blindfold') await blindfoldScene()
+
+process.exit(0) // close RPC keep-alive sockets after the command completes

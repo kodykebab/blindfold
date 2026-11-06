@@ -65,6 +65,7 @@ export async function revealBatch(b, expected) {
     if (revealed < expected) await sleep(3000)
   }
   log(`keeper revealed ${revealed} order(s) in batch ${b}`)
+  if (revealed !== expected) throw new Error(`batch ${b}: expected ${expected} reveals, got ${revealed}`)
   return revealed
 }
 
@@ -73,6 +74,7 @@ export async function settleBatch(b) {
   await waitUntil(await read('revealCloses', [b]), `batch ${b}'s settle window`)
   const r = await solverOnce()
   const line = [r.out, r.err].join('\n').split('\n').find((l) => l.startsWith(`settled batch ${b}:`))
-  log(line ?? `solver did not settle batch ${b}: ${r.err || r.out || 'nothing to do'}`)
-  return line ?? null
+  if (!line) throw new Error(`solver did not settle batch ${b}: ${r.err || r.out || 'nothing to do'}`)
+  log(line)
+  return line
 }

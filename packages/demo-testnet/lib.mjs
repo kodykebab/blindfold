@@ -27,3 +27,16 @@ export function drandSchedule(now, batchSeconds) {
 /** The client's `track` lines: "#id batch b: state (what)" plus " → got X" for a fill. */
 export const parseTrack = (out) => [...out.matchAll(/^#(\d+) batch (\d+): (\w+) \((.*?)\)(.*)$/gm)]
   .map(([, id, batch, state, what, rest]) => ({ id: Number(id), batch: Number(batch), state, what, fill: rest.trim() }))
+
+/** Find the v3 factory in Uniswap's chain deployment document. */
+export function v3FactoryFromManifest(document) {
+  const address = document.match(/### Uniswap V3 Factory\s+Address: \[?(0x[0-9a-fA-F]{40})/)?.[1]
+  if (!address) throw new Error('cannot find v3 factory in Uniswap deployment manifest; set V3_FACTORY')
+  return address
+}
+
+/** A detectable sandwich has all three legs ordered in the same block. */
+export function orderedSandwich(front, victim, back) {
+  return front.blockNumber === victim.blockNumber && victim.blockNumber === back.blockNumber
+    && front.transactionIndex < victim.transactionIndex && victim.transactionIndex < back.transactionIndex
+}

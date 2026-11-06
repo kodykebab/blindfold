@@ -36,7 +36,7 @@ async function fund(each = E.FUND_ETH || '0.01') {
 
 function create() {
   if (existsSync(ENV_FILE) && !process.argv.includes('--force')) throw new Error(`${ENV_FILE} exists; pass --force to replace it`)
-  writeFileSync(ENV_FILE, `DEMO_MNEMONIC=${generateMnemonic(english)}\n`, { mode: 0o600 })
+  writeFileSync(ENV_FILE, `DEMO_MNEMONIC="${generateMnemonic(english)}"\n`, { mode: 0o600 })
   console.log(`wrote ${ENV_FILE}. Fund the deployer, then run \`npm run wallets -- fund\`.`)
 }
 
@@ -46,3 +46,5 @@ if (!commands[cmd]) {
   process.exit(2)
 }
 await commands[cmd]()
+
+process.exit(0) // close RPC keep-alive sockets after the command completes
