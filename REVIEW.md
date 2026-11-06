@@ -529,3 +529,16 @@ Peer-only validation (2026-11-06):
 - Local peer candidate search: one simulation, approximately 2 ms in each direction. This excludes setup, state reads, the CLI's fresh pre-send check, submission, and confirmation, and is not a live-network latency claim.
 - The local 64-order settlement call consumed 1,577,677 gas in warm test state. This excludes setup and is not a cold transaction gas estimate. The size check reported 18,513 runtime bytes for the selected build.
 - Touched Solidity files pass formatting checks; both patches pass `git diff --check`.
+
+Executable-lot fallback for the PR #6 dust-companion review: ordinary proportional
+input flooring stays when its output covers the ceil-rounded minimum. Otherwise
+input rounds down to amountIn/gcd(amountIn,minAmountOut); if that is zero the order
+stays unfilled. The fallback never rounds down the user's output minimum. Zero-
+minimum orders with zero output also stay unfilled. Solidity regressions include
+the review's 300-token/40-wei pair and both trade directions. The user selected
+this refinement after strict lot rounding reduced the fixed model corpus's
+rescued count from 49 to 38. Allocation is consequently price-dependent at these
+integer boundaries; solver discretion is not eliminated. The solver and model
+must use the same fallback, and complete clearing remains conditional.
+
+

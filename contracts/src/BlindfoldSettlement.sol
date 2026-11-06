@@ -270,12 +270,31 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
                     ? FullMath.mulDiv(f.amountIn, priceX96, Q96)
                     : FullMath.mulDiv(f.amountIn, Q96, priceX96);
                 uint256 minimum = FullMath.mulDivRoundingUp(o.minAmountOut, f.amountIn, o.amountIn);
+                if (f.amountOut < minimum) {
+                    // Preserve ordinary partial fills. Only an allocation that
+                    // violates its minimum falls back to a whole reduced lot.
+                    uint256 lot = _inputLot(o.amountIn, o.minAmountOut);
+                    f.amountIn = f.amountIn / lot * lot;
+                    if (f.amountIn == 0) return Fill(0, 0);
+                    f.amountOut = o.zeroForOne
+                        ? FullMath.mulDiv(f.amountIn, priceX96, Q96)
+                        : FullMath.mulDiv(f.amountIn, Q96, priceX96);
+                    minimum = FullMath.mulDivRoundingUp(o.minAmountOut, f.amountIn, o.amountIn);
+                }
+                if (f.amountOut == 0 && o.minAmountOut == 0) return Fill(0, 0);
                 if (f.amountOut == 0 || f.amountOut < minimum) revert PartialLimit(id);
                 return f;
             }
         }
         (uint256 out, bool fills) = quote(o, priceX96);
         if (fills) f = Fill(o.amountIn, out);
+    }
+
+    function _inputLot(uint128 amount, uint128 minimum) internal pure returns (uint256) {
+        uint256 a = amount;
+        uint256 b = minimum;
+        while (b != 0) (a, b) = (b, a % b);
+        return uint256(amount) / a;
     }
 
     function _collect(uint256[] storage ids, uint256 priceX96, PartialGroup memory group)
