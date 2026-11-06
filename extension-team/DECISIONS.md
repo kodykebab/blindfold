@@ -1,6 +1,6 @@
 # Decisions
 
-Bhoumik decided D1 to D7, D9 and D10 on 2026-11-06 (design doc open questions 1 to 9). D8 is a build convention.
+Bhoumik decided D1 to D7, D9 and D10 on 2026-11-06 (design doc open questions 1 to 9); D10 was updated the same day to sole ownership. D8 is a build convention.
 
 | # | Question | Decision | What it means for the build |
 | --- | --- | --- | --- |
@@ -13,7 +13,7 @@ Bhoumik decided D1 to D7, D9 and D10 on 2026-11-06 (design doc open questions 1 
 | D7 | Browsers | **Decided: all Chromium browsers** (Chrome, Chromium, Brave, Edge, Arc where its folder is documented) | The helper installer registers the native host in each browser's NativeMessagingHosts folder. Automated tests use Playwright's Chromium |
 | D8 | Extension ID | Fixed with a dev `key` in `manifest.json`: `eaoidifkamkmkbcomcbpldjlhipogdgo` (recorded in `INTERFACES.md`) | The helper's `allowed_origins` and the bridge use it |
 | D9 | Bridge origin | **Decided: a static page on a Blindfold https web address** in production (domain to be chosen) | Dev stays `http://localhost:4317`; the page must work as plain static files |
-| D10 | Ownership | **Decided: co-ownership agreed with Khush (client, UI) and Kritarth (prover) now** | Bhoumik tells them before anything from this branch lands |
+| D10 | Ownership | **Decided: the whole extension is Bhoumik's lane**: `packages/extension`, `packages/prover-helper`, `packages/bridge`, `packages/extension-e2e` | Khush's and Kritarth's code is still theirs: the extension reuses `packages/client` and the `local-prover` without editing them |
 
 ## Proposals
 Add a line: `agent N: proposal ... (why)`. Bhoumik decides.
