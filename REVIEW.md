@@ -510,3 +510,15 @@ Implemented on `kritarth/batch-ordering`, pending shared timing review and merge
 The fix adds no persisted cursor or predecessor walk. Empty and expired predecessors do not block subsequent batches; owners can still expire their earlier orders to release funds. Existing 30/60 cadence/window configuration is rejected explicitly, and the mechanism fixture now uses 30/30. Operators must select a longer cadence if they need a longer execution window.
 
 Validation: 198 passing test executions across ten suites with `forge test --fuzz-runs 4096 -vv`, including local and Unichain ordering regressions, 4,096 schedule fuzz cases, every drand alignment/cadence remainder, invalid and zero windows, and unfinalized/empty predecessors. Inherited mechanism tests are repeated across suites; this count is not 198 distinct scenarios. The case that previously allowed a later batch to change the pool before an earlier settlement now rejects the earlier settlement once the later window opens.
+
+Executable-lot fallback for the PR #6 dust-companion review: ordinary proportional
+input flooring stays when its output covers the ceil-rounded minimum. Otherwise
+input rounds down to amountIn/gcd(amountIn,minAmountOut); if that is zero the order
+stays unfilled. The fallback never rounds down the user's output minimum. Zero-
+minimum orders with zero output also stay unfilled. Solidity regressions include
+the review's 300-token/40-wei pair and both trade directions. The user selected
+this refinement after strict lot rounding reduced the fixed model corpus's
+rescued count from 49 to 38. Allocation is consequently price-dependent at these
+integer boundaries; solver discretion is not eliminated. The solver and model
+must use the same fallback, and complete clearing remains conditional.
+
