@@ -28,7 +28,8 @@ export function preflight({ order, tokenIn, depositToken, depositAmount, fee, fr
     return { token, need: amount, free: free[token], shortfall, approve }
   })
   if (order.amountIn > 0n && order.minAmountOut === 0n) problems.push('minAmountOut is 0: the order has no price protection')
-  if (batch.id !== batch.current) problems.push(`batch ${batch.id} is not open (current ${batch.current})`)
+  // The next batch is accepted too: the order is proved ahead and submitted as that batch opens.
+  if (batch.id !== batch.current && batch.id !== batch.current + 1n) problems.push(`batch ${batch.id} is not open (current ${batch.current})`)
   else if (batch.commits >= batch.maxCommits) problems.push(`batch ${batch.id} is full (${batch.maxCommits} commitments)`)
   else if (batch.commitsClose - batch.now < minLead) problems.push(`batch ${batch.id} closes in ${batch.commitsClose - batch.now}s; wait for the next one`)
   return { ok: problems.length === 0, problems, funding }
