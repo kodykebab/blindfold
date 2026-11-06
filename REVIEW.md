@@ -501,3 +501,12 @@ Validation on 2026-11-06:
 - Touched Solidity files pass `forge fmt --check`; the patch passes `git diff --check`.
 
  Other S-items remain proposals and are not fixed by this patch.
+
+
+### S2 implementation notes: batch execution order
+
+Implemented on `kritarth/batch-ordering`, pending shared timing review and merge; tracks GitHub issue #8. Constructor validation requires a positive settlement window no longer than `floor(batchLength / DRAND_PERIOD) * DRAND_PERIOD`. Because adjacent reveal deadlines differ by at least that amount, a later batch cannot execute while an earlier batch remains executable. This holds for unaligned start times and cadences, not only multiples of three.
+
+The fix adds no persisted cursor or predecessor walk. Empty and expired predecessors do not block subsequent batches; owners can still expire their earlier orders to release funds. Existing 30/60 cadence/window configuration is rejected explicitly, and the mechanism fixture now uses 30/30. Operators must select a longer cadence if they need a longer execution window.
+
+Validation: 198 passing test executions across ten suites with `forge test --fuzz-runs 4096 -vv`, including local and Unichain ordering regressions, 4,096 schedule fuzz cases, every drand alignment/cadence remainder, invalid and zero windows, and unfinalized/empty predecessors. Inherited mechanism tests are repeated across suites; this count is not 198 distinct scenarios. The case that previously allowed a later batch to change the pool before an earlier settlement now rejects the earlier settlement once the later window opens.
