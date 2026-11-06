@@ -20,6 +20,7 @@ Never use anvil's public test mnemonic on a real chain: on Unichain Sepolia its 
 source env.sh
 (cd contracts && forge build --no-dynamic-test-linking)   # required for real-chain deployment
 forge build --root packages/demo-testnet/contracts
+(cd packages/court-watcher && npm ci)
 cd packages/demo-testnet && npm ci
 npm run wallets -- new          # writes DEMO_MNEMONIC to .env (gitignored)
 npm run wallets -- list         # fund the deployer (index 0) with 0.13 ETH from a faucet
@@ -61,7 +62,7 @@ Terminal 2:
 ```bash
 npm run traffic -- swap
 ```
-Each victim is quoted an output and then swaps through the v3 pool. The sniper prints the three transaction positions and its demo-token profit. When all three land in one block, the haveibeensandwiched page on Testnet can check the victim transaction hash.
+Each victim is quoted an output and then swaps through the v3 pool. The sniper prints the three transaction positions and its demo-token profit. The traffic command verifies that the three swaps form a detectable sandwich in one block. The haveibeensandwiched page on Testnet can check the victim transaction hash.
 
 ### 2. Blindfold: the same bot finds nothing
 ```bash

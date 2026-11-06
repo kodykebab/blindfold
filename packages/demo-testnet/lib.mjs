@@ -40,3 +40,8 @@ export function orderedSandwich(front, victim, back) {
   return front.blockNumber === victim.blockNumber && victim.blockNumber === back.blockNumber
     && front.transactionIndex < victim.transactionIndex && victim.transactionIndex < back.transactionIndex
 }
+
+/** Find this victim's sandwich on the expected pool, not a different trade in the same block. */
+export function victimSandwich(sandwiches, hash, pool) {
+  return sandwiches.find((s) => s.victim.txHash.toLowerCase() === hash.toLowerCase() && s.victim.pool.toLowerCase() === pool.toLowerCase())
+}

@@ -7,12 +7,13 @@
 //                                      --settle then runs the keeper and the solver once each (accounts 1 and 2) and
 //                                      prints every victim's fill; without it, run them as services to settle.
 import { formatEther, parseEther } from 'viem'
+import { findSandwiches, rpc, swapLogs } from '../court-watcher/lib.mjs'
 import {
   BLINDFOLD_FILE, E, MEMPOOL_URL, RPC_URL, SANDWICH_FILE, VICTIMS, account, artifact, demoArtifact, explorerTx, mined, pub, readJson,
   victimIndex, wallet,
 } from './common.mjs'
 import { cli as clientAs, openBatch, revealBatch, settleBatch } from './flow.mjs'
-import { parseTrack } from './lib.mjs'
+import { parseTrack, victimSandwich } from './lib.mjs'
 
 const ROUTER = demoArtifact('V3Demo')
 const ERC20 = artifact('MockERC20.sol', 'MockERC20')
@@ -40,6 +41,10 @@ async function swap(n = VICTIMS) {
     const pct = Number(((quote - got) * 10_000n) / quote) / 100
     console.log(`victim${i + 1}: quoted ${formatEther(quote)} output tokens, got ${formatEther(got)} (${pct}% lost) block ${rc.blockNumber} ${explorerTx(hash)}`)
     await new Promise((r) => setTimeout(r, 3000)) // let the bot's back leg land before the next victim quotes
+    const receipts = await rpc(RPC_URL, 'eth_getBlockReceipts', [`0x${rc.blockNumber.toString(16)}`])
+    const sandwich = victimSandwich(findSandwiches(swapLogs(receipts)), hash, demo.pool)
+    if (!sandwich) throw new Error(`victim${i + 1}: no detectable same-block v3 sandwich; check the sniper log`)
+    console.log(`victim${i + 1}: detector verified front #${sandwich.front.txIndex}, victim #${sandwich.victim.txIndex}, back #${sandwich.back.txIndex}`)
   }
   console.log(`total lost to the sandwich bot: ${formatEther(lost)} output tokens`)
 }

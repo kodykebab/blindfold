@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { getCreate2Address, keccak256, zeroAddress } from 'viem'
-import { DRAND_GENESIS, drandSchedule, mineHookSalt, orderedSandwich, parseTrack, poolIdOf, v3FactoryFromManifest } from '../lib.mjs'
+import { DRAND_GENESIS, drandSchedule, mineHookSalt, orderedSandwich, parseTrack, poolIdOf, v3FactoryFromManifest, victimSandwich } from '../lib.mjs'
 
 test('poolIdOf matches a live mainnet v4 pool (ETH/USDC 0.05%)', () => {
   const key = { currency0: zeroAddress, currency1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', fee: 500, tickSpacing: 10, hooks: zeroAddress }
@@ -50,4 +50,11 @@ test('a detected sandwich requires three ordered transactions in one block', () 
   assert.equal(orderedSandwich(leg(12n, 0), leg(12n, 1), leg(12n, 2)), true)
   assert.equal(orderedSandwich(leg(12n, 0), leg(12n, 1), leg(13n, 0)), false)
   assert.equal(orderedSandwich(leg(12n, 1), leg(12n, 0), leg(12n, 2)), false)
+})
+
+test('victim verification matches the transaction and pool', () => {
+  const match = { victim: { txHash: '0xAbC', pool: '0xDEF' } }
+  assert.equal(victimSandwich([match], '0xabc', '0xdef'), match)
+  assert.equal(victimSandwich([match], '0xabc', '0x999'), undefined)
+  assert.equal(victimSandwich([match], '0xaaa', '0xdef'), undefined)
 })
