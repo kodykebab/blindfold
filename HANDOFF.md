@@ -3,7 +3,7 @@
 Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEXT.md). Repo rules, setup and gotchas: [AGENTS.md](AGENTS.md).
 
 ## Status
-`forge test`: **48/48 passing** (13 local + 13 Unichain fork + 4 SwapVM + 18 Court).
+`forge test`: **89/89 passing** (19 local + 19 Unichain fork + 29 ReservationModel, which re-runs the 19 local + 4 SwapVM + 18 Court).
 
 | Piece | State | Where |
 |---|---|---|
@@ -22,15 +22,8 @@ Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEX
 | UI: batch view, mempool view, Court ledger (reads Arkiv) | ⬜ | `app/` |
 | Submission docs: `FEEDBACK.md`, `arkiv/*.md`, README line pointers, video | ⬜ | — |
 
-## Next steps (suggested split)
-| Person | Next |
-|---|---|
-| **P1 Mechanism** | Fork deploy script (Unichain): vault, settlement, mined hook, pool, LP seed. Then the Aqua leg in `settle`. |
-| **P2 DEX** | Aqua strategy ship script + fork test with real token transfers through `BlindfoldAquaRouter`; residual split v4 vs Aqua. |
-| **P3 Court** | `BondRegistry` (bond, EIP-712 `Protected{txHash, chainId, acceptedAt, maxBlock}`, `claim` → `verify` → pay `max(profit, minPenalty) + gas` from the bond). Bind the receipt's `txHash` to `Verdict.victimTxHash`. |
-| **P4 Client/infra** | tlock client (`tlock-js`, quicknet), keeper and solver bots, Arkiv writes, UI shell. |
-
-Integration 1 target: one full batch end to end on the Unichain fork.
+## Next steps
+Who builds what, phase by phase, is in [PLAN.md](PLAN.md); known design flaws and their fixes are in [REVIEW.md](REVIEW.md).
 
 ## Interfaces to build against
 - `BlindfoldSettlement.commit(uint64 batchId, bytes32 hash, bytes ciphertext)`, `reveal(uint256 id, Order, bytes32 salt)`, `slashUnrevealed(id)`, `settle(uint64 batchId, uint256 priceX96)`, `expire(batchId)`.
