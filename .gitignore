@@ -4,3 +4,7 @@ contracts/cache/
 .env
 .DS_Store
 .workspace.md
+contracts/broadcast/
+deployments/*.local.json
+.arkiv-local/
+.next/
