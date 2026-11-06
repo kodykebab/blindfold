@@ -77,17 +77,18 @@ export function drandClient(fixture = E.DRAND) {
 }
 
 /** Foundry suffixes artifacts built by more than one compiler profile; prefer the v4-compatible 0.8.26 build. */
-export function artifactPath(out, name) {
-  const dir = join(out, `${name}.sol`)
+export function artifactPath(out, name, file = name) {
+  const dir = join(out, `${file}.sol`)
   for (const file of [`${name}.0.8.26.json`, `${name}.json`]) if (existsSync(join(dir, file))) return join(dir, file)
   const files = readdirSync(dir).filter((f) => f.startsWith(`${name}.`) && f.endsWith('.json'))
   if (files.length !== 1) throw new Error(`select an explicit artifact for ${name}; found ${files.length} variants`)
   return join(dir, files[0])
 }
 
-export function loadAbi(name, out = E.CONTRACTS_OUT || join(ROOT, 'contracts/out')) {
+/** `file` names the source when it differs from the contract, e.g. IV3Pool lives in IExternalMarket.sol. */
+export function loadAbi(name, out = E.CONTRACTS_OUT || join(ROOT, 'contracts/out'), file = name) {
   try {
-    return JSON.parse(readFileSync(artifactPath(out, name), 'utf8')).abi
+    return JSON.parse(readFileSync(artifactPath(out, name, file), 'utf8')).abi
   } catch (e) {
     throw new Error(`no ${name} artifact in ${out} (${e.code ?? e.message}); run \`forge build\` in contracts/ or set CONTRACTS_OUT`)
   }

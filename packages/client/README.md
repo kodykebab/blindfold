@@ -7,8 +7,11 @@ npm ci --ignore-scripts
 npm test                                   # offline unit tests
 npm start -- status                        # wallet / available / reserved / withdrawable, and the open batch's deadlines
 npm start -- deposit token1 50
-npm start -- commit sell 10 9 --dry-run    # preflight only: funding of every asset, approvals, fee, eligibility, deadlines
-npm start -- commit sell 10 9              # deposits any shortfall, encrypts to the batch's drand round, commits
+npm start -- commit sell 10 --dry-run      # preflight only: quote, limit, funding of every asset, approvals, fee, eligibility, deadlines
+npm start -- commit sell 10                # limit = fresh market quote less 50 bps; deposits any shortfall, encrypts, commits
+npm start -- commit sell 10 --slippage 30  # a tighter limit
+npm start -- commit sell 10 9              # an explicit minimum output instead of a quote
+npm start -- resubmit                      # place the last unfilled or expired order again, re-quoted
 npm start -- track                         # each commitment: committed, revealed, padding, unfunded, slashed, filled, unfilled, expired
 npm start -- blockers                      # each commitment blocking withdrawal and the step that clears it
 npm start -- cleanup [--dry-run]           # reveal own saved orders, slash unrevealed ones, expire unsettled batches
@@ -18,6 +21,16 @@ npm start -- import-state backup.json      # restore; refused unless every entry
 ```
 
 `sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units.
+
+## Limits from a fresh quote (FIXES.md fix 4)
+Without a minimum output, `commit` quotes the order from the deployment's external market and sets the limit `--slippage` basis points below the quote (default 50). The quote is the market's validated reference price ending at the latest block, after the pool fee (combined over a route's hops). It is the same price check a batch settles against, so a market that can't price the pair now refuses the order before anything is sent, instead of letting it expire. The order is shown as "at least X, or you keep your funds". The limit is the only promise: the batch clears at one price, and you may get more than X but never less.
+
+In the order-flow replay (`packages/solver/replay.mjs`), a 50 bps limit filled 90–95% of USDC/WETH orders; a 10 bps limit filled about half, because the price moves while an order waits. A deployment without an external market needs an explicit minimum. `QUOTE_MAX_AGE_S` (default 120) refuses to quote when the RPC's latest block is older than that by the local clock (`off` disables it; local test chains run at past timestamps).
+
+## Trying again (FIXES.md fix 5)
+`resubmit` finds the most recent unfilled or expired order this client still has and places it again, in the next batch it can make: with a fresh quote when the deployment has a market (`--slippage` applies), at the same limit otherwise (or with `--slippage keep`). Each original is resubmitted once; `track` and the saved state record which commitment replaced it. A new commitment pays the commit fee again. The fee prices batch capacity (REVIEW R3/S3), and refunding it for unfilled orders would need its own economic case first.
+
+`keep-ready` keeps one preparation ready for the earliest batch this device can still make, so the next order, or a resubmit, needs only the online proof. It prepares again whenever the key is used or its batch passes, which costs about one preparation of CPU (about 55 s on the measured M5) each time. Run it only while you trade; `keep-ready --once` makes one check and exits. It takes the state lock only while it prepares, so the same account can commit while it runs.
 
 Proceeds stay in the vault after a fill, so a repeat trader pays no extra transfers; `withdraw` takes them out. The vault blocks every withdrawal while the account has an open commitment, and `status` says so.
 
@@ -35,6 +48,8 @@ The client saves each order and salt (`.state/`, or `CLIENT_STATE`) **before** i
 | `PRIVATE_KEY` | — | Use this key instead of an anvil account |
 | `DRAND` | quicknet over HTTP | Path to recorded rounds (`test/fixtures/drand.json` format) for offline runs |
 | `CLIENT_STATE` | `packages/client/.state` | Where orders and salts are kept |
+| `QUOTE_MAX_AGE_S` | `120` | Refuse a quote when the latest block is older than this; `off` disables |
+| `KEEP_READY_POLL_MS` | `10000` | How often `keep-ready` checks its key |
 
 ## Local end-to-end test
 Starts its own anvil, deploys the vault and settlement from `contracts/out`, and drives the real CLI.

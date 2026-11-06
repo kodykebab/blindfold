@@ -260,3 +260,62 @@ test('released commitment: real CLI cleanup, repeat cleanup, next batch and with
     assert.equal(await c.read(c.token1, 'MockERC20', 'balanceOf', [u]), parseEther('100') - fee)
   } finally { c.stop() }
 })
+
+test('fixes 4-5: quote-based limits, refusals without a usable market, resubmit after expiry', { skip: !enabled, timeout: 120_000 }, async () => {
+  const c = await localChain({ market: true }) // a mock external market quoting 1 token1 per token0, no pool fee
+  const plain = await localChain()
+  try {
+    const u = user(10).address
+    for (const chain of [c, plain]) for (const tok of [chain.token0, chain.token1]) await chain.mint(u, tok, parseEther('100'))
+
+    // no minimum given: the limit is the fresh quote less 50 bps by default, shown as a limit order
+    let r = await c.cli(10, ['commit', 'sell', '10', '--dry-run'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /quote: 10 TKA ≈ 10 TKB at the market reference; limit 50 bps below it/)
+    assert.match(r.out, /order: sell 10 TKA for at least 9\.95 TKB in batch 0, or you keep your funds/)
+    r = await plain.cli(10, ['commit', 'sell', '10', '--dry-run'])
+    assert.notEqual(r.code, 0)
+    assert.match(r.err, /no external market to quote from/)
+    // a market that cannot price now refuses the order before anything is sent
+    const market = await c.read(c.settlement, 'BlindfoldSettlement', 'externalMarket')
+    await c.write(market, 'MockExternalMarket', 'setFail', [true])
+    r = await c.cli(10, ['commit', 'buy', '10', '--dry-run'])
+    assert.notEqual(r.code, 0)
+    assert.match(r.err, /cannot price this pair right now/)
+    await c.write(market, 'MockExternalMarket', 'setFail', [false])
+
+    r = await c.cli(10, ['commit', 'sell', '10', '--slippage', '100'])
+    assert.equal(r.code, 0, r.err)
+    assert.equal(savedState(c).commitments[0].order.minAmountOut, parseEther('9.9'))
+
+    // nobody settles: the order is revealed, then expires
+    await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'revealOpens', [0n]))
+    assert.equal((await c.cli(10, ['cleanup'])).code, 0)
+    await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'settleCloses', [0n]))
+    r = await c.cli(10, ['cleanup'])
+    assert.match(r.out, /expire/)
+    r = await c.cli(10, ['track'])
+    assert.match(r.out, /#0 batch 0: expired/)
+
+    // resubmit places it again with a fresh quote, in the batch that is open now, and only once
+    await c.write(market, 'MockExternalMarket', 'setPrice', [(2n << 96n)]) // the market moved: 2 TKB per TKA
+    r = await c.cli(10, ['resubmit'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /resubmitting #0 \(expired in batch 0\): sell 10 TKA with a fresh quote; a new commitment pays the commit fee again/)
+    assert.match(r.out, /for at least 19\.9 TKB/)
+    const state = savedState(c)
+    assert.equal(state.commitments.length, 2)
+    assert.equal(state.commitments[0].resubmittedAs, state.commitments[1].hash)
+    assert.ok(state.commitments[1].batchId > 0n)
+    r = await c.cli(10, ['resubmit'])
+    assert.notEqual(r.code, 0)
+    assert.match(r.err, /no unfilled or expired order to resubmit/)
+    // keep-ready only applies to proof-enforced deployments
+    r = await c.cli(10, ['keep-ready', '--once'])
+    assert.notEqual(r.code, 0)
+    assert.match(r.err, /does not use proof-enforced admission/)
+  } finally {
+    c.stop()
+    plain.stop()
+  }
+})

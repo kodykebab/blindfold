@@ -1,8 +1,11 @@
 // Blindfold client CLI: one workflow from funding to withdrawal.
 //   npm start -- status                          balances (wallet / available / reserved / withdrawable) and the open batch
 //   npm start -- deposit <token0|token1> <amount>
-//   npm start -- commit <sell|buy> <amountIn> <minAmountOut> [--dry-run]   preflight, encrypt, commit
+//   npm start -- commit <sell|buy> <amountIn> [minAmountOut] [--slippage bps] [--dry-run]   preflight, encrypt, commit;
+//                                                without a minimum, the limit is a fresh market quote less --slippage (default 50)
+//   npm start -- resubmit [--slippage bps|keep] [--dry-run]   place the last unfilled or expired order again
 //   npm start -- prepare-admission [batch-id]   prove a key wrapper before choosing the order (default: the next batch it can make)
+//   npm start -- keep-ready [--once]            keep one prepared key ready for the next batch this device can make
 //   npm start -- track                           every commitment of this account and what happened to it
 //   npm start -- blockers                        which commitments block withdrawal and what clears each
 //   npm start -- cleanup [--dry-run]             reveal own saved orders, slash unrevealed, expire unsettled batches
@@ -11,12 +14,13 @@
 //   npm start -- import-state <file>             restore them, after checking each against its hash and the chain
 // sell = token0 in, token1 out; buy = token1 in, token0 out. Amounts are decimal token units.
 import { formatUnits, parseEventLogs, parseUnits } from 'viem'
-import { connect, encrypt, newSalt, orderHash } from './lib.mjs'
+import { connect, encrypt, loadAbi, newSalt, orderHash } from './lib.mjs'
 import { balances, deadlines, exitPlan, isOpen, preflight, track } from './flow.mjs'
 import { exportState, importState, loadState, parseState, saveCommitment, validateState, writeState, withStateLock } from './state.mjs'
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead, measuredSeconds, recordProving, targetBatch } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
+import { limitFromQuote, nextPreparation, parseSlippage, quoteOut, retryable, routeFeePpm } from './quote.mjs'
 
 const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
@@ -122,11 +126,56 @@ async function prepare(batchText) {
   console.log(`prepared batch ${batch} in ${preparation.elapsedSeconds.toFixed(2)}s; private preparation saved locally`)
 }
 
-async function commit(side, amountIn, minOut, dryRun) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+const hasMarket = async () => abi.settlement.some((f) => f.type === 'function' && f.name === 'externalMarket')
+  && BigInt(await read(S, 'externalMarket')) !== 0n
+
+/**
+ * A fresh quote from the deployment's external market: its validated reference price ending at the latest block, and
+ * the pool fee (combined over a route's hops). Null when the deployment has no external market.
+ */
+async function marketQuote() {
+  if (!await hasMarket()) return null
+  const market = await read(S, 'externalMarket')
+  const block = await pub.getBlock()
+  const maxAge = process.env.QUOTE_MAX_AGE_S ?? '120'
+  const age = BigInt(Math.floor(Date.now() / 1000)) - block.timestamp
+  if (maxAge !== 'off' && age > BigInt(maxAge)) fail(`the RPC's latest block is ${age}s old, so a quote from it would be stale; use a current RPC_URL (or set QUOTE_MAX_AGE_S)`)
+  const m = loadAbi('UniswapV3Market'), route = loadAbi('UniswapV3Route'), pool = loadAbi('IV3Pool', undefined, 'IExternalMarket')
+  const call = (address, which, functionName, args = []) => pub.readContract({ address, abi: which, functionName, args })
+  let priceX96
+  try {
+    priceX96 = await call(market, m, 'referencePrice', [block.timestamp])
+  } catch (e) {
+    const why = e.walk?.((x) => x.data?.errorName)?.data?.errorName ?? e.shortMessage ?? e.message
+    fail(`the market cannot price this pair right now (${why}), so a batch would not settle through it either; try again shortly or give an explicit minimum`)
+  }
+  const feeOf = async (address) => BigInt(await call(await call(address, m, 'pool'), pool, 'fee'))
+  let feePpm = 0n
+  try { feePpm = await feeOf(market) } catch {
+    try {
+      const fees = []
+      for (let i = 0n; i < await call(market, route, 'hopCount'); i++) fees.push(await feeOf(await call(market, route, 'markets', [i])))
+      feePpm = routeFeePpm(fees)
+    } catch {} // a market that is neither (local mocks) charges no pool fee here
+  }
+  return { priceX96, feePpm }
+}
+
+async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
   if (side !== 'sell' && side !== 'buy') fail('side must be sell or buy')
+  if (amountIn === undefined) fail('usage: commit <sell|buy> <amountIn> [minAmountOut] [--slippage bps] [--dry-run]')
   const t = await tokens()
   const [tin, tout] = side === 'sell' ? [t.token0, t.token1] : [t.token1, t.token0]
-  const order = { owner: me, zeroForOne: side === 'sell', amountIn: parseUnits(amountIn, tin.decimals), minAmountOut: parseUnits(minOut, tout.decimals) }
+  const order = { owner: me, zeroForOne: side === 'sell', amountIn: parseUnits(amountIn, tin.decimals), minAmountOut: 0n }
+  if (minOut === undefined) {
+    const q = await marketQuote()
+    if (!q) fail('this deployment has no external market to quote from; give the minimum output: commit <sell|buy> <amountIn> <minAmountOut>')
+    const quoted = quoteOut({ zeroForOne: order.zeroForOne, amountIn: order.amountIn, priceX96: q.priceX96, feePpm: q.feePpm })
+    order.minAmountOut = limitFromQuote(quoted, slippage)
+    console.log(`quote: ${fmt(tin, order.amountIn)} ≈ ${fmt(tout, quoted)} at the market reference${q.feePpm ? `, after the ${Number(q.feePpm) / 1e4}% pool fee` : ''}; limit ${slippage} bps below it`)
+  } else order.minAmountOut = parseUnits(minOut, tout.decimals)
   const has = (n) => abi.settlement.some((f) => f.type === 'function' && f.name === n)
   const [current, depositAmount, maxCommits, now] = await Promise.all([
     read(S, 'currentBatch'), read(S, 'depositAmount'), read(S, 'MAX_COMMITS'), pub.getBlock().then((x) => x.timestamp)])
@@ -174,7 +223,7 @@ async function commit(side, amountIn, minOut, dryRun) {
     openBatches: [...new Set([...(await myCommitments()).values()].filter(isOpen).map((c) => c.batchId))],
   })
   const dt = t.byAddress[t.depositToken]
-  console.log(`order: ${side} ${fmt(tin, order.amountIn)} for at least ${fmt(tout, order.minAmountOut)} in batch ${target.batch}`)
+  console.log(`order: ${side} ${fmt(tin, order.amountIn)} for at least ${fmt(tout, order.minAmountOut)} in batch ${target.batch}, or you keep your funds`)
   console.log(`costs: deposit ${fmt(dt, depositAmount)} (returned minus the revealer's bounty when revealed), fee ${fmt(dt, fee)}`)
   for (const f of check.funding) {
     const tok = t.byAddress[f.token]
@@ -382,11 +431,55 @@ async function importCmd(file) {
   console.log(`imported; ${importState(dep, me, state)} commitment(s) saved`)
 }
 
+/** Place the most recent unfilled or expired order again: re-quoted when the deployment has a market, else same limit. */
+async function resubmit(dryRun, slippageText) {
+  const t = await tokens()
+  const r = retryable(await myCommitments(), loadState(dep, me).commitments)
+  if (!r) fail('no unfilled or expired order to resubmit')
+  const o = r.saved.order
+  const [tin, tout] = o.zeroForOne ? [t.token0, t.token1] : [t.token1, t.token0]
+  const requote = slippageText !== 'keep' && await hasMarket()
+  console.log(`resubmitting #${r.tracked.id} (${r.tracked.state} in batch ${r.tracked.batchId}): ${o.zeroForOne ? 'sell' : 'buy'} ${fmt(tin, o.amountIn)}${requote ? ' with a fresh quote' : ` at the same limit, ${fmt(tout, o.minAmountOut)}`}; a new commitment pays the commit fee again`)
+  await commit(o.zeroForOne ? 'sell' : 'buy', formatUnits(o.amountIn, tin.decimals), requote ? undefined : formatUnits(o.minAmountOut, tout.decimals),
+    dryRun, parseSlippage(requote && slippageText !== undefined ? slippageText : '50'))
+  if (dryRun) return
+  const state = loadState(dep, me)
+  const old = state.commitments.find((c) => c.hash === r.saved.hash)
+  const latest = state.commitments.at(-1)
+  if (old && latest && latest.hash !== old.hash) {
+    old.resubmittedAs = latest.hash
+    writeState(dep, me, state)
+  }
+}
+
+/** Keep one preparation ready for the earliest batch this device can still make; --once does one check and exits. */
+async function keepReady(once) {
+  await checkAdmissionNetwork()
+  if (!await admissionRequired()) fail('this deployment does not use proof-enforced admission')
+  if (!once) console.log('keeping a prepared key ready: about one preparation of CPU each time a key is used or its batch passes')
+  for (;;) {
+    const state = loadState(dep, me)
+    const current = await read(S, 'currentBatch')
+    const [close, now, batchLength] = await Promise.all([read(S, 'commitsClose', [current]), pub.getBlock().then((x) => x.timestamp), read(S, 'batchLength')])
+    const prepBatch = state.preparation?.batch
+    const batch = nextPreparation({ prepBatch, current, commitsClose: close, batchLength, now,
+      preparation: measuredSeconds(state.proving, 'preparation') ?? 60, online: admissionLead(true, process.env, state.proving) })
+    if (batch === null) console.log(`a key for batch ${prepBatch} is ready`)
+    else await withStateLock(dep, me, () => prepare(String(batch)))
+    if (once) return
+    await sleep(Number(process.env.KEEP_READY_POLL_MS ?? 10_000))
+  }
+}
+
 const [cmd, ...args] = process.argv.slice(2)
+const flag = (name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1] }
+const positional = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--slippage')
 const commands = {
   status: () => status(),
   deposit: () => deposit(args[0], args[1]),
-  commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run')),
+  commit: () => commit(positional[0], positional[1], positional[2], args.includes('--dry-run'), parseSlippage(flag('--slippage') ?? '50')),
+  resubmit: () => resubmit(args.includes('--dry-run'), flag('--slippage')),
+  'keep-ready': () => keepReady(args.includes('--once')),
   track: () => trackAll(),
   'prepare-admission': () => prepare(args[0]),
   'resume-admission': () => resumeAdmission(),
@@ -398,7 +491,8 @@ const commands = {
 }
 if (!commands[cmd]) fail(`usage: npm start -- <${Object.keys(commands).join('|')}> ...`)
 try {
-  const mutates = ['prepare-admission', 'commit', 'resume-admission', 'import-state', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
+  // keep-ready takes the lock only while it prepares, so the same account can commit while it runs
+  const mutates = ['prepare-admission', 'commit', 'resubmit', 'resume-admission', 'import-state', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
   await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())
 }
 catch (e) { console.error(`client: ${e.shortMessage ?? e.message}`); process.exitCode = 1 }
