@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { encodeAbiParameters, toHex } from 'viem'
 import { ROOT, orderHash } from './lib.mjs'
 import { nextFunding } from './admission-state.mjs'
+import { sweepStale } from './sweep.mjs'
 
 function localProcess(executable, args, input) {
   return new Promise((resolve, reject) => {
@@ -36,6 +37,7 @@ function proverConfig(dep, env) {
 const context = (dep, owner, batch, round) => ({ chainId: String(dep.chainId), settlement: dep.settlement.toLowerCase(), owner: owner.toLowerCase(), batch: String(batch), round: String(round) })
 
 async function proveFixture(config, pin, mode, fixture) {
+  sweepStale('blindfold-witness-') // a prover killed mid-proof (e.g. out of memory) skips the cleanup below
   const dir = mkdtempSync(join(tmpdir(), 'blindfold-witness-'))
   try {
     const file = join(dir, 'fixture.json')
