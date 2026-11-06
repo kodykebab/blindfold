@@ -10,4 +10,4 @@ if (once) {
   console.log(JSON.stringify({ mode: arkiv.mode, batches: await recentBatches(arkiv) }))
   process.exit(0)
 }
-console.log('ARKIV=off keeps settled batches in memory for this process. Pass --once to print them.')
+console.log(`ARKIV=off keeps settled batches in ${arkiv.file}. Pass --once to print them.`)
