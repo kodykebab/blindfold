@@ -316,7 +316,9 @@ test('client refuses a mismatched chain, vault or pair before signing', { skip: 
 
 test('a fee-on-transfer token is refused before the vault is credited', { skip: !enabled, timeout: 120_000 }, async () => {
   const fixtures = fileURLToPath(new URL('./fixtures/', import.meta.url))
-  execFileSync('forge', ['build', '--root', fixtures], { stdio: 'pipe' })
+  // e2e.sh and CI set FOUNDRY_OUT for the main contracts; it overrides even --out, so build without it.
+  const { FOUNDRY_OUT, FOUNDRY_CACHE_PATH, ...env } = process.env
+  execFileSync('forge', ['build', '--root', fixtures], { stdio: 'pipe', env })
   const artifact = JSON.parse(readFileSync(join(fixtures, 'out/FeeToken.sol/FeeToken.json'), 'utf8'))
   const c = await localChain({ tokenArtifact: artifact })
   try {
