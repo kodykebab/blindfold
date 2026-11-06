@@ -2,8 +2,10 @@
 //   CLIENT_E2E=1 npm test
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseEther } from 'viem'
 import { localChain, user, DEPOSIT } from './chain.mjs'
 
@@ -309,5 +311,26 @@ test('client refuses a mismatched chain, vault or pair before signing', { skip: 
       assert.equal(await c.pub.getTransactionCount({ address: owner }), nonce)
       assert.equal(await c.read(c.token0, 'MockERC20', 'allowance', [owner, change.vault || c.vault]), 0n)
     }
+  } finally { c.stop() }
+})
+
+test('a fee-on-transfer token is refused before the vault is credited', { skip: !enabled, timeout: 120_000 }, async () => {
+  const fixtures = fileURLToPath(new URL('./fixtures/', import.meta.url))
+  execFileSync('forge', ['build', '--root', fixtures], { stdio: 'pipe' })
+  const artifact = JSON.parse(readFileSync(join(fixtures, 'out/FeeToken.sol/FeeToken.json'), 'utf8'))
+  const c = await localChain({ tokenArtifact: artifact })
+  try {
+    const owner = user(10).address
+    const symbol = async (token) => c.read(token, 'MockERC20', 'symbol')
+    const feeSide = (await symbol(c.token0)) === 'FEE' ? 'token0' : 'token1'
+    const feeToken = c[feeSide]
+    await c.mint(owner, feeToken, parseEther('100'))
+    const before = await c.pub.getTransactionCount({ address: owner })
+    const result = await c.cli(10, ['deposit', feeSide, '10'])
+    assert.equal(result.code, 1)
+    assert.match(result.err, /this token takes a fee or rebases on transfer; Blindfold doesn't support it \(arrived 5 FEE\)/)
+    assert.equal(await c.pub.getTransactionCount({ address: owner }), before, 'no approval or deposit was sent')
+    assert.equal(await c.read(feeToken, 'MockERC20', 'balanceOf', [c.vault]), 0n)
+    assert.equal(await c.read(c.vault, 'BlindfoldVault', 'balanceOf', [owner, feeToken]), 0n)
   } finally { c.stop() }
 })
