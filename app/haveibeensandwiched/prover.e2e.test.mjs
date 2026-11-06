@@ -9,6 +9,9 @@ import { root, command, checkAccessibilityAndNoRawErrors, stageMatches, setupSta
 const enabled = process.env.PROVER_E2E === '1'
 const CLI = join(root, 'packages/client/cli.mjs')
 
+/** Wait until no local command runs: every control is re-enabled. */
+const idle = (page) => page.waitForFunction(() => !document.querySelector('#restore-file')?.disabled && !document.querySelector('#job-progress:not([hidden])'), null, { timeout: 60000 })
+
 async function placeOrder(page, origin) {
   await page.goto(`${origin}/trade`)
   await page.waitForLoadState('networkidle')
@@ -23,7 +26,8 @@ test('a page reloaded mid-commit reconnects to the local job and shows the commi
   const { page, origin, teardown } = await setupStack()
   try {
     await placeOrder(page, origin)
-    await page.waitForFunction(() => /RUNNING|STARTING/.test(document.querySelector('#job-state')?.textContent ?? ''), null, { timeout: 15000 })
+    // Reload once the commit itself runs (its proving steps show); a reload during the preview drops the queued commit.
+    await page.waitForSelector('#prover-steps:not([hidden])', { timeout: 30000 })
     await page.reload()
     await page.waitForLoadState('networkidle')
     // The saved job id brings the page back to the same command; tracking then shows the order.
@@ -42,6 +46,7 @@ test('a tampered backup is refused with a clear reason and local state is unchan
     const backup = JSON.parse(readFileSync(file, 'utf8'))
     backup.commitments[0].salt = `0x${'00'.repeat(32)}`
     writeFileSync(tampered, JSON.stringify(backup))
+    await idle(page) // the file input is disabled while the post-commit refresh runs
     await page.setInputFiles('#restore-file', tampered)
     await page.waitForFunction(() => /FAILED/.test(document.querySelector('#job-state')?.textContent ?? ''), null, { timeout: 30000 })
     assert.match(await page.locator('#output').textContent(), /order or salt in the backup was changed/)
