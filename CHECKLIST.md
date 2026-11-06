@@ -1,7 +1,7 @@
 # Release checklist
 
 Status: `[x]` done · `[~]` partly done · `[ ]` open. Owner: **Claude** (this branch stack), **Cursor** (sections 3 and 8, see `CURSOR_PROMPT.md`), **Antigravity** (section 5 on branch `bhoumik/orders-ui`, see `ANTIGRAVITY_PROMPT.md`), **Team** (needs a decision or another lane).
-Updated after every 3 completed tasks. Last update: 2026-11-07, 22 done, 7 partly done, 64 open of 93.
+Updated after every 3 completed tasks. Last update: 2026-11-07, 28 done, 7 partly done, 58 open of 93.
 
 ## 1. Local setup and operation (Claude)
 - [~] Repeatable clean-clone setup: install, build, deploy. `scripts/dev.sh` works; the clean-clone rehearsal remains.
@@ -12,14 +12,14 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 22 done, 7 partl
 - [x] Actionable setup errors for every missing or misconfigured dependency. `dev.sh` names each missing tool and how to install it; health gives a next step per service.
 - [ ] A new user completes normal trading without terminal commands.
 
-## 2. Wallet, network and account (Claude)
-- [ ] Decide and implement browser-wallet signing alongside the CLI and prover. *(Team decision)*
-- [ ] Wallet connection and disconnection.
+## 2. Wallet, network and account (Claude, in the extension)
+- [x] Decide and implement browser-wallet signing alongside the CLI and prover. The extension signs through the wallet via the bridge page (DECISIONS D1–D10); the page keeps the local CLI.
+- [x] Wallet connection and disconnection. EIP-6963 connect, bridge disconnect and reconnect (`packages/bridge`, e2e I2).
 - [x] Show the CLI account, network and pair after status loads.
-- [ ] Browser-wallet wrong network and network switching.
-- [ ] Account changes, disconnects and reconnects.
-- [ ] Rejected browser-wallet signatures and transactions.
-- [ ] Insufficient funds and gas shown clearly.
+- [x] Browser-wallet wrong network and switching. Switch, add the chain on 4902, otherwise `WRONG_CHAIN` before signing (`wallet.test.mjs`).
+- [x] Account changes, disconnects and reconnects. `accountsChanged`/`chainChanged` forwarded (e2e I2); `WRONG_ACCOUNT` blocks sending from another account.
+- [x] Rejected signatures and transactions. 4001 stops the sequence and reports what was already sent (`wallet.test.mjs`).
+- [x] Insufficient funds and gas. The bridge checks ETH for the first call before signing and names `INSUFFICIENT_FUNDS` (`wallet.test.mjs`). The page side is Cursor's.
 - [~] Cross-account, cross-network and deployment recovery. The CLI refuses a mismatched chain, vault or pair before signing.
 - [ ] Review the webpage/local-service/wallet/prover trust boundary.
 
