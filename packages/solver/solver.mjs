@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'
 import { BaseError, ContractFunctionRevertedError, createPublicClient, createWalletClient, defineChain, http } from 'viem'
 import { mnemonicToAccount, privateKeyToAccount } from 'viem/accounts'
 import { solve } from './price.mjs'
+import { solveExternal } from './external.mjs'
 import { solvePeer } from './peer.mjs'
 import { artifactPath } from './artifacts.mjs'
 
@@ -36,6 +37,7 @@ if (!address) {
   process.exit(1)
 }
 const hasMarginal = abi.some((f) => f.type === 'function' && f.name === 'settle' && f.inputs.length === 4)
+const hasExternal = abi.some((f) => f.type === 'function' && f.name === 'referencePriceX96')
 const hasPeer = abi.some((f) => f.type === 'function' && f.name === 'settlePeer')
 const chain = defineChain({
   id: dep.chainId, name: 'blindfold', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
@@ -61,14 +63,15 @@ async function dueBatches() {
   return due.reverse() // oldest first; contract scheduling still provides the enforcement
 }
 
-async function simulate(b, priceX96, marginal, blockNumber, peer = false) {
+async function simulate(b, priceX96, marginal, blockNumber, peer = false, external = false) {
   try {
     const args = peer ? [b, marginal.id, marginal.amountIn] : marginal ? [b, priceX96, marginal.id, marginal.amountIn] : [b, priceX96]
-    await pub.simulateContract({ address, abi, functionName: peer ? 'settlePeer' : 'settle', args, account, blockNumber })
+    await pub.simulateContract({ address, abi, functionName: peer ? 'settlePeer' : external ? 'settleExternal' : 'settle', args, account, blockNumber })
     return { ok: true }
   } catch (e) {
     const revert = e instanceof BaseError ? e.walk((x) => x instanceof ContractFunctionRevertedError) : null
     if (revert?.data?.errorName === 'NotMarginalPrice') return { ok: false, poolX96: revert.data.args[1] }
+    if (external && revert) return { ok: false, error: revert.data?.errorName ?? 'ExternalRevert' }
     if (!revert?.data?.errorName) throw e
     return { ok: false, error: revert.data.errorName }
   }
@@ -81,12 +84,20 @@ async function settleBatch({ b, ids }) {
     read('poolPriceX96', [], blockNumber), read('toleranceBps', [], blockNumber),
     hasPeer ? read('poolLiquidity', [], blockNumber) : undefined,
   ])
-  // Zero active liquidity enables the peer route. Try the local crossing first;
-  // if it fails, AMM search can still discover liquidity beyond the current tick.
-  let sol = liquidity === 0n
-    ? await solvePeer({ orders, priceX96: poolX96, simulate: (m) => simulate(b, poolX96, m, blockNumber, true) })
+  const market = hasExternal ? await read('externalMarket', [], blockNumber) : null
+  const configured = market && BigInt(market) !== 0n
+  // A configured deployment never substitutes the sealed pool's stored price
+  // when external reference validation fails.
+  const reference = configured ? await read('referencePriceX96', [b], blockNumber) : poolX96
+  let sol = liquidity === 0n && (!hasExternal || configured)
+    ? await solvePeer({ orders, priceX96: reference, simulate: (m) => simulate(b, reference, m, blockNumber, true) })
     : null
-  if (!sol) sol = await solve({
+  if (!sol && configured) sol = await solveExternal({
+    referenceX96: reference,
+    deviationBps: Number(await read('externalPriceDeviationBps', [], blockNumber)),
+    simulate: (p) => simulate(b, p, undefined, blockNumber, false, true),
+  })
+  if (!sol && !configured && liquidity !== 0n) sol = await solve({
     simulate: (p, m) => simulate(b, p, m, blockNumber), poolX96, toleranceBps: Number(tol), orders, marginal: hasMarginal,
   })
   if (!sol) {
@@ -94,13 +105,13 @@ async function settleBatch({ b, ids }) {
     throw new Error(`batch ${b}: ${why}`)
   }
   const args = sol.peer ? [b, sol.peer.id, sol.peer.amountIn] : sol.marginal ? [b, sol.priceX96, sol.marginal.id, sol.marginal.amountIn] : [b, sol.priceX96]
-  const fresh = await simulate(b, sol.priceX96, sol.peer ?? sol.marginal, undefined, Boolean(sol.peer))
+  const fresh = await simulate(b, sol.priceX96, sol.peer ?? sol.marginal, undefined, Boolean(sol.peer), Boolean(sol.external))
   if (!fresh.ok) throw new Error(`batch ${b}: candidate became stale; retry on next poll`)
-  const hash = await wallet.writeContract({ address, abi, functionName: sol.peer ? 'settlePeer' : 'settle', args })
+  const hash = await wallet.writeContract({ address, abi, functionName: sol.peer ? 'settlePeer' : sol.external ? 'settleExternal' : 'settle', args })
   const receipt = await pub.waitForTransactionReceipt({ hash })
   if (receipt.status !== 'success') throw new Error(`batch ${b}: settle tx ${hash} reverted`)
   const price = Number((sol.priceX96 * 10n ** 6n) / 2n ** 96n) / 1e6
-  const how = sol.peer ? `peer-only match, group ${sol.peer.id}` : sol.marginal ? `limit group represented by ${sol.marginal.id}, representative input ${sol.marginal.amountIn}` : `band midpoint`
+  const how = sol.external ? 'public-pool residual route' : sol.peer ? `peer-only match, group ${sol.peer.id}` : sol.marginal ? `limit group represented by ${sol.marginal.id}, representative input ${sol.marginal.amountIn}` : `band midpoint`
   console.log(`settled batch ${b}: ${orders.length} orders at ${price} token1/token0, ${how}, tx ${hash}`)
 }
 
