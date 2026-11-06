@@ -1,6 +1,6 @@
 # REVIEW.md
 
-Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each item has an ID (R1–R9), a status, where it lives in the code, the fix, and an owner. The fixes are scheduled in [PLAN.md](PLAN.md). Design reference: [ARCHITECTURE.MD](ARCHITECTURE.MD).
+Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each item has an ID (R1–R11), a status, where it lives in the code, the fix, and an owner. The fixes are scheduled in [PLAN.md](PLAN.md). Design reference: [ARCHITECTURE.MD](ARCHITECTURE.MD).
 
 **Proven** means a Foundry test reproduces it against the current contracts (code in the [appendix](#appendix-reproduction-tests)). **From code** means it follows from reading the code and has no test yet.
 
@@ -15,6 +15,8 @@ Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each
 | R7 | Remaining trust in the sequencer and timestamps; the safety margin is 4–6 s, not ≥6 s | Medium | From code | Kritarth |
 | R8 | Court bonds can be drained by sandwiching yourself | High | From code | Bhoumik |
 | R9 | Real sandwichers can easily slip past the Court predicate | Medium | From code | Bhoumik |
+| R10 | A commit into the next batch can unfund the account's own open order | Medium | Proven | Unassigned |
+| R11 | One order larger than the pool's depth makes every price revert | Medium | Proven | Unassigned |
 
 ---
 
@@ -179,10 +181,46 @@ As written, Court catches only naive bots. Loosening the predicate invites false
 - **Track near-misses publicly:** the watcher records near-misses (different signers in the same block around a receipted transaction, partial closes) as public, non-paying `court.suspect` entries on Arkiv. That shows recall without opening the bond to false claims.
 - **Document the trade-off:** write it in ARCHITECTURE.MD §10.
 
+## R10. A commit into the next batch can unfund the account's own open order
+**Where:** `BatchAuction.commit` takes the deposit from free balance ([`:158`](contracts/src/BatchAuction.sol#L158)) without looking at the account's open orders; funding is checked only at reveal ([`:183`](contracts/src/BatchAuction.sol#L183)).
+
+**Problem:** between `commitsClose(b)` and `revealOpens(b)` (4–6 s, R7), batch b+1 accepts commits while batch b's orders are still unrevealed. Any commit into b+1, padding included, takes another deposit in the deposit token. If an order in b pays in the deposit token and the account's free balance is close to its `amountIn`, that order closes unfunded at reveal: it never trades, and `depositAmount − bounty` goes to the treasury.
+- **Honest users:** a client that commits every batch loses orders and deposits with no warning.
+- **Strategic users:** it's a fourth way to cancel after commits close (R2), limited to orders paid in the deposit token and to the 4–6 s gap.
+
+**Proof:**
+- **Setup:** Alice has 1,000 token1 and commits a buy of 995 token1, which leaves 995 free after the deposit.
+- **The trigger:** at `commitsClose(b)` she commits a padding order into b+1, leaving 990 free.
+- **Result:** the keeper's reveal closes her order as unfunded, and the treasury receives 4 token1.
+
+**Fix:**
+- **With admission proofs:** the one-active-batch rule (ARCHITECTURE.MD §5, `ReservationModel.t.sol`) prevents it, at R6's throughput cost. S11's client check alone is not enough, because the contract still accepts the commit.
+- **Until then:** `commit` reverts while the sender has open commitments from an earlier batch. That needs a per-account active batch in `BatchAuction`, like the reservation model's `activeBatch`.
+- **Acceptance:** the R10 test's second commit reverts.
+
+## R11. One order larger than the pool's depth makes every price revert
+**Where:** `quote` fills any order whose limit holds ([`BlindfoldSettlement.sol:132`](contracts/src/BlindfoldSettlement.sol#L132)); the residual swap must use its whole input ([`:250`](contracts/src/BlindfoldSettlement.sol#L250)).
+
+**Problem:** a sell with `minAmountOut = 1` fills at every plausible price. If it is larger than what the pool can absorb before the swap reaches its price limit, the residual swap fills only partly and every `settle` reverts with `PartialResidual`. As with R1, the capital is only locked: it comes back at `expire`, and a self-reveal returns the deposit.
+- **R1's fix doesn't cover it:** the order's limit is nowhere near `p`, so it can't be the marginal order.
+- **Precondition:** no liquidity reaches the swap's price limit. A full-range position removes the depth limit, but then the batch clears at a crashed price instead.
+
+**Proof:**
+- **Setup:** the `BlindfoldTest` pool, whose one position needs about 191k token0 to reach its lower tick.
+- **The batch:** Mallory sells 250k token0 with `minAmountOut = 1`, and Bob buys with 10 token1.
+- **Result:** all 838 prices tried, from 2^-20 to 2^20 times the pool price, revert.
+- **Cost:** after `expire`, Mallory holds exactly her 250k token0 and her deposit.
+
+**Fix:**
+- **Partial fills sized to depth:** add this case to S1's executable model, so the allocation fills only what the pool can absorb.
+- **Or bound order size:** a per-order `maxAmountIn` set at deployment from the expected pool depth.
+- **Acceptance:** the R11 test settles, or its order is rejected before it can lock the batch.
+
 ---
 
 ## Smaller items
 - **Rounding dust:** it stays in the settlement contract's own vault balance, with no sweep.
+- **`test_liquidityRemovedAfterReveal_canExpire` doesn't test liquidity removal:** its `settle(b, Q96)` reverts with `ResidualShort` even with liquidity untouched (the same call `test_settle_rejectsBadPrices` rejects as too generous), so it passes whether or not removal matters. R5 cites it. Replace the revert with a price that settles before the removal and reverts after it: `test_poc_liquidityRemovalRevertsSolvedPrice` below, which also proves R5's removal half.
 - **CONTEXT.md is out of date:**
   - "Team of 4";
   - "≥6 s margin" (R7);
@@ -329,3 +367,260 @@ contract ReviewPoCControl is BlindfoldTest {
 ```
 
 </details>
+
+R10, R11 and the liquidity-test item have their own file: save it as `contracts/test/ReviewPoCMore.t.sol` and run `forge test --match-contract ReviewPoCMore --match-test poc -vv`. The same rule applies: don't commit it as-is.
+
+<details>
+<summary>ReviewPoCMore.t.sol (R10, R11, liquidity test)</summary>
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+// Reproduces REVIEW.md R10, R11 and the liquidity-test item against main @ d75c699. Each test passes while its flaw exists.
+import {BlindfoldTest} from "./Blindfold.t.sol";
+import {BatchAuction} from "../src/BatchAuction.sol";
+import {BlindfoldSettlement} from "../src/BlindfoldSettlement.sol";
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
+
+contract ReviewPoCMore is BlindfoldTest {
+    address mallory = makeAddr("mallory");
+
+    // R10. A commit into the next batch takes another deposit and unfunds the account's own open order.
+    function test_poc_nextBatchCommitUnfundsOwnOrder() public {
+        uint64 b = s.currentBatch();
+        uint256 free1 = vault.freeBalance(alice, address(t1));
+        BatchAuction.Order memory buy = _o(alice, false, free1 - DEPOSIT, 1); // all token1 left after the deposit
+        uint256 c = _commit(alice, buy, "a");
+
+        vm.warp(s.commitsClose(b)); // batch b+1 is open, b is not revealable yet
+        assertEq(s.currentBatch(), b + 1);
+        assertLt(block.timestamp, s.revealOpens(b));
+        _commit(alice, _o(alice, true, 0, 0), "pad"); // an ordinary padding commit charges another deposit
+
+        uint256 t = vault.balanceOf(treasury, address(t1));
+        vm.warp(s.revealOpens(b));
+        vm.prank(keeper);
+        s.reveal(c, buy, "a");
+        assertEq(s.orderIdsOf(b).length, 0, "order closed as unfunded");
+        assertEq(vault.balanceOf(treasury, address(t1)) - t, DEPOSIT - DEPOSIT * BOUNTY_BPS / 10_000, "deposit forfeited");
+    }
+
+    // R11. One order larger than the pool's depth makes every price revert; its limit is far from any price.
+    function test_poc_orderBeyondPoolDepthBlocksEveryPrice() public {
+        t0.mint(mallory, 250_000e18); // depth to the position's lower tick is ~191k token0
+        t1.mint(mallory, DEPOSIT);
+        vm.startPrank(mallory);
+        t0.approve(address(vault), 250_000e18);
+        t1.approve(address(vault), DEPOSIT);
+        vault.deposit(address(t0), 250_000e18);
+        vault.deposit(address(t1), DEPOSIT);
+        vm.stopPrank();
+
+        uint64 b = s.currentBatch();
+        BatchAuction.Order memory whale = _o(mallory, true, 250_000e18, 1);
+        BatchAuction.Order memory honest = _o(bob, false, 10e18, 9e18);
+        uint256 cw = _commit(mallory, whale, "w");
+        uint256 ch = _commit(bob, honest, "h");
+        vm.warp(s.revealOpens(b));
+        vm.prank(mallory);
+        s.reveal(cw, whale, "w");
+        s.reveal(ch, honest, "h");
+        vm.warp(s.revealCloses(b));
+
+        uint256 pool = s.poolPriceX96();
+        uint256 ok;
+        for (uint256 e; e <= 40; e++) {
+            uint256 p = e >= 20 ? pool << (e - 20) : pool >> (20 - e); // 2^-20 .. 2^20 of the pool price
+            try s.settle(b, p) {
+                ok++;
+            } catch {}
+        }
+        for (uint256 k = 100; k <= 20_000; k += 25) {
+            try s.settle(b, pool * k / 10_000) {
+                ok++;
+            } catch {}
+        }
+        assertEq(ok, 0, "some price settled");
+
+        vm.warp(s.settleCloses(b));
+        s.expire(b);
+        assertEq(vault.balanceOf(mallory, address(t0)), 250_000e18, "capital returned");
+        assertEq(vault.balanceOf(mallory, address(t1)), DEPOSIT, "deposit returned");
+    }
+
+    // test_liquidityRemovedAfterReveal_canExpire: settle(b, Q96) reverts on price with liquidity untouched.
+    function test_poc_liquidityTestRevertsWithoutRemoval() public {
+        uint64 b = _twoSided();
+        try s.settle(b, Q96) {
+            revert("settled");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), BlindfoldSettlement.ResidualShort.selector, "price, not liquidity");
+        }
+    }
+
+    // What that test should check: a price that settles before the removal reverts after it.
+    function test_poc_liquidityRemovalRevertsSolvedPrice() public {
+        uint64 b = _twoSided();
+        uint256 snap = vm.snapshotState();
+        uint256 p = _solve(b);
+        vm.revertToState(snap);
+        lp.modifyLiquidity(key, IPoolManager.ModifyLiquidityParams(-60_000, 60_000, -2.5e21, 0), ""); // 25% removed
+        try s.settle(b, p) {
+            revert("solver's price still settled");
+        } catch {}
+        assertFalse(s.finalized(b));
+    }
+}
+```
+
+</details>
+
+
+## Proposed solutions from the broader design review
+
+Status: proposals for team review, not implemented fixes or approved changes to the frozen seams in PLAN.md. The S1–S22 identifiers below follow the broader review discussion; they do not replace R1–R9 above. Where recommendations differ from the existing plan, the team must reconcile them before implementation. In particular, proportional marginal allocation, execution scheduling, unrevealed refunds, and Court claim allocation can change interfaces or policy.
+
+Recommended initial scope: one supported pair, one v4 settlement path, partial fills, predictable execution windows, and an explicitly operated keeper. Court and additional integrations should have independent release gates. Admission-proof work proceeds independently.
+
+### S1. Clearing feasibility
+
+Allow partial fills, interpreting minAmountOut proportionally to the amount actually filled, and return unused input. An order selling 1,000 tokens for at least 900 would accept a 500-token fill only if it receives at least 450.
+
+Specify price priority, proportional allocation among orders at the marginal limit, integer rounding, and the outcome when no economically meaningful fill exists. The solver must not arbitrarily choose winners. Proportional allocation among multiple marginal orders may require a different interface from the single-marginal-order overload currently in PLAN.md.
+
+Gate: demonstrate feasibility across fees, opposing orders, liquidity boundaries, and integer rounding in an executable model before changing contracts. Partial fills are a candidate solution, not a proof that every batch has useful execution. Widening tolerance alone is insufficient.
+
+### S2. Batch execution order
+
+Prefer nonoverlapping settlement windows initially. Enforce the actual schedule invariant `settleCloses(b) <= revealCloses(b + 1)`. Commit and reveal phases can still overlap across batches.
+
+This removes execution-order discretion without a global cursor and predecessor-cleanup machinery, but constrains cadence. If benchmarks make that unacceptable, evaluate chronological settlement with explicit expired-predecessor handling. Test the schedule across drand round boundaries.
+
+### S3. Capacity economics
+
+Charge a nonrefundable admission fee for every commitment, including padding, separately from refundable collateral and the reveal reward. Self-revelation must not recover this fee. Per-address limits are not a substitute because addresses are cheap to create.
+
+Measure the cost of occupying the entire batch before selecting the fee. This prices congestion; it does not guarantee access against a well-funded attacker. Raise capacity only after measuring worst-case settlement gas.
+
+### S4. Cleanup and withdrawals
+
+Make cleanup part of the exit flow. Identify unresolved commitments, execute applicable expiration or unrevealed cleanup, then withdraw. Show which commitments prevent withdrawal.
+
+Preserve the funding lock until its invariant is replaced. Start with a guided transaction sequence; add atomic batching only where wallet or contract authorization supports it safely. Test mixed revealed, unrevealed, padding, and expired commitments, including withdrawals of unrelated assets.
+
+### S5. Court router attribution
+
+Do not treat a swap event's router address as the economic trader. Simply deleting the trader check would weaken attribution: supported transaction paths need a verifiable binding between the selected swap and the attacker or covered user.
+
+Start with a narrow set of supported transaction formats. Identify unsupported routes before coverage is purchased. Test both legitimate shared-router activity and adversarial combinations of unrelated swaps.
+
+### S6. Solver search
+
+Replace fixed percentage search bounds with a solver based on the finalized clearing rule: order limits, pool liquidity and tick boundaries, residual direction, executable amounts, and exact contract rounding. Simulate the complete candidate settlement before submission.
+
+Implement this after S1. A wider search cannot repair an infeasible clearing rule. Compare solver results against a small reference model, including cases outside the existing search band.
+
+### S7. Execution responsibility
+
+Run an operated keeper initially with an explicit budget and monitoring. Retain permissionless execution as a fallback. State who operates the service, what happens if it stops, and how users recover funds.
+
+A competitive solver market is separate scope. Permissionless access alone does not supply economic incentives. Test keeper outage and permissionless expiration paths.
+
+### S8. Reveal rewards
+
+Treat the reward as payment for successful on-chain revelation, not reimbursement for first discovering or decrypting an order. The keeper should simulate immediately before submitting and tolerate duplicate attempts. Private submission may reduce copying where available but must not be required for correctness.
+
+Avoid another commit–reveal protocol solely to protect the bounty. Measure competing submissions and gas costs before relying on public reveal competition for liveness.
+
+### S9. Availability and unrevealed penalties
+
+Once admission enforces valid ciphertext, the intended decryption round, and adequate funding, consider this target policy: retain the admission fee, reward successful revelation, and release unexecuted input after a hard deadline without an additional penalty merely because nobody revealed a valid order.
+
+This avoids an on-chain beacon-availability clock and unbounded waiting. It is conditional on enforced admission guarantees: applying the refund policy to unchecked ciphertext would reopen deliberate non-revelation. Evaluate beacon delay, keeper outage, censorship, and owner withholding separately before adopting the policy.
+
+### S10. User transaction flow
+
+Provide one coherent CLI workflow: check balances, approvals, fees, and eligibility; show completion and recovery deadlines; prepare and submit; track revelation and execution; offer cleanup and withdrawal.
+
+Display available, reserved, and withdrawable balances separately, and include every required asset in funding preflight. Keep proceeds in the vault by default for repeat traders with an explicit withdrawal option. Automatic withdrawal on every fill adds cost and settlement failure dependencies.
+
+### S11. Account cadence and private state
+
+Initially expose the one-active-batch restriction and reject incompatible submissions before proving or paying gas. Supporting overlapping private reservations needs a rule preventing the same balance from backing multiple batches; do not add it without settling that invariant.
+
+Provide reliable private-state export and restoration so state loss does not silently prevent appends. Decide whether overlapping batches are needed from actual usage and the admission design. Test stale and restored client state without changing the proof architecture in this proposal.
+
+### S12. Liquidity availability
+
+Initially accept liquidity removal as an execution risk, with expiry and recovery of unused funds. Show current liquidity and estimated execution before submission without presenting them as guarantees.
+
+Mandatory LP lockups require separate economics and lifecycle rules. Guaranteed liquidity would need an explicitly paid committed-liquidity arrangement. The existing same-block liquidity-change guard proposal addresses a narrower JIT behavior and should not be represented as an availability guarantee.
+
+### S13. Execution quality
+
+Compare fresh external quotes in the client and derive a user-approved limit and expiry. Keep the user's limit as the enforceable protection; an external quote is guidance rather than an execution oracle.
+
+Show results after fees and expected partial execution. Internal price consistency is not a best-execution claim. Test stale quote handling and unfavorable isolated-pool prices.
+
+### S14. Incident-level Court accounting
+
+Define an incident identifier covering chain, block, pool, and attacker front/back transactions. Enforce one incident-level payout budget alongside receipt-level caps; per-victim transaction replay protection alone does not cap repeated use of the same attacker profit.
+
+Two policy choices remain: first valid claims consume the budget, which is simple but rewards speed; or claims register during a window and share the budget, which delays payment and adds state. For a compensation product, prefer the claim-window approach with explicitly defined eligible weights, proportional allocation, and individual caps. State how unclaimed coverage is treated. This does not automatically compensate every affected trader.
+
+Gate: test several covered victims sharing attacker legs, duplicate claims, claim ordering, and aggregate conservation. Reconcile this policy with PLAN.md before implementing payout storage or interfaces.
+
+### S15. Coverage beneficiaries and claims
+
+Bind the beneficiary in a signed coverage receipt issued before the covered activity. Do not infer the payment recipient solely from the transaction signer.
+
+Define the insured event separately from attribution: a sandwich-shaped sequence does not establish provider leakage or quantify victim loss. Offer capped, profit-based coverage for a defined observable event rather than claiming proof of causation. This policy does not by itself solve the self-sandwich incentive described in R8; payout economics still need that adversarial check.
+
+### S16. Watcher operations
+
+Build a minimal service around existing scripts: persist the processed block, rescan a bounded overlap, deduplicate, apply an explicit confirmation policy, bound concurrency, enforce request timeouts, read anchor values against one consistent block, and track submission outcomes.
+
+Separate discovery from expensive proof construction. Test restart, duplicate discovery, RPC failure, anchor consistency, and reorg handling. Add more recovery orchestration only for demonstrated failure boundaries.
+
+### S17. Token and arithmetic domains
+
+Restrict the initial deployment to a supported token pair and transfer behavior. Reject unsupported deposits. For ordinary supported ERC-20s, verify received amounts match credited amounts; fee-on-transfer and rebasing support are separate scope.
+
+Define shared bounds for individual inputs, aggregate residuals, v4 signed deltas, prices, and quotes. Use full-precision arithmetic wherever that domain requires it, including Aqua if retained. Test boundary values and token behavior rather than assuming every ERC-20 acts identically.
+
+### S18. Configuration validation
+
+Validate meaningful phase durations, admission economics, bounded price tolerance, supported tokens, the expected pool/hook relationship, initialization state, and pre-start behavior.
+
+Write negative tests for invalid configurations and deployment checks for relationships that cannot be established in a constructor. An unusable schedule should fail before accepting orders.
+
+### S19. Arkiv and Swarm scope
+
+Keep contract state and events authoritative. Additional services should serve a specific need such as searchable history, convenient payload retrieval, or a required integration. Settlement and fund recovery should not depend on them unnecessarily.
+
+For each integration, identify what user capability is lost without it. Defer integrations without a concrete purpose, subject to explicit release or prize requirements. Test the supported offline or unavailable-service path.
+
+### S20. Aqua scope
+
+Finish and verify the v4 path first. If Aqua is required for the release, define its narrow role and demonstrate actual end-to-end execution. An isolated opcode test does not demonstrate participation in auction settlement.
+
+Do not support interchangeable residual routes before settling their pricing and accounting rules. This recommendation requires reconciliation with the existing 1inch release lane; it does not silently cancel that work.
+
+### S21. Court release boundary
+
+Give Court independent gates for coverage issuance, attribution, cross-chain evidence, valuation, incident accounting, and payout funding. The auction should remain deployable and usable without Court.
+
+Treat Court as a separate product boundary rather than incidental settlement logic. Demonstrate both the auction-only flow and the complete covered-transaction flow before claiming either is ready.
+
+### S22. Documentation consistency
+
+Maintain one authoritative architecture document, a concise status handoff, and verified test instructions. Distinguish implemented behavior from proposals. Keep unresolved review material here under the REVIEW.md exception, and other local concerns in the ignored .workspace.md.
+
+Reconcile architecture and plan documents after decisions are accepted, without overwriting concurrent admission-proof documentation.
+
+### Implementation order and verification status
+
+First settle partial-fill allocation and build an executable reference model. Then address execution-window ordering, admission economics, keeper responsibility, and cleanup UX. Court and optional integrations can progress independently within their existing team lanes.
+
+These recommendations are not implemented by this document. Earlier isolated tests reproduced six existing behaviors: an executable limit order with no admissible clearing price, reversible batch execution order, padding capacity with no protocol fee, a valid price outside the test solver search range, withdrawal blocking until unrevealed cleanup, and shared-router rejection by the Court predicate. Those reproductions are not validation of the proposed solutions, and this documentation update does not claim a fresh full-suite run or production readiness.
