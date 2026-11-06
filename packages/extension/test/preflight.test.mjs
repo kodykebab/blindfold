@@ -7,20 +7,20 @@ import { abi, dep, memoryArea, mockChain, owner, T0, T1 } from './mock.mjs'
 import { stateStore } from '../src/vault.mjs'
 
 const E18 = 10n ** 18n
-async function setup(chainOpts = {}, { admission = true } = {}) {
+async function setup(chainOpts = {}, { admission = true, wallNow } = {}) {
   const pub = mockChain(chainOpts)
   if (!admission) pub.table.admissionRequired = false
   const calls = []
   const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt'])
   const states = stateStore(memoryArea(), key)
   const ctx = {
-    dep: admission ? dep : { ...dep, admission: 'off' }, abi, owner, pub,
+    dep: admission ? dep : { ...dep, admission: 'off' }, abi, owner, pub, wallNow,
     store: { load: () => states.load(dep, owner), write: (s) => states.write(dep, owner, s) },
     prove: async () => { calls.push('prove'); throw new Error('stop after preflight') },
     tlock: { encrypt: async () => { calls.push('encrypt'); throw new Error('stop after preflight') }, check: async () => calls.push('check') },
     sendTx: async (tx) => { calls.push(tx.calls ? tx.calls.map((c) => c.to) : tx.to); return `0x${'aa'.repeat(32)}` },
   }
-  return { f: flows(ctx), calls, pub }
+  return { f: flows(ctx), calls, pub, ctx }
 }
 const order = { side: 'sell', amountIn: '1', minOut: '0.9' }
 
@@ -97,4 +97,27 @@ test('S5: a deployment whose vault is not the settlement\'s, or an RPC on anothe
   const other = await setup()
   other.pub.getChainId = async () => 1
   await assert.rejects(other.f.status(), /RPC serves chain 1, the deployment is for 31337/)
+})
+
+test('live preflight refuses an idle chain whose wall clock has passed batch close before funding', async () => {
+  const { f, calls } = await setup({ reads: { freeBalance: () => 0n, balanceOf: () => 10n * E18 } }, { wallNow: () => 1200n })
+  const report = await f.commit({ ...order, dryRun: true })
+  assert.equal(report.ok, false)
+  assert.match(report.problems.join(), /closes in 0s/)
+  await assert.rejects(f.commit(order), /preflight failed/)
+  assert.deepEqual(calls, [])
+})
+
+test('recorded fixtures use their chain timestamp even when the machine clock is later', async () => {
+  const { f } = await setup({ now: 1000n }) // no wallNow: recorded drand mode
+  assert.ok((await f.commit({ ...order, dryRun: true })).ok)
+})
+
+
+test('live funding that finishes after batch close does not start proving or submit an order', async () => {
+  let wall = 1000n
+  const s = await setup({ reads: { freeBalance: () => 0n, balanceOf: () => 10n * E18, allowance: () => 0n } }, { wallNow: () => wall })
+  s.ctx.sendTx = async () => { s.calls.push('fund'); wall = 1200n; return `0x${'aa'.repeat(32)}` }
+  await assert.rejects(s.f.commit(order), /batch closed while funding/)
+  assert.deepEqual(s.calls, ['fund'])
 })

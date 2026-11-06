@@ -6,8 +6,9 @@ import { replacer, stateId } from './core.mjs'
 import { createVault, importKey, exportKey, stateStore, unlockVault } from './vault.mjs'
 import { flows } from './flows.mjs'
 import { clearExports } from './jobs.mjs'
+import { recovery as createRecovery } from './recovery.mjs'
 import { bridge as createBridge } from './bridge.mjs'
-import { helper as createHelper } from './helper.mjs'
+import { proveWithHelper } from './helper.mjs'
 
 const BRIDGE_ORIGIN = globalThis.BLINDFOLD_BRIDGE_ORIGIN // replaced by build.mjs from BRIDGE_ORIGIN (D9)
 const DEFAULT_RPC = 'http://127.0.0.1:8545'
@@ -28,21 +29,6 @@ const bridge = createBridge({ origin: BRIDGE_ORIGIN, onWallet: walletInfo, onLat
 chrome.runtime.onConnectExternal.addListener(bridge.accept)
 session.set({ bridge: false }) // a fresh worker has no port; the bridge reconnects within a second
 
-// Helper protocol 1 (packages/prover-helper): hello, then prepare and online on the same port (one host process).
-const helper = createHelper()
-async function prove({ manifestSha256, request }) {
-  try {
-    const hello = await helper.call('hello')
-    if (hello.protocol !== 1) fail(`prover helper speaks protocol ${hello.protocol}; this extension needs 1`)
-    if (hello.manifestSha256 !== manifestSha256) fail(`prover helper parameters ${hello.manifestSha256} do not match this deployment's ${manifestSha256}`)
-    const prepared = await helper.call('prepare', { protocol: 1, manifestSha256, request })
-    const { online } = await helper.call('online', { protocol: 1, session: prepared.session })
-    return { ...prepared, online }
-  } finally {
-    helper.close()
-  }
-}
-
 // ---- offscreen document (tlock)
 
 async function offscreen(op, args) {
@@ -60,12 +46,13 @@ async function offscreen(op, args) {
 let abis
 const loadAbis = () => (abis ??= fetch(chrome.runtime.getURL('abis.json')).then((r) => r.json()))
 
-async function context(log = () => {}) {
+async function context(log = () => {}, saved = null) {
   const { config } = await local.get('config')
-  const dep = config?.deployment ?? fail('no deployment set: paste the deployment JSON under Settings')
+  const dep = saved?.dep ?? config?.deployment ?? fail('no deployment set: paste the deployment JSON under Settings')
+  if (saved && dep.settlement.toLowerCase() !== saved.settlement.toLowerCase()) fail('the original deployment is unavailable; restore its settings to recover the send')
   const { wallet, key } = await session.get(['wallet', 'key'])
-  const owner = wallet?.accounts?.[0] ?? fail(`no wallet account: open ${BRIDGE_ORIGIN}/ and connect a wallet`)
-  const rpcUrl = config.rpcUrl || DEFAULT_RPC
+  const owner = saved?.owner ?? wallet?.accounts?.[0] ?? fail(`no wallet account: open ${BRIDGE_ORIGIN}/ and connect a wallet`)
+  const rpcUrl = saved?.rpcUrl ?? config?.rpcUrl ?? DEFAULT_RPC
   const chain = defineChain({ id: dep.chainId, name: 'blindfold', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } })
   const pub = createPublicClient({ chain, transport: http(rpcUrl, { timeout: 15_000, retryCount: 0 }), pollingInterval: 500 })
   const a = await loadAbis()
@@ -74,12 +61,13 @@ async function context(log = () => {}) {
   const unlocked = () => states ?? fail('private state is locked: unlock it first')
   const ctx = {
     dep, abi, owner, pub, log, unlocked: !!states,
+    wallNow: config?.drand ? undefined : () => BigInt(Math.floor(Date.now() / 1000)),
     store: { load: () => unlocked().load(dep, owner), write: (s) => unlocked().write(dep, owner, s) },
     sendTx: (tx, record) => sendTx(ctx, { ...tx, chain: { chainId: dep.chainId, rpcUrl } }, record),
-    prove,
+    prove: proveWithHelper,
     tlock: {
-      encrypt: (round, payload) => offscreen('encrypt', { round: String(round), payload, drand: config.drand }),
-      check: (ciphertext, round, payload) => offscreen('check', { ciphertext, round: String(round), payload, drand: config.drand }),
+      encrypt: (round, payload) => offscreen('encrypt', { round: String(round), payload, drand: config?.drand }),
+      check: (ciphertext, round, payload) => offscreen('check', { ciphertext, round: String(round), payload, drand: config?.drand }),
     },
   }
   return ctx
@@ -90,31 +78,37 @@ async function context(log = () => {}) {
 async function sendTx(ctx, tx, record) {
   const id = `tx-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
   const key = `send:${id}`
-  await session.set({ [key]: plain({ record, owner: ctx.owner, settlement: ctx.dep.settlement }) })
+  await session.set({ [key]: plain({ record, owner: ctx.owner, settlement: ctx.dep.settlement, dep: ctx.dep, rpcUrl: tx.chain.rpcUrl }) })
   try {
-    const r = await bridge.send({ ...tx, id }, (hash) => record && flows(ctx).recordSent(record, hash))
+    const r = await bridge.send({ ...tx, id }, async (hash) => {
+      if (!record || !hash) return
+      const entry = (await session.get(key))[key]
+      if (!entry) return
+      await session.set({ [key]: { ...entry, hash } })
+      if (!await flows(ctx).recordSent(record, hash)) fail('the private commitment for this send is unavailable')
+      await session.set({ [key]: { ...entry, hash, saved: true } })
+    })
     await session.remove(key)
     return r.hashes.at(-1)
   } catch (e) {
-    if (e.code !== 'DISCONNECTED') await session.remove(key) // a dropped port may still be answered after reconnect
+    const entry = (await session.get(key))[key]
+    if (e.code !== 'DISCONNECTED' && (!entry?.hash || entry.saved)) await session.remove(key)
     throw e
   }
 }
 
-async function late(m) {
-  const key = `send:${m.id}`
-  const sent = (await session.get(key))[key]
-  if (!sent) return
-  if (m.type === 'sent' && sent.record && m.hash) {
-    const ctx = await context()
-    if (ctx.owner.toLowerCase() !== sent.owner.toLowerCase() || ctx.dep.settlement.toLowerCase() !== sent.settlement.toLowerCase()) return
-    await navigator.locks.request(lockName(ctx), () => flows(ctx).recordSent(sent.record, m.hash))
-  }
-  if (m.type === 'result') {
-    await session.remove(key)
-    tick()
-  }
-}
+const recovered = createRecovery({
+  session,
+  async save(entry, hash) {
+    const ctx = await context(() => {}, entry)
+    if (!ctx.unlocked) fail('unlock private state to recover a sent transaction')
+    const saved = await navigator.locks.request(lockName(ctx), () => flows(ctx).recordSent(entry.record, hash))
+    if (!saved) fail('the private commitment for this send is unavailable')
+  },
+  onError: (e) => console.warn('bridge recovery:', e.message),
+})
+const late = (m) => recovered.handle(m)
+ready.then(() => recovered.drain()).catch((e) => console.warn('bridge recovery:', e.message))
 
 // One writer per account (Web Locks); a second mutation fails fast instead of queueing behind a wallet prompt.
 const lockName = (ctx) => `blindfold:${stateId(ctx.dep, ctx.owner)}`
@@ -147,6 +141,7 @@ async function runJob(id, op, args) {
     const ctx = await context((line) => { log.push(line); put({ state: 'running' }) })
     const work = () => OPS[op](flows(ctx), args ?? {})
     const result = await (MUTATING.has(op) ? withLock(ctx, work) : work())
+    if (op === 'import') recovered.drain().catch((e) => console.warn('bridge recovery:', e.message))
     if (op === 'export' && !(await session.get('key')).key) fail('private state was locked during export')
     await put({ state: 'done', result })
     if (op === 'export' && !await chrome.alarms.get('clear-exports')) chrome.alarms.create('clear-exports', { delayInMinutes: 1 })
@@ -162,7 +157,7 @@ async function runJob(id, op, args) {
 
 const CALLS = {
   async setup({ passphrase }) { await session.set({ key: await exportKey(await createVault(local, passphrase)) }); return { unlocked: true } },
-  async unlock({ passphrase }) { await session.set({ key: await exportKey(await unlockVault(local, passphrase)) }); tick(); return { unlocked: true } },
+  async unlock({ passphrase }) { await session.set({ key: await exportKey(await unlockVault(local, passphrase)) }); recovered.drain().catch((e) => console.warn('bridge recovery:', e.message)); tick(); return { unlocked: true } },
   async lock() { await session.remove('key'); await clearExports(session); return { unlocked: false } },
   async session() {
     const [{ config, kdf }, s] = await Promise.all([local.get(['config', 'kdf']), session.get(['key', 'bridge', 'wallet', 'wallets', 'clock'])])

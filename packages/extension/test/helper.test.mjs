@@ -41,3 +41,33 @@ test('an unresponsive native host times out and is disconnected', async () => {
   await assert.rejects(h.call('hello'), (e) => e.code === 'E_TIMEOUT' && /timed out during hello/.test(e.message))
   assert.equal(p.disconnected, true)
 })
+
+test('concurrent orders use independent native helper sessions', async () => {
+  const { proveWithHelper } = await import('../src/helper.mjs')
+  const clients = []
+  const make = () => {
+    const client = { calls: [], closed: false, call(cmd, args) { return new Promise((resolve) => this.calls.push({ cmd, args, resolve })) }, close() { this.closed = true } }
+    clients.push(client)
+    return client
+  }
+  const first = proveWithHelper({ manifestSha256: 'pin', request: { owner: 'first' } }, make)
+  const second = proveWithHelper({ manifestSha256: 'pin', request: { owner: 'second' } }, make)
+  assert.equal(clients.length, 2)
+  clients[0].calls[0].resolve({ protocol: 1, manifestSha256: 'pin' })
+  await Promise.resolve()
+  clients[0].calls[1].resolve({ session: 'first' })
+  await Promise.resolve()
+  clients[0].calls[2].resolve({ online: { proof: 'first' } })
+  assert.equal((await first).online.proof, 'first')
+  assert.equal(clients[0].closed, true)
+  assert.equal(clients[1].closed, false)
+  clients[1].calls[0].resolve({ protocol: 1, manifestSha256: 'pin' })
+  await Promise.resolve()
+  assert.equal(clients[1].calls[1].args.request.owner, 'second')
+  clients[1].calls[1].resolve({ session: 'second' })
+  await Promise.resolve()
+  assert.equal(clients[1].calls[2].args.session, 'second')
+  clients[1].calls[2].resolve({ online: { proof: 'second' } })
+  assert.equal((await second).online.proof, 'second')
+  assert.equal(clients[1].closed, true)
+})

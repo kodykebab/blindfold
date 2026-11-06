@@ -130,3 +130,24 @@ test('recordSent saves only into the commitment or pending admission it names', 
   assert.deepEqual(st.commitments, [{ id: null, hash: '0x01', tx: TX }])
   assert.deepEqual(st.admission.pending, { hash: '0x02', tx: TX })
 })
+
+test('live admission does not submit when wall time passes the deadline during proving on an idle chain', async () => {
+  const s = await setup()
+  let wall = 1000n
+  s.ctx.wallNow = () => wall
+  const prove = s.ctx.prove
+  s.ctx.prove = async (request) => { const result = await prove(request); wall = 1200n; return result }
+  await assert.rejects(s.f.commit({ side: 'sell', amountIn: '1', minOut: '0.5' }), /proof completed after this batch closed/)
+  assert.deepEqual(s.seen.sent, [])
+  assert.equal((await s.store.load()).commitments.length, 0)
+})
+
+test('live plain commit does not submit when wall time passes the deadline during encryption', async () => {
+  const s = await setup({ admission: false })
+  let wall = 1000n
+  s.ctx.wallNow = () => wall
+  s.ctx.tlock.encrypt = async () => { wall = 1200n; return '0xbeef' }
+  await assert.rejects(s.f.commit({ side: 'sell', amountIn: '1', minOut: '0.5' }), /encryption completed after this batch closed/)
+  assert.deepEqual(s.seen.sent, [])
+  assert.equal((await s.store.load()).commitments.length, 0)
+})

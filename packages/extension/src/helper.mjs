@@ -54,3 +54,16 @@ export function helper(connect = () => chrome.runtime.connectNative(HOST), timeo
     close,
   }
 }
+
+// Every proof owns one port: two accounts may prove concurrently without replacing each other's witness session.
+export async function proveWithHelper({ manifestSha256, request }, makeHelper = helper) {
+  const h = makeHelper()
+  try {
+    const hello = await h.call('hello')
+    if (hello.protocol !== 1) throw new Error(`prover helper speaks protocol ${hello.protocol}; this extension needs 1`)
+    if (hello.manifestSha256 !== manifestSha256) throw new Error(`prover helper parameters ${hello.manifestSha256} do not match this deployment's ${manifestSha256}`)
+    const prepared = await h.call('prepare', { protocol: 1, manifestSha256, request })
+    const { online } = await h.call('online', { protocol: 1, session: prepared.session })
+    return { ...prepared, online }
+  } finally { h.close() }
+}

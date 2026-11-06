@@ -21,6 +21,14 @@ export function flows(ctx) {
     pub.readContract({ address, abi: which, functionName, args })
   const has = (n) => abi.settlement.some((f) => f.type === 'function' && f.name === n)
   const now = async () => (await pub.getBlock()).timestamp
+  // An idle chain can keep an old latest block while real time advances. In live mode, never use a clock earlier
+  // than the local wall clock to decide whether a commitment can still be submitted. Recorded fixtures omit it.
+  const commitNow = async () => {
+    const chainTime = await now()
+    if (!ctx.wallNow) return chainTime
+    const wallTime = BigInt(await ctx.wallNow())
+    return wallTime > chainTime ? wallTime : chainTime
+  }
   const admissionRequired = async () => (has('admissionRequired') ? read(S, 'admissionRequired') : false)
 
   // Tokens come from the settlement, and the deployment file must agree with the chain it names (S5): a pasted
@@ -59,8 +67,9 @@ export function flows(ctx) {
     const state = await store.load()
     if (kind === 'admit' && state.admission?.pending?.hash === hash) state.admission.pending.tx = tx
     else if (kind === 'commit' && state.commitments.some((c) => c.hash === hash)) mergeCommitments(state, [{ hash, tx }])
-    else return
+    else return false
     await store.write(state)
+    return true
   }
   async function confirm(hash, what) {
     const receipt = await pub.waitForTransactionReceipt({ hash })
@@ -138,7 +147,7 @@ export function flows(ctx) {
     const t = await tokens()
     const [tin, tout] = side === 'sell' ? [t.token0, t.token1] : [t.token1, t.token0]
     const order = { owner: me, zeroForOne: side === 'sell', amountIn: parseUnits(amountIn, tin.decimals), minAmountOut: parseUnits(minOut, tout.decimals) }
-    const [current, depositAmount, maxCommits, t0] = await Promise.all([read(S, 'currentBatch'), read(S, 'depositAmount'), read(S, 'MAX_COMMITS'), now()])
+    const [current, depositAmount, maxCommits, t0] = await Promise.all([read(S, 'currentBatch'), read(S, 'depositAmount'), read(S, 'MAX_COMMITS'), commitNow()])
     const fee = has('commitFee') ? await read(S, 'commitFee') : 0n
     const [commitsClose, commits] = await Promise.all([read(S, 'commitsClose', [current]), read(S, 'commitIdsOf', [current])])
     const per = async (f) => Object.fromEntries(await Promise.all(Object.keys(t.byAddress).map(async (a) => [a, await f(a)])))
@@ -176,8 +185,10 @@ export function flows(ctx) {
     if (!check.ok) fail(`preflight failed:\n  ${check.problems.join('\n  ')}`)
     for (const f of check.funding) {
       if (!f.shortfall) continue
+      if (await commitNow() >= commitsClose) fail('batch closed while funding; start a new order in the current batch')
       await fund(f.token, f.shortfall)
     }
+    if (await commitNow() >= commitsClose) fail('batch closed while funding; start a new order in the current batch')
     const salt = newSalt()
     const hash = orderHash(dep.chainId, S, current, order, salt)
     const round = await read(S, 'targetRound', [current])
@@ -190,7 +201,7 @@ export function flows(ctx) {
       log('generating admission proofs with the prover helper')
       const proved = await proveAdmission({ batch: current, round, funding, budgets, order, salt, hash })
       await ctx.tlock.check(proved.ciphertext, round, payload)
-      const latest = await now()
+      const latest = await commitNow()
       if (latest >= commitsClose) fail('proof completed after this batch closed; nothing submitted, start a new order in the current batch')
       reconcileFunding(dep, me, funding, await fundingOnchain(), latest)
       const state = await store.load()
@@ -201,6 +212,7 @@ export function flows(ctx) {
     }
     const ciphertext = await ctx.tlock.encrypt(round, payload)
     await ctx.tlock.check(ciphertext, round, payload)
+    if (await commitNow() >= commitsClose) fail('encryption completed after this batch closed; nothing submitted, start a new order in the current batch')
     await store.write(mergeCommitments(await store.load(), [{ id: null, batchId: current, round, hash, order, salt }])) // before sending
     const tx = await submit(S, abi.settlement, 'commit', [current, hash, ciphertext], { kind: 'commit', hash })
     const receipt = await confirm(tx, 'commit')
