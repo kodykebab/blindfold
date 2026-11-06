@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { encodeAbiParameters, encodeEventTopics, getCreate2Address, keccak256, parseAbi, zeroAddress } from 'viem'
-import { DRAND_GENESIS, createdV3Pool, drandSchedule, mineHookSalt, orderedSandwich, parseTrack, receiptVisible, poolIdOf, v3FactoryFromManifest, victimSandwich, waitForState } from '../lib.mjs'
+import { DRAND_GENESIS, createdV3Pool, drandSchedule, mineHookSalt, orderedSandwich, parseTrack, receiptVisible, poolIdOf, v3FactoryFromManifest, victimSandwich, waitForState, splitLogFilter } from '../lib.mjs'
 
 test('poolIdOf matches a live mainnet v4 pool (ETH/USDC 0.05%)', () => {
   const key = { currency0: zeroAddress, currency1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', fee: 500, tickSpacing: 10, hooks: zeroAddress }
@@ -80,4 +80,11 @@ test('proxy holds a preconfirmed receipt until latest-state reads include its bl
   assert.equal(receiptVisible({ blockNumber: '0x11' }, '0x10'), false)
   assert.equal(receiptVisible({ blockNumber: '0x11' }, '0x11'), true)
   assert.equal(receiptVisible({ blockNumber: '0x11' }, '0x12'), true)
+})
+
+test('historical log filters are split into ordered bounded ranges', () => {
+  const filters = splitLogFilter({ address: '0x123', fromBlock: '0x64', toBlock: 'latest' }, 1200n, 500n)
+  assert.deepEqual(filters.map((f) => [f.fromBlock, f.toBlock]), [['0x64', '0x257'], ['0x258', '0x44b'], ['0x44c', '0x4b0']])
+  assert.ok(filters.every((f) => f.address === '0x123'))
+  assert.deepEqual(splitLogFilter({ blockHash: '0xabc' }, 1200n), [{ blockHash: '0xabc' }])
 })

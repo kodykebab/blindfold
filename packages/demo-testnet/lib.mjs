@@ -71,3 +71,17 @@ export async function waitForState(read, { attempts = 30, intervalMs = 1000 } = 
 export function receiptVisible(receipt, latestBlock) {
   return receipt == null || (receipt.blockNumber != null && BigInt(latestBlock) >= BigInt(receipt.blockNumber))
 }
+
+/** Split historical log queries for RPCs with a 1,000-block limit. */
+export function splitLogFilter(filter, head, size = 500n) {
+  if (filter.blockHash) return [filter]
+  const block = (value) => value == null || value === 'latest' ? head : value === 'earliest' ? 0n : /^0x[0-9a-f]+$/i.test(value) ? BigInt(value) : null
+  const from = block(filter.fromBlock), to = block(filter.toBlock)
+  if (from === null || to === null || from > to) return [filter]
+  const ranges = []
+  for (let start = from; start <= to; start += size) {
+    const end = start + size - 1n < to ? start + size - 1n : to
+    ranges.push({ ...filter, fromBlock: `0x${start.toString(16)}`, toBlock: `0x${end.toString(16)}` })
+  }
+  return ranges
+}
