@@ -122,14 +122,14 @@ export function swapLogs(receipts) {
         out.push({
           v4: false, pool: l.address.toLowerCase(), poolId: '0x' + '00'.repeat(32),
           txIndex: Number(r.transactionIndex), txHash: r.transactionHash, logIndex, from: r.from.toLowerCase(),
-          trader: '0x' + l.topics[2].slice(26),
+          caller: '0x' + l.topics[1].slice(26), // v3 `sender`: the contract that called the pool
           a0: signed('0x' + l.data.slice(2, 66), 256), a1: signed('0x' + l.data.slice(66, 130), 256),
         })
       } else if (t0 === V4_SWAP && l.address.toLowerCase() === V4_POOL_MANAGER && l.topics.length >= 3) {
         out.push({
           v4: true, pool: V4_POOL_MANAGER, poolId: l.topics[1],
           txIndex: Number(r.transactionIndex), txHash: r.transactionHash, logIndex, from: r.from.toLowerCase(),
-          trader: '0x' + l.topics[2].slice(26),
+          caller: '0x' + l.topics[2].slice(26), // v4 `sender`: the contract that called the PoolManager
           a0: -signed('0x' + l.data.slice(2, 66), 256), a1: -signed('0x' + l.data.slice(66, 130), 256),
         })
       }
@@ -151,17 +151,18 @@ export function findSandwiches(swaps, closeBps = 100n) {
     for (let a = 0; a < list.length; a++) for (let c = a + 1; c < list.length; c++) {
       const f = list[a], b = list[c]
       if (b.txIndex <= f.txIndex + 1) continue
-      if (f.from !== b.from || f.trader !== b.trader) continue
+      if (f.from !== b.from || f.caller !== b.caller) continue // one signer, one contract making both legs
       const z = f.a0 > 0n
       if ((b.a0 > 0n) === z) continue
       const bought = -(z ? f.a1 : f.a0), sold = z ? b.a1 : b.a0
       const diff = bought > sold ? bought - sold : sold - bought
       if (bought <= 0n || diff * 10000n > bought * closeBps) continue
-      const profit = -(z ? b.a0 : b.a1) - (z ? f.a0 : f.a1)
-      if (profit <= 0n) continue
+      const spent = z ? f.a0 : f.a1
+      const profit = -(z ? b.a0 : b.a1) - spent
+      if (spent <= 0n || profit <= 0n) continue
       for (const v of list) {
         if (v.txIndex <= f.txIndex || v.txIndex >= b.txIndex) continue
-        if ((v.a0 > 0n) !== z || v.from === f.from || v.trader === f.trader) continue
+        if ((v.a0 > 0n) !== z || v.from === f.from) continue // any route: a shared router is not the trader
         found.push({ front: f, victim: v, back: b, profit, profitInToken0: z })
         break
       }
