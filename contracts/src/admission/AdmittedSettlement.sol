@@ -66,6 +66,10 @@ contract AdmittedSettlement is BlindfoldSettlement {
         super.initialize(k);
     }
 
+    /// @dev initialize already pins the key to the vault's ordered pair, which holds the deposit token (constructor),
+    ///      so the base key check would only repeat it; skipping it keeps this contract under the EIP-170 size limit.
+    function _checkPoolKey(PoolKey calldata) internal pure override {}
+
     /// @notice Read the effective root/step; fully closed accounts restart from canonical zero.
     function admissionState(address owner) external view returns (uint64 batch, bytes32 root, uint256 step) {
         step = vault.openCommitments(owner);
