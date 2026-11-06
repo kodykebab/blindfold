@@ -123,7 +123,9 @@ contract BondRegistryTest is CourtFixtures {
     }
 
     function test_rejects_unlistedPool() public {
-        reg = _registryWith(new bytes32[](0)); // covers no pools
+        bytes32[] memory others = new bytes32[](1);
+        others[0] = keccak256("some other pool");
+        reg = _registryWith(others); // covers another pool, not this one
         vm.prank(rpc);
         reg.bond{value: BOND}();
         (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();

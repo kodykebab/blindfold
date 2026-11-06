@@ -2,8 +2,8 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {SandwichCourtVerifier} from "../../src/court/SandwichCourtVerifier.sol";
-import {BondRegistry, MAX_BUDGET} from "../../src/court/BondRegistry.sol";
+import {SandwichCourtVerifier, IL1Block} from "../../src/court/SandwichCourtVerifier.sol";
+import {BondRegistry, MAX_BUDGET, EVIDENCE_TIME} from "../../src/court/BondRegistry.sol";
 import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 
 /// @dev Returns whatever verdict the test sets, so BondRegistry's own logic can be fuzzed without proofs.
@@ -52,7 +52,7 @@ abstract contract RegistryBase is Test {
     address constant FACTORY = address(0xFAC);
     bytes32 constant INIT_HASH = keccak256("pool init code");
     address constant PM = address(0x4444);
-    uint256 constant DELAY = 1 days;
+    uint256 constant DELAY = 2 days; // at least EVIDENCE_TIME (S18)
     uint256 constant WINDOW = 1 hours;
     uint256 constant BLOCK_TIME = 1_000;
 
@@ -69,25 +69,27 @@ abstract contract RegistryBase is Test {
 
     function _deploy() internal {
         mock = new MockVerifier();
+        reg = new BondRegistry(_config());
+    }
+
+    function _config() internal view returns (BondRegistry.Config memory) {
         bytes32[] memory pools = new bytes32[](5);
         pools[0] = bytes32(uint256(uint160(_v3Pool(WETH, OTHER, 500))));
         pools[1] = bytes32(uint256(uint160(_v3Pool(OTHER, WETH, 500))));
         pools[2] = keccak256(_v4Key(OTHER, WETH, 3000));
         pools[3] = keccak256(_v4Key(address(0), OTHER, 3000));
         pools[4] = keccak256(_v4Key(address(0), OTHER, DYNAMIC_FEE)); // listed, but its fee can't be read
-        reg = new BondRegistry(
-            BondRegistry.Config({
-                verifier: SandwichCourtVerifier(address(mock)),
-                sourceChainId: block.chainid,
-                weth: WETH,
-                v3Factory: FACTORY,
-                v3InitCodeHash: INIT_HASH,
-                v4PoolManager: PM,
-                unbondDelay: DELAY,
-                claimWindow: WINDOW,
-                pools: pools
-            })
-        );
+        return BondRegistry.Config({
+            verifier: SandwichCourtVerifier(address(mock)),
+            sourceChainId: block.chainid,
+            weth: WETH,
+            v3Factory: FACTORY,
+            v3InitCodeHash: INIT_HASH,
+            v4PoolManager: PM,
+            unbondDelay: DELAY,
+            claimWindow: WINDOW,
+            pools: pools
+        });
     }
 
     function _v4Key(address t0, address t1, uint24 fee) internal pure returns (bytes memory) {
@@ -547,6 +549,59 @@ contract BondRegistryUnitTest is RegistryBase {
         }
         assertEq(total, 30 ether, "each claim gets its RPC's whole bond, which is all there is");
         assertEq(address(reg).balance, 0);
+    }
+
+    // ---- configuration (S18)
+
+    function _rejects(BondRegistry.Config memory c, string memory field) internal {
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.InvalidConfig.selector, field));
+        new BondRegistry(c);
+    }
+
+    function test_config_rejectsWhatCannotWork() public {
+        BondRegistry.Config memory c = _config();
+        c.verifier = SandwichCourtVerifier(address(0x1234)); // no code
+        _rejects(c, "verifier");
+        c = _config();
+        c.sourceChainId = 0;
+        _rejects(c, "sourceChainId");
+        c = _config();
+        c.weth = address(0);
+        _rejects(c, "weth");
+        c = _config();
+        c.claimWindow = 0;
+        _rejects(c, "claimWindow");
+        c.claimWindow = uint256(type(uint32).max) + 1; // would wrap the uint64 closesAt
+        _rejects(c, "claimWindow");
+        c = _config();
+        c.unbondDelay = EVIDENCE_TIME - 1; // an RPC could leave while its victims can still prove claims
+        _rejects(c, "unbondDelay");
+        c.unbondDelay = uint256(type(uint32).max) + 1;
+        _rejects(c, "unbondDelay");
+        c = _config();
+        c.pools = new bytes32[](0); // could never pay
+        _rejects(c, "pools");
+        c.pools = new bytes32[](1); // a zero pool id
+        _rejects(c, "pools");
+    }
+
+    function test_config_otherChainNeedsTheL1Anchor() public {
+        BondRegistry.Config memory c = _config();
+        c.sourceChainId = block.chainid + 1;
+        c.verifier = new SandwichCourtVerifier(IL1Block(address(0))); // local block hashes only
+        _rejects(c, "verifier");
+        c.verifier = new SandwichCourtVerifier(IL1Block(address(0x4200000000000000000000000000000000000015)));
+        new BondRegistry(c); // an anchored verifier can judge another chain
+    }
+
+    function test_config_boundariesAccepted() public {
+        BondRegistry.Config memory c = _config();
+        c.unbondDelay = EVIDENCE_TIME; // exactly the evidence window
+        c.claimWindow = 1;
+        new BondRegistry(c);
+        c.unbondDelay = type(uint32).max;
+        c.claimWindow = type(uint32).max;
+        new BondRegistry(c);
     }
 
     // ---- which token the profit is in
