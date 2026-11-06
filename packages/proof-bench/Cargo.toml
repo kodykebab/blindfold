@@ -3,6 +3,7 @@ name = "blindfold-proof-bench"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "blindfold-proof-bench"
 
 [dependencies]
 age = { version = "=0.12.1", default-features = false }

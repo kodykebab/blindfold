@@ -32,6 +32,14 @@ func nativeHKDF(salt, key []byte, label string) []byte {
 	return nativeHMAC(nativeHMAC(salt, key), append([]byte(label), 1))
 }
 func canonicalCiphertext(p PreparationCircuit, f FundingCircuit, nonce []byte) []byte {
+	plain := append(make([]byte, 12), nativeU8(f.Owner[:])...)
+	plain = append(plain, nativeABI(f.Direction)...)
+	plain = append(plain, nativeABI(f.Amount)...)
+	plain = append(plain, nativeABI(f.Minimum)...)
+	plain = append(plain, nativeU8(f.Salt[:])...)
+	return canonicalPlaintext(p, plain, nonce)
+}
+func canonicalPlaintext(p PreparationCircuit, plain, nonce []byte) []byte {
 	body := base64.RawStdEncoding.EncodeToString(nativeU8(p.Wrapper[:]))
 	header := fmt.Sprintf("age-encryption.org/v1\n-> tlock %v %s\n", p.Round, chainHash)
 	for len(body) > 64 {
@@ -42,11 +50,6 @@ func canonicalCiphertext(p PreparationCircuit, f FundingCircuit, nonce []byte) [
 	key := nativeU8(p.Key[:])
 	mac := nativeHMAC(nativeHKDF(nil, key, "header"), []byte(header))
 	out := append([]byte(header+" "+base64.RawStdEncoding.EncodeToString(mac)+"\n"), nonce...)
-	plain := append(make([]byte, 12), nativeU8(f.Owner[:])...)
-	plain = append(plain, nativeABI(f.Direction)...)
-	plain = append(plain, nativeABI(f.Amount)...)
-	plain = append(plain, nativeABI(f.Minimum)...)
-	plain = append(plain, nativeU8(f.Salt[:])...)
 	aead, e := chacha20poly1305.New(nativeHKDF(nonce, key, "payload"))
 	must(e)
 	streamNonce := make([]byte, 12)

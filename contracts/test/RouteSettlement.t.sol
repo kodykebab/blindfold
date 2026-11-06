@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
+import {BlindfoldVault} from "../src/BlindfoldVault.sol";
 import {BlindfoldTest} from "./Blindfold.t.sol";
 import {BlindfoldSettlement} from "../src/BlindfoldSettlement.sol";
 import {BatchAuction} from "../src/BatchAuction.sol";
@@ -71,7 +72,7 @@ contract RouteSettlementTest is BlindfoldTest {
         vm.mockCall(
             address(t0), abi.encodeWithSignature("transfer(address,uint256)", address(route), 100e18), abi.encode(true)
         );
-        vm.expectRevert(BlindfoldSettlement.ExternalInputTransfer.selector);
+        vm.expectRevert(BlindfoldVault.TokenTransferFailed.selector);
         s.settleExternal(b, Q96 - Q96 / 100);
         vm.clearMockedCalls();
         assertFalse(s.finalized(b));

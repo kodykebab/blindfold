@@ -63,6 +63,20 @@ func (c *OnlineCircuit) Define(api frontend.API) error {
 		return e
 	}
 	f := &c.Funding
+	plaintext := append(address(f.Owner), word(api, f.Direction, 1)...)
+	plaintext = append(plaintext, word(api, f.Amount, 128)...)
+	plaintext = append(plaintext, word(api, f.Minimum, 128)...)
+	plaintext = append(plaintext, f.Salt[:]...)
+	if e := c.ciphertextRelation(api, plaintext); e != nil {
+		return e
+	}
+	round := word(api, c.Round, 64)
+	return bindStatement(api, c.Digest, constantHash("blindfold.prepared-key.v1"), word(api, f.Chain, 64), address(f.Settlement), address(f.Owner), word(api, f.Batch, 64), round, c.Commitment[:], constantHash(chainHash+publicKey), word(api, f.Step, 6), f.OldRoot[:], f.NewRoot[:], f.Budgets[0][:], f.Budgets[1][:], f.OrderHash[:], c.CiphertextHash[:])
+}
+
+// Shared canonical AGE relation; global and pair orders differ only in plaintext and public statements.
+func (c *OnlineCircuit) ciphertextRelation(api frontend.API, plaintext []uints.U8) error {
+	f := &c.Funding
 	b, e := uints.NewBytes(api)
 	if e != nil {
 		return e
@@ -120,10 +134,6 @@ func (c *OnlineCircuit) Define(api frontend.API) error {
 	headerKey := hkdf32(api, nil, c.Key[:], "header")
 	mac := base64Circuit(api, hmac256(api, headerKey, header, headerLength))
 	payloadKey := hkdf32(api, c.Nonce[:], c.Key[:], "payload")
-	plaintext := append(address(f.Owner), word(api, f.Direction, 1)...)
-	plaintext = append(plaintext, word(api, f.Amount, 128)...)
-	plaintext = append(plaintext, word(api, f.Minimum, 128)...)
-	plaintext = append(plaintext, f.Salt[:]...)
 	payload := encryptPayload(api, payloadKey, plaintext)
 	encodings := make([][]uints.U8, 20)
 	for i, h := range headers {
@@ -146,5 +156,5 @@ func (c *OnlineCircuit) Define(api frontend.API) error {
 	for i := range computed {
 		b.AssertIsEqual(computed[i], c.CiphertextHash[i])
 	}
-	return bindStatement(api, c.Digest, constantHash("blindfold.prepared-key.v1"), word(api, f.Chain, 64), address(f.Settlement), address(f.Owner), word(api, f.Batch, 64), round, c.Commitment[:], constantHash(chainHash+publicKey), word(api, f.Step, 6), f.OldRoot[:], f.NewRoot[:], f.Budgets[0][:], f.Budgets[1][:], f.OrderHash[:], c.CiphertextHash[:])
+	return nil
 }

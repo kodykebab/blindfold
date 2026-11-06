@@ -123,6 +123,7 @@ Client account selection: `CLIENT_ACCOUNT_INDEX` selects the local Anvil account
 | R2 admission | Kritarth | client, keeper | `admit(uint64 batchId, bytes32 hash, bytes ciphertext, bytes proof) returns (uint256 id)`; `admissionRequired() view returns (bool)`. `proof` is opaque bytes whose encoding Kritarth defines: one seal and journal, or the preparation and online seals and journals ABI-encoded together, after the two-proof split on `main` (`725ab8e`). The client passes it through untouched. `admit` emits the same `Committed` event, so the keeper doesn't change. When `admissionRequired`, `commit` reverts |
 | External market | Kritarth | solver, deployment, indexer | One-shot `configureExternal(IExternalMarket)` before any commitments; `referencePriceX96(uint64)`, `externalPriceDeviationBps()`, `externalMarket()`; `settleExternal(uint64,uint256)` and `settleExternal(uint64,uint256,uint256,uint128)`. Additive `ExternalConfigured` and `ExternalSettled` events. Peer pricing changes require the matching solver update; legacy `settle` now rejects zero active sealed-pool liquidity |
 | General routing | Kritarth | deployment, solver | Configure `UniswapV3Route` through the existing `IExternalMarket` ABI before commitments. Constructor fixes one-to-three authenticated pools and endpoint-sorted token path. `hopCount()`, `path(index)`, `markets(index)` expose configuration; reverse orders traverse it backwards. Orders, proof statements and solver settlement arguments are unchanged |
+| Global auction v1 | Kritarth | solver, client, keeper, deployment | Separate `GlobalAuction` and one shared `BlindfoldVault`; registry of 2–8 tokens; `Order(owner,uint8 tokenIn,uint8 tokenOut,uint128 amountIn,uint128 minAmountOut)`; `admit(uint64,bytes32,bytes,bytes32,bytes32,bytes)`; `reveal(uint256,Order,bytes32)`; `settle(uint64,uint128[],Route[])`; `settleAtPrices(uint64,uint256[8],uint128[],Route[])`; `Route(uint8 input,uint8 output,uint8 market,uint128 amount,uint128 minimum)`; fraction denominator `2^128−1`; global proof domains and two-input online verifier; existing pair ABIs unchanged. Full encoding/lifecycle in ARCHITECTURE.MD §14 |
 | R4 reward | Kritarth | solver | `settleRewardBps() view returns (uint256)`: share of the residual surplus paid to `msg.sender` of `settle` (0 until shipped) |
 | Bonds | Bhoumik | demo-bots, watcher, UI (via Arkiv) | `bond()`, `requestUnbond()`, `unbond()` (delayed); `claim(SandwichCourtVerifier.Claim c, Protected r, bytes sig) returns (uint256 paid)`. EIP-712 `Protected{bytes32 txHash, uint256 chainId, uint64 acceptedAt, uint64 maxBlock, uint256 maxPayout}`; `maxPayout` comes from the tx's own slippage at acceptance |
 
@@ -140,10 +141,17 @@ Settlement timing: new deployments require `0 < settleLength <= floor(batchLengt
 | Anvil accounts | — | everyone | 0 deployer · 1 keeper · 2 solver · 3 watcher · 4 leaky-RPC signer · 5 sandwich bot · 10–19 users. Separate accounts so bots never collide on nonces |
 | Ports | — | everyone | anvil `8545` · leaky RPC `8546` · app `3000` |
 
-### Env vars (all have local defaults)
+### Env vars (local defaults where applicable)
 | Var | Default | Read by | Meaning |
 |---|---|---|---|
 | `RPC_URL` | `http://127.0.0.1:8545` | every package | Chain to talk to |
+| `GLOBAL_AUCTION` / `BATCH` | required address / latest live settlement window | global CLI | Select versioned global deployment and optionally a batch |
+| `SUBMIT` / `PRIVATE_KEY` | simulation only / none | global CLI | `SUBMIT=1` sends transactions; signing key comes from local environment |
+| `CONFIG_FILE` / `DEPLOYMENT_OUT` | none / no file | global deploy/discover | Explicit pool graph or deployment manifest; optional non-overwriting deployment output |
+| `STATE_FILE` / `PREPARATION_PROOF` / `ONLINE_PROOF` | none | global admit | Private global state and the two proof exports |
+| `ORDER_FILE` / `COMMIT_ID` | none | global reveal/slash | Decrypted order/salt and commitment identifier |
+| `CIRCUIT_KEYS` / `CIRCUIT_SETUP` / `CIRCUIT_OUTPUT` | ephemeral benchmark / load existing keys / no export | circuit CLI | Explicit reusable key directory; `CIRCUIT_SETUP=1` creates development keys; exports go under ignored results |
+| `RUN_GLOBAL_INTEGRATION` / `GLOBAL_FORK_BLOCK` | offline tests / latest block | global tests | Enable owned-Anvil CLI integration; optional pinned Ethereum fork block |
 | `ARKIV` | `off` | every package | `off` = local JSONL files; `testnet` = Arkiv testnet (needs the team key in `.env`) |
 | `ADMISSION` | `off` | deploy script, client | `off` = plain `commit`; `mock` = `admit` with the mock verifier; `real` = Groth16 |
 | `TOLERANCE_BPS` / `COMMIT_FEE` / `SETTLE_REWARD_BPS` | `100` / `1e17` / `0` | `DeployBlindfold.s.sol` | Lets Bhoumik apply the R4 measurements without a code change |
