@@ -4,7 +4,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { root, user, sleep, command, checkAccessibilityAndNoRawErrors, stageMatches, jobDone, setupStack } from './browser-stack.mjs'
+import { root, out, user, sleep, command, checkAccessibilityAndNoRawErrors, stageMatches, jobDone, setupStack } from './browser-stack.mjs'
+import { artifactPath } from '../../packages/solver/artifacts.mjs'
 
 const enabled = process.env.ORDERS_E2E === '1'
 
