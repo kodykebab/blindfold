@@ -76,8 +76,8 @@ contract GlobalEthereumForkTest is Test {
             GlobalAuction.Order memory order =
                 GlobalAuction.Order(address(this), input, output, amount, uint128(quoted));
             _admitReveal(order);
-            uint64[] memory f = new uint64[](1);
-            f[0] = 1e18;
+            uint128[] memory f = new uint128[](1);
+            f[0] = type(uint128).max;
             GlobalAuction.Route[] memory routes = new GlobalAuction.Route[](1);
             routes[0] = GlobalAuction.Route(input, output, 0, amount, uint128(quoted));
             uint256 beforeGas = gasleft();

@@ -10,7 +10,7 @@ import {IGlobalAdmission} from "./IGlobalAdmission.sol";
 /// @dev Prices are raw base-token units per token, scaled by Q96. Registry freezes before admission.
 contract GlobalAuction {
     uint256 public constant Q96 = 1 << 96;
-    uint256 public constant ONE = 1e18;
+    uint256 public constant ONE = type(uint128).max;
     uint256 public constant MAX_ORDERS = 64;
     uint256 public constant MAX_TOKENS = 8;
     uint256 public constant GENESIS = 1692803367;
@@ -350,18 +350,24 @@ contract GlobalAuction {
 
     /// @notice One historical price vector for the entire batch, including cross-pair cycles.
     function prices(uint64 b) public view returns (uint256[8] memory p) {
-        p[0] = Q96;
-        for (uint256 i = 1; i < tokens.length; i++) {
-            uint256 inverse = oracles[i].referencePrice(commitsClose(b));
-            if (inverse == 0) revert ConfigError();
-            p[i] = FullMath.mulDiv(Q96, Q96, inverse);
-            if (p[i] == 0 || p[i] > type(uint128).max) revert ConfigError();
+        for (uint256 i; i < tokens.length; i++) {
+            p[i] = tokenPriceX96(b, uint8(i));
         }
+    }
+
+    /// @notice Independently validate one token's reference, allowing unrelated stale markets to be excluded.
+    function tokenPriceX96(uint64 b, uint8 token) public view returns (uint256 value) {
+        if (token >= tokens.length) revert ConfigError();
+        if (token == 0) return Q96;
+        uint256 inverse = oracles[token].referencePrice(commitsClose(b));
+        if (inverse == 0) revert ConfigError();
+        value = FullMath.mulDiv(Q96, Q96, inverse);
+        if (value == 0 || value > type(uint128).max) revert ConfigError();
     }
 
     /// @notice Fractions are in commitment order, including zero for unrevealed/closed entries.
     /// Equal limits share a fraction; filling a worse limit requires a full fraction at better limits.
-    function settle(uint64 b, uint64[] calldata fractions, Route[] calldata routes) external guarded {
+    function settle(uint64 b, uint128[] calldata fractions, Route[] calldata routes) external guarded {
         _settle(b, prices(b), fractions, routes);
     }
 
@@ -369,21 +375,22 @@ contract GlobalAuction {
     function settleAtPrices(
         uint64 b,
         uint256[8] calldata proposed,
-        uint64[] calldata fractions,
+        uint128[] calldata fractions,
         Route[] calldata routes
     ) external guarded {
-        uint256[8] memory baseline = prices(b);
         if (proposed[0] != Q96) revert Allocation();
         for (uint256 i = 1; i < 8; i++) {
             if (i >= tokens.length) {
                 if (proposed[i] != 0) revert Allocation();
                 continue;
             }
+            if (proposed[i] == 0) continue;
+            uint256 baseline = tokenPriceX96(b, uint8(i));
             uint256 band = oracles[i].maxDeviationBps();
-            uint256 difference = proposed[i] > baseline[i] ? proposed[i] - baseline[i] : baseline[i] - proposed[i];
+            uint256 difference = proposed[i] > baseline ? proposed[i] - baseline : baseline - proposed[i];
             if (
                 proposed[i] == 0 || proposed[i] > type(uint128).max
-                    || difference > FullMath.mulDiv(baseline[i], band, 10000)
+                    || difference > FullMath.mulDiv(baseline, band, 10000)
             ) {
                 revert Allocation();
             }
@@ -391,7 +398,7 @@ contract GlobalAuction {
         _settle(b, proposed, fractions, routes);
     }
 
-    function _settle(uint64 b, uint256[8] memory p, uint64[] calldata fractions, Route[] calldata routes) private {
+    function _settle(uint64 b, uint256[8] memory p, uint128[] calldata fractions, Route[] calldata routes) private {
         if (finalized[b] || block.timestamp < revealCloses(b) || block.timestamp >= settleCloses(b)) revert Window();
         if (fractions.length != ids[b].length || routes.length > 64) revert Allocation();
         Totals memory t = _collect(b, fractions, p);
@@ -410,7 +417,7 @@ contract GlobalAuction {
         emit Settled(b, keccak256(abi.encode(p)), _fillCount(t.inputs));
     }
 
-    function _collect(uint64 b, uint64[] calldata fractions, uint256[8] memory p) private returns (Totals memory t) {
+    function _collect(uint64 b, uint128[] calldata fractions, uint256[8] memory p) private returns (Totals memory t) {
         uint256[] storage list = ids[b];
         t.inputs = new uint256[](list.length);
         t.outputs = new uint256[](list.length);
@@ -422,6 +429,10 @@ contract GlobalAuction {
             }
             if (commitments[id].status != Status.Revealed) continue;
             _priority(b, i, fractions, p);
+            if (p[o.tokenIn] == 0 || p[o.tokenOut] == 0) {
+                vault.unlock(o.owner, tokens[o.tokenIn], o.amountIn);
+                continue;
+            }
             uint256 amount = FullMath.mulDiv(o.amountIn, fractions[i], ONE);
             uint256 out = FullMath.mulDiv(amount, p[o.tokenIn], p[o.tokenOut]);
             if (out < FullMath.mulDivRoundingUp(o.minAmountOut, amount, o.amountIn)) {
@@ -441,8 +452,12 @@ contract GlobalAuction {
         if (_fillCount(t.inputs) == 0) revert Allocation();
     }
 
-    function _priority(uint64 b, uint256 i, uint64[] calldata f, uint256[8] memory p) private view {
+    function _priority(uint64 b, uint256 i, uint128[] calldata f, uint256[8] memory p) private view {
         Order memory a = orders[ids[b][i]];
+        if (p[a.tokenIn] == 0 || p[a.tokenOut] == 0) {
+            if (f[i] != 0) revert Allocation();
+            return;
+        }
         bool eligible = FullMath.mulDiv(a.amountIn, p[a.tokenIn], p[a.tokenOut]) >= a.minAmountOut;
         if (!eligible && f[i] != 0) revert Allocation();
         for (uint256 j; j < i; j++) {

@@ -10,7 +10,9 @@ import {IExternalMarket} from "../../src/market/IExternalMarket.sol";
 // Test-only statement checker. Production uses GlobalAdmissionVerifier and real Groth16 proofs.
 contract GlobalProofMock is IGlobalAdmission {
     function verify(bytes32 p, bytes32 o, bytes calldata proof) external pure returns (bool) {
-        return keccak256(proof) == keccak256(abi.encode(p, o));
+        if (proof.length == 64) return keccak256(proof) == keccak256(abi.encode(p, o));
+        (bytes memory first, bytes memory second) = abi.decode(proof, (bytes, bytes));
+        return keccak256(first) == keccak256(abi.encode(p)) && keccak256(second) == keccak256(abi.encode(o));
     }
 }
 
@@ -51,7 +53,7 @@ contract GlobalMarketMock is IExternalMarket {
 }
 
 contract GlobalAuctionTest is Test {
-    uint64 constant ONE = 1e18;
+    uint128 constant ONE = type(uint128).max;
     uint256 constant Q = 1 << 96;
     GlobalAuction g;
     BlindfoldVault vault;
@@ -149,14 +151,14 @@ contract GlobalAuctionTest is Test {
         vm.warp(g.revealCloses(0));
     }
 
-    function _fractions(uint256 n, uint64 fraction) internal pure returns (uint64[] memory f) {
-        f = new uint64[](n);
+    function _fractions(uint256 n, uint128 fraction) internal pure returns (uint128[] memory f) {
+        f = new uint128[](n);
         for (uint256 i; i < n; i++) {
             f[i] = fraction;
         }
     }
 
-    function _settle(uint256 n, uint64 fraction) internal {
+    function _settle(uint256 n, uint128 fraction) internal {
         g.settle(0, _fractions(n, fraction), new GlobalAuction.Route[](0));
     }
 
@@ -183,9 +185,9 @@ contract GlobalAuctionTest is Test {
         _clean();
     }
 
-    function testFuzz_cycleConservesTokens(uint128 amount, uint64 share) public {
+    function testFuzz_cycleConservesTokens(uint128 amount, uint128 share) public {
         amount = uint128(bound(amount, 2, 1e19));
-        share = uint64(bound(share, ONE / 2, ONE));
+        share = uint128(bound(share, ONE / 2 + 1, ONE));
         _cycle(amount);
         _settle(3, share);
         _clean();
@@ -193,7 +195,7 @@ contract GlobalAuctionTest is Test {
 
     function test_unbalancedCycleRollsBackAndExpires() public {
         _cycle(1000);
-        uint64[] memory f = _fractions(3, ONE);
+        uint128[] memory f = _fractions(3, ONE);
         f[0] = ONE / 2;
         vm.expectRevert();
         g.settle(0, f, new GlobalAuction.Route[](0));
@@ -301,11 +303,11 @@ contract GlobalAuctionTest is Test {
         g.reveal(iy, y, "b");
         g.reveal(iz, z, "c");
         vm.warp(g.revealCloses(0));
-        uint64[] memory f = _fractions(3, ONE);
+        uint128[] memory f = _fractions(3, ONE);
         f[0] = ONE / 2;
         vm.expectRevert(GlobalAuction.Allocation.selector);
         g.settle(0, f, new GlobalAuction.Route[](0));
-        _settle(3, ONE / 2);
+        _settle(3, ONE / 2 + 1);
         _clean();
     }
 
@@ -318,7 +320,7 @@ contract GlobalAuctionTest is Test {
         g.reveal(ix, x, "a");
         g.reveal(iy, y, "b");
         vm.warp(g.revealCloses(0));
-        uint64[] memory f = _fractions(2, ONE / 2);
+        uint128[] memory f = _fractions(2, ONE / 2);
         vm.expectRevert(GlobalAuction.Allocation.selector);
         g.settle(0, f, new GlobalAuction.Route[](0));
     }
@@ -403,7 +405,7 @@ contract GlobalAuctionTest is Test {
         g.reveal(1, y, "b");
         g.reveal(2, z, "c");
         vm.warp(g.revealCloses(0));
-        uint64[] memory f = _fractions(3, ONE);
+        uint128[] memory f = _fractions(3, ONE);
         f[0] = 0;
         g.settle(0, f, new GlobalAuction.Route[](0));
         assertEq(vault.openCommitments(a), 1);
@@ -439,5 +441,30 @@ contract GlobalAuctionTest is Test {
         p[7] = 1;
         vm.expectRevert(GlobalAuction.Allocation.selector);
         g.settleAtPrices(0, p, _fractions(3, ONE), new GlobalAuction.Route[](0));
+    }
+
+    function test_unrelatedStaleTokenCanBeExcludedWithoutInventingAPrice() public {
+        GlobalAuction.Order memory x = _order(a, 0, 1, 1000, 1000);
+        GlobalAuction.Order memory y = _order(b, 1, 0, 1000, 1000);
+        GlobalAuction.Order memory z = _order(c, 0, 2, 1000, 900);
+        _admit(x, "a");
+        _admit(y, "b");
+        _admit(z, "c");
+        vm.warp(g.revealOpens(0));
+        g.reveal(0, x, "a");
+        g.reveal(1, y, "b");
+        g.reveal(2, z, "c");
+        vm.warp(g.revealCloses(0));
+        m[1].configure(Q, true, false, 0);
+        uint256[8] memory p;
+        p[0] = Q;
+        p[1] = Q;
+        uint128[] memory f = _fractions(3, ONE);
+        vm.expectRevert(GlobalAuction.Allocation.selector);
+        g.settleAtPrices(0, p, f, new GlobalAuction.Route[](0));
+        f[2] = 0;
+        g.settleAtPrices(0, p, f, new GlobalAuction.Route[](0));
+        _clean();
+        assertEq(vault.balanceOf(c, address(t[2])), 1e20);
     }
 }

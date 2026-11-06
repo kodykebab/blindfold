@@ -30,6 +30,38 @@ contract ShortToken {
     }
 }
 
+contract CallbackToken {
+    mapping(address => uint256) public balanceOf;
+    BlindfoldVault public vault;
+    bool public callbackRejected;
+
+    constructor(BlindfoldVault v) {
+        vault = v;
+    }
+
+    function mint(address owner, uint256 amount) external {
+        balanceOf[owner] += amount;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        (bool ok, bytes memory data) = address(vault).call(abi.encodeCall(vault.deposit, (address(this), 0)));
+        require(!ok && bytes4(data) == BlindfoldVault.Reentrant.selector, "deposit callback not blocked");
+        callbackRejected = true;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        (bool ok, bytes memory data) = address(vault).call(abi.encodeCall(vault.withdraw, (address(this), 0)));
+        require(!ok && bytes4(data) == BlindfoldVault.Reentrant.selector, "withdraw callback not blocked");
+        callbackRejected = true;
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
+
 contract VaultAccountingTest is Test {
     BlindfoldVault v;
     ShortToken t;
@@ -77,5 +109,15 @@ contract VaultAccountingTest is Test {
         v.withdraw(address(t), amount);
         assertEq(v.balanceOf(address(this), address(t)), 0);
         assertEq(t.balanceOf(address(this)), 1000);
+    }
+
+    function test_tokenCallbacksCannotReenterCustody() public {
+        CallbackToken token = new CallbackToken(v);
+        token.mint(address(this), 100);
+        v.deposit(address(token), 100);
+        assertTrue(token.callbackRejected());
+        v.withdraw(address(token), 100);
+        assertEq(token.balanceOf(address(this)), 100);
+        assertEq(v.balanceOf(address(this), address(token)), 0);
     }
 }

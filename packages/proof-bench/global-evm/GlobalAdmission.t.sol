@@ -113,8 +113,8 @@ contract GlobalAdmissionIntegrationTest is Test {
         assertEq(g.orderHash(7, o, 0), hash);
         g.reveal(id, o, 0);
         vm.warp(g.revealCloses(7));
-        uint64[] memory f = new uint64[](1);
-        f[0] = 1e18;
+        uint128[] memory f = new uint128[](1);
+        f[0] = type(uint128).max;
         GlobalAuction.Route[] memory routes = new GlobalAuction.Route[](1);
         routes[0] = GlobalAuction.Route(1, 2, 2, 100, 100);
         g.settle(7, f, routes);

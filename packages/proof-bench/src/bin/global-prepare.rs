@@ -8,7 +8,10 @@ use std::os::unix::fs::OpenOptionsExt;
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
-    ensure!(args.len() == 3, "usage: global-prepare context.json private-preparation.json");
+    ensure!(
+        args.len() == 3,
+        "usage: global-prepare context.json private-preparation.json"
+    );
     let context: Context = serde_json::from_slice(&std::fs::read(&args[1])?)?;
     let mut random = File::open("/dev/urandom").context("OS entropy source")?;
     let mut sigma = [0; 16];
