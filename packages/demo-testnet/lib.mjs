@@ -85,3 +85,20 @@ export function splitLogFilter(filter, head, size = 500n) {
   }
   return ranges
 }
+
+/** Retry transient read failures; raw transaction submission is never retried automatically. */
+export async function rpcRequest(url, method, params, { fetcher = fetch, attempts = 4, delayMs = 500 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetcher(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(12_000) })
+      if (!res.ok && (res.status === 429 || res.status >= 500)) throw new Error(`RPC HTTP ${res.status}`)
+      const j = await res.json()
+      if (j.error) throw Object.assign(new Error(j.error.message), { rpc: j.error })
+      return j.result
+    } catch (e) {
+      if (e.rpc || method === 'eth_sendRawTransaction' || i + 1 === attempts) throw e
+      await new Promise((resolve) => setTimeout(resolve, delayMs * (i + 1)))
+    }
+  }
+}

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { encodeAbiParameters, encodeEventTopics, getCreate2Address, keccak256, parseAbi, zeroAddress } from 'viem'
-import { DRAND_GENESIS, createdV3Pool, drandSchedule, mineHookSalt, orderedSandwich, parseTrack, receiptVisible, poolIdOf, v3FactoryFromManifest, victimSandwich, waitForState, splitLogFilter } from '../lib.mjs'
+import { DRAND_GENESIS, createdV3Pool, drandSchedule, mineHookSalt, orderedSandwich, parseTrack, receiptVisible, poolIdOf, v3FactoryFromManifest, victimSandwich, waitForState, splitLogFilter, rpcRequest } from '../lib.mjs'
 
 test('poolIdOf matches a live mainnet v4 pool (ETH/USDC 0.05%)', () => {
   const key = { currency0: zeroAddress, currency1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', fee: 500, tickSpacing: 10, hooks: zeroAddress }
@@ -87,4 +87,14 @@ test('historical log filters are split into ordered bounded ranges', () => {
   assert.deepEqual(filters.map((f) => [f.fromBlock, f.toBlock]), [['0x64', '0x257'], ['0x258', '0x44b'], ['0x44c', '0x4b0']])
   assert.ok(filters.every((f) => f.address === '0x123'))
   assert.deepEqual(splitLogFilter({ blockHash: '0xabc' }, 1200n), [{ blockHash: '0xabc' }])
+})
+
+test('RPC reads retry transient failures without replaying raw transactions', async () => {
+  let calls = 0
+  const fetcher = async () => { if (++calls < 3) throw new Error('network'); return { ok: true, json: async () => ({ result: '0x1' }) } }
+  assert.equal(await rpcRequest('http://rpc', 'eth_blockNumber', [], { fetcher, delayMs: 0 }), '0x1')
+  assert.equal(calls, 3)
+  calls = 0
+  await assert.rejects(rpcRequest('http://rpc', 'eth_sendRawTransaction', ['0x01'], { fetcher, delayMs: 0 }), /network/)
+  assert.equal(calls, 1)
 })

@@ -10,7 +10,7 @@
 import { createServer } from 'node:http'
 import { decodeErrorResult, decodeFunctionData, formatEther, parseAbi, parseTransaction, recoverTransactionAddress } from 'viem'
 import { planSandwich } from '../demo-bots/lib.mjs'
-import { orderedSandwich, receiptVisible, splitLogFilter } from './lib.mjs'
+import { orderedSandwich, receiptVisible, rpcRequest, splitLogFilter } from './lib.mjs'
 import {
   BLINDFOLD_FILE, MEMPOOL_PORT, ROLES, RPC_URL, SANDWICH_FILE, account, artifact, demoArtifact, eth, mined, pub, same, v3Artifact, wallet, explorerTx,
 } from './common.mjs'
@@ -43,14 +43,7 @@ const GREEN = (s) => `\x1b[32m${s}\x1b[0m`
 const DIM = (s) => `\x1b[2m${s}\x1b[0m`
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a)
 
-async function rpc(method, params) {
-  const res = await fetch(RPC_URL, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  })
-  const j = await res.json()
-  if (j.error) throw Object.assign(new Error(j.error.message), { rpc: j.error })
-  return j.result
-}
+const rpc = (method, params) => rpcRequest(RPC_URL, method, params)
 
 /** Plans the sandwich and sends the front leg; returns a function that sends the back leg, or null. */
 async function front(demo, tx) {
@@ -156,9 +149,11 @@ async function handle(req) {
     }
   }
   if (req.method !== 'eth_sendRawTransaction') {
-    const response = await fetch(RPC_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req) }).then((r) => r.json())
-    if (response.error) log(`RPC ${req.method}: ${response.error.message}`)
-    return response
+    try { return { jsonrpc: '2.0', id: req.id, result: await rpc(req.method, req.params) } }
+    catch (e) {
+      log(`RPC ${req.method}: ${e.message}`)
+      return { jsonrpc: '2.0', id: req.id, error: e.rpc ?? { code: -32000, message: e.message } }
+    }
   }
   try {
     return { jsonrpc: '2.0', id: req.id, result: await sendRaw(req.params[0]) }
@@ -170,7 +165,11 @@ async function handle(req) {
 createServer(async (req, res) => {
   let body = ''
   for await (const chunk of req) body += chunk
-  const msg = JSON.parse(body)
-  const out = Array.isArray(msg) ? await Promise.all(msg.map(handle)) : await handle(msg)
-  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out))
+  try {
+    const msg = JSON.parse(body)
+    const out = Array.isArray(msg) ? await Promise.all(msg.map(handle)) : await handle(msg)
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out))
+  } catch (e) {
+    res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Invalid request' } }))
+  }
 }).listen(MEMPOOL_PORT, '127.0.0.1', () => log(`sniper: watching the mempool on http://127.0.0.1:${MEMPOOL_PORT} (upstream ${RPC_URL}), bot owner ${owner.address}`))
