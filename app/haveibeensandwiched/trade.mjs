@@ -3,6 +3,15 @@ import {
   parseBlockers, parsePreflight, parseStatus, parseTrack, presentJob, preparedBatch, reviewChanges,
   stampQuote, transferCheck, validateAmount,
 } from './status.mjs'
+import {
+  parseTrack as parseTrackJson,
+  parseBlockers as parseBlockersJson,
+  parseCleanup as parseCleanupJson,
+  orderRows,
+  withdrawalSummary,
+  policyText,
+  formatCountdown,
+} from './orders.mjs'
 import { createBackupReminder, createJobStore } from './job-store.mjs'
 import { createWalletView, walletMismatch } from './wallet-view.mjs'
 const output = document.querySelector('#output')
@@ -17,6 +26,7 @@ const mobile = matchMedia('(max-width: 760px) and (pointer: coarse)')
 const desktopOnly = new Set(['prepare-admission', 'preflight', 'commit', 'deposit', 'cleanup', 'resume-admission', 'backup-import'])
 let busy = false, lastStatus = null, walletState = { wallets: [], selected: null }
 let lastReview = null, confirmAfterReview = false, depositWatch = null, transferBlock = null, queued = null
+let latestTrack = null, latestBlockers = null, countdownTimer = null
 const savedJob = () => jobStore.get()
 const saveJob = (id) => jobStore.set(id)
 function setBusy(value) {
@@ -44,9 +54,18 @@ async function follow(id) {
       if (job.state === 'running') state.textContent = view.title
       if (job.state !== 'running') {
         if (job.action === 'preflight') showReview(job.output, job.state === 'done')
-        if (job.state === 'done' && job.action === 'status') showStatus(job.output)
-        if (job.state === 'done' && job.action === 'track') showOrders(job.output)
-        if (job.state === 'done' && ['blockers', 'cleanup-preview'].includes(job.action)) showBlockers(job.output)
+        if (job.state === 'done' && job.action === 'status') {
+          showStatus(job.output)
+          queued = { action: 'track' }
+        }
+        if (job.state === 'done' && job.action === 'track') {
+          showOrders(job.output)
+          queued = { action: 'blockers' }
+        }
+        if (job.state === 'done' && job.action === 'blockers') {
+          showBlockers(job.output)
+        }
+        if (job.state === 'done' && job.action === 'cleanup-preview') showBlockers(job.output)
         if (job.state === 'done' && job.action === 'prepare-admission') {
           const prepared = preparedBatch(job.output)
           if (prepared !== null) document.querySelector('#preparation-state').textContent = `Prepared for batch ${prepared}. Refresh status before submitting.`
@@ -58,6 +77,9 @@ async function follow(id) {
           output.textContent = 'A backup download was requested. Save it somewhere private, then mark it saved.'
         }
         if (job.state === 'done' && job.action === 'deposit') noteDeposit(job.output)
+        if (job.state === 'done' && ['commit', 'cleanup', 'withdraw', 'deposit', 'resume-admission'].includes(job.action)) {
+          queued = { action: 'status' }
+        }
         saveJob(null); state.textContent = job.state === 'done' ? 'COMPLETE' : 'FAILED'; break
       }
       await new Promise((resolve) => setTimeout(resolve, 1000))
@@ -93,32 +115,227 @@ async function run(input) {
   } catch (e) { output.textContent = e.message; state.textContent = 'FAILED' }
   finally { setBusy(false) }
 }
+async function cleanupWithPreview(row) {
+  if (busy) return
+  setBusy(true)
+  state.textContent = 'PREVIEW'
+  output.textContent = 'Previewing cleanup...'
+  try {
+    const res = await fetch('/api/trade', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-blindfold-request': '1' },
+      body: JSON.stringify({ action: 'cleanup-preview' }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Could not start cleanup preview')
+    let job
+    do {
+      await new Promise((r) => setTimeout(r, 200))
+      const jr = await fetch(`/api/trade/${encodeURIComponent(data.id)}`)
+      job = await jr.json()
+    } while (job.state === 'running')
+    if (job.state !== 'done') throw new Error(job.error || 'Cleanup preview failed')
+    const parsed = parseCleanupJson(job.output)
+    const list = (parsed.done ?? []).map((d) => `${d.action} order #${d.id}`).join('\n')
+    setBusy(false)
+    const ok = window.confirm(`The following action(s) will be sent:\n${list || 'None'}\n\nProceed?`)
+    if (ok) {
+      run({ action: 'cleanup' })
+    }
+  } catch (e) {
+    setBusy(false)
+    output.textContent = `${e.message}\n\nWait or refresh status before trying again.`
+    state.textContent = 'FAILED'
+  }
+}
+
+function renderOrders() {
+  const policyEl = document.querySelector('#orders-policy')
+  if (policyEl && latestTrack?.policy) {
+    policyEl.textContent = policyText(latestTrack.policy)
+  }
+
+  const summaryEl = document.querySelector('#withdrawal-summary')
+  const summaryText = withdrawalSummary(latestTrack, latestBlockers)
+  if (summaryEl) summaryEl.textContent = summaryText
+
+  const withdrawContainer = document.querySelector('#withdraw-all-container')
+  if (withdrawContainer) {
+    withdrawContainer.replaceChildren()
+    if (summaryText === 'Nothing blocks withdrawal') {
+      const tokens = ['token0', 'token1']
+      for (const tok of tokens) {
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.className = 'secondary'
+        btn.dataset.walletGuard = ''
+        btn.textContent = `Withdraw all ${tok}`
+        btn.setAttribute('aria-label', `Withdraw all ${tok}`)
+        btn.disabled = busy
+        btn.addEventListener('click', () => {
+          run({ action: 'withdraw', token: tok, amount: 'all' })
+        })
+        withdrawContainer.append(btn)
+      }
+    }
+  }
+
+  const tbody = document.querySelector('#orders-table-body')
+  if (!tbody) return
+  tbody.replaceChildren()
+
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+
+  const rows = orderRows(latestTrack, latestBlockers)
+  if (!rows.length) {
+    const tr = document.createElement('tr')
+    const td = document.createElement('td')
+    td.colSpan = 5
+    td.style.padding = '14px 4px'
+    td.style.color = 'var(--mute, #888)'
+    td.textContent = 'No commitments found for this account.'
+    tr.append(td)
+    tbody.append(tr)
+    return
+  }
+
+  const waitSpans = []
+
+  for (const row of rows) {
+    const tr = document.createElement('tr')
+    tr.style.borderBottom = '1px solid var(--edge, #2a2e3d)'
+
+    // Order
+    const tdOrder = document.createElement('td')
+    tdOrder.style.padding = '10px 4px'
+    const title = document.createElement('strong')
+    title.textContent = row.title
+    const outcome = document.createElement('p')
+    outcome.className = 'fine muted'
+    outcome.style.margin = '4px 0 0'
+    outcome.textContent = row.outcome
+    tdOrder.append(title, outcome)
+
+    // Batch
+    const tdBatch = document.createElement('td')
+    tdBatch.style.padding = '10px 4px'
+    tdBatch.textContent = row.batch
+
+    // Stage
+    const tdStage = document.createElement('td')
+    tdStage.style.padding = '10px 4px'
+    const stageSpan = document.createElement('span')
+    stageSpan.className = 'order-state'
+    stageSpan.textContent = row.stage
+    tdStage.append(stageSpan)
+
+    // Amounts
+    const tdAmounts = document.createElement('td')
+    tdAmounts.style.padding = '10px 4px'
+    const ex = row.amounts.executedIn ?? '—'
+    const rec = row.amounts.received ?? '—'
+    const un = row.amounts.unusedIn ?? '—'
+    tdAmounts.textContent = `${ex} / ${rec} / ${un}`
+
+    // Next step
+    const tdNext = document.createElement('td')
+    tdNext.style.padding = '10px 4px'
+    if (row.next?.button) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'secondary'
+      btn.dataset.walletGuard = ''
+      btn.disabled = busy
+      btn.textContent = row.next.button
+      const isReveal = row.next.action === 'reveal'
+      btn.setAttribute('aria-label', `${isReveal ? 'Reveal' : 'Clean up'} order #${row.id}`)
+      btn.addEventListener('click', () => cleanupWithPreview(row))
+      tdNext.append(btn)
+    } else if (row.next?.action === 'wait' && row.next.at != null) {
+      const span = document.createElement('span')
+      span.textContent = row.next.text
+      span.dataset.at = String(row.next.at)
+      tdNext.append(span)
+      waitSpans.push(span)
+    } else if (row.next?.text) {
+      tdNext.textContent = row.next.text
+    } else {
+      tdNext.textContent = '—'
+    }
+
+    tr.append(tdOrder, tdBatch, tdStage, tdAmounts, tdNext)
+    tbody.append(tr)
+  }
+
+  if (waitSpans.length > 0) {
+    countdownTimer = setInterval(() => {
+      const currentNow = Math.floor(Date.now() / 1000)
+      let needsRefresh = false
+      for (const span of waitSpans) {
+        const at = Number(span.dataset.at)
+        const diff = at - currentNow
+        if (diff <= 0) {
+          needsRefresh = true
+          span.textContent = 'Wait 00:00'
+        } else {
+          span.textContent = `Wait ${formatCountdown(diff)}`
+        }
+      }
+      if (needsRefresh) {
+        clearInterval(countdownTimer)
+        countdownTimer = null
+        run({ action: 'track' })
+      }
+    }, 1000)
+  }
+}
+
 function showBlockers(text) {
+  const json = parseBlockersJson(text)
+  if (!json.error) {
+    latestBlockers = json
+    renderOrders()
+    return
+  }
   const rows = parseBlockers(text)
   if (rows === null) return
-  const list = document.querySelector('#blocker-list'); list.replaceChildren()
-  document.querySelector('#blockers-message').textContent = rows.length ? 'These commitments are holding withdrawals.' : 'No commitments currently block withdrawal.'
+  const list = document.querySelector('#blocker-list'); if (list) list.replaceChildren()
+  const msg = document.querySelector('#blockers-message'); if (msg) msg.textContent = rows.length ? 'These commitments are holding withdrawals.' : 'No commitments currently block withdrawal.'
   for (const row of rows) {
     const item = document.createElement('li')
     const title = document.createElement('strong'); title.textContent = `Order #${row.id} · batch ${row.batch}`
     const action = document.createElement('span'); action.className = 'order-state'; action.textContent = row.action
     const reason = document.createElement('p'); reason.textContent = row.reason
-    item.append(title, action, reason); list.append(item)
+    item.append(title, action, reason); if (list) list.append(item)
   }
 }
+
 function showOrders(text) {
+  const json = parseTrackJson(text)
+  if (!json.error) {
+    latestTrack = json
+    renderOrders()
+    const mempool = mempoolView(json.orders)
+    const memEl = document.querySelector('#mempool-count')
+    if (memEl) memEl.textContent = `${mempool.committed} committed and not yet revealed. ${mempool.note}`
+    return
+  }
   const rows = parseTrack(text)
   if (rows === null) return
-  const list = document.querySelector('#order-list'); list.replaceChildren()
-  document.querySelector('#orders-message').textContent = rows.length ? 'Latest status from the settlement contract. Fills can be partial, and unused input stays in the vault.' : 'No commitments found for this account.'
+  const list = document.querySelector('#order-list'); if (list) list.replaceChildren()
+  const msg = document.querySelector('#orders-message'); if (msg) msg.textContent = rows.length ? 'Latest status from the settlement contract. Fills can be partial, and unused input stays in the vault.' : 'No commitments found for this account.'
   const mempool = mempoolView(rows)
-  document.querySelector('#mempool-count').textContent = `${mempool.committed} committed and not yet revealed. ${mempool.note}`
+  const memEl = document.querySelector('#mempool-count')
+  if (memEl) memEl.textContent = `${mempool.committed} committed and not yet revealed. ${mempool.note}`
   for (const row of rows) {
     const item = document.createElement('li')
     const title = document.createElement('strong'); title.textContent = `Order #${row.id} · batch ${row.batch}`
     const state = document.createElement('span'); state.className = 'order-state'; state.textContent = row.state
     const detail = document.createElement('p'); detail.textContent = row.summary || row.detail
-    item.append(title, state, detail); list.append(item)
+    item.append(title, state, detail); if (list) list.append(item)
   }
 }
 function showStatus(text) {
@@ -244,7 +461,8 @@ function showReview(text, finished) {
   document.querySelector('#batch-rule').textContent = stamped.oneBatch || 'One batch at a time per account. A new order waits until the current one settles or is released.'
   const allow = stamped.ok && !block && !stamped.quote?.stale
   confirm.disabled = !allow
-  if (confirmAfterReview && allow) queued = { action: 'commit', ...orderFields() }
+  // Inputs are disabled while a job runs and FormData skips disabled fields: commit what was confirmed.
+  if (confirmAfterReview && allow) queued = { action: 'commit', ...confirmFields }
   confirmAfterReview = false
 }
 function canConfirm() {
@@ -262,6 +480,7 @@ function noteDeposit(text) {
 }
 document.querySelector('#backup-confirm').addEventListener('click', () => showBackupReminder(false))
 const order = document.querySelector('#order')
+let confirmFields = null
 function orderAction(action) {
   if (!applyAmountValidity() || !order.reportValidity()) return
   if (transferBlock) { output.textContent = transferBlock; state.textContent = 'UNSUPPORTED TOKEN'; return }
@@ -269,6 +488,7 @@ function orderAction(action) {
   if (action === 'commit') {
     if (!lastReview) { output.textContent = 'Review the order before confirming it.'; state.textContent = 'REVIEW'; return }
     confirmAfterReview = true
+    confirmFields = fields
     run({ action: 'preflight', ...fields })
     return
   }
