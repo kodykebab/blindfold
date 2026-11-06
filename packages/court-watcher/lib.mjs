@@ -8,7 +8,8 @@ export const BASE_RPC = process.env.BASE_RPC || 'https://mainnet.base.org'
 
 export const V3_SWAP = keccak256(new TextEncoder().encode('Swap(address,address,int256,int256,uint160,uint128,int24)'))
 export const V4_SWAP = keccak256(new TextEncoder().encode('Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)'))
-export const V4_POOL_MANAGER = '0x000000000004444c5dc75cb358380d2e3de08a90' // Ethereum mainnet
+// Ethereum mainnet's by default; set V4_POOL_MANAGER (and ETH_RPC) to scan another chain, e.g. a local Unichain fork
+export const V4_POOL_MANAGER = (process.env.V4_POOL_MANAGER || '0x000000000004444c5dc75cb358380d2e3de08a90').toLowerCase()
 export const HISTORY = '0x0000f90827f1c53a10cb7a02335b175320002935' // EIP-2935
 export const HISTORY_WINDOW = 8191n
 
