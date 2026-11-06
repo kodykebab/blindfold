@@ -202,3 +202,54 @@ test('S11: overlapping batch rejected before gas; state export, tamper refusal a
     c.stop()
   }
 })
+
+
+// AdmittedSettlement is #50's policy-only test harness, not a proof verifier.
+// Enable only with that branch's generated artifacts; no ABI is copied here.
+test('released commitment: real CLI cleanup, repeat cleanup, next batch and withdrawal', {
+  skip: !enabled || process.env.CLIENT_RELEASE_E2E !== '1', timeout: 120_000,
+}, async () => {
+  const fee = parseEther('0.1')
+  const c = await localChain({ settlementContract: 'AdmittedSettlement', fee })
+  try {
+    const u = user(10).address
+    await c.mint(u, c.token0, parseEther('100'))
+    await c.mint(u, c.token1, parseEther('100'))
+    let r = await c.cli(10, ['commit', 'sell', '10', '9'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /fee 0.1 TK./)
+    assert.match(r.out, /unrevealed deposit can be released/)
+    const b = savedState(c).commitments[0].batchId
+    await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'revealCloses', [b]))
+    r = await c.cli(10, ['cleanup', '--dry-run'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /: release — .*retains the fee/)
+    assert.equal(await c.read(c.vault, 'BlindfoldVault', 'openCommitments', [u]), 1n)
+    r = await c.cli(10, ['cleanup'])
+    assert.equal(r.code, 0, r.err)
+    assert.equal(await c.read(c.vault, 'BlindfoldVault', 'openCommitments', [u]), 0n)
+    assert.equal(await c.read(c.vault, 'BlindfoldVault', 'balanceOf', [u, c.token1]), DEPOSIT)
+    assert.equal(await c.read(c.vault, 'BlindfoldVault', 'balanceOf', [user(9).address, c.token1]), fee)
+    r = await c.cli(10, ['track'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /#0 batch \d+: released/)
+    const nonce = await c.pub.getTransactionCount({ address: u })
+    for (const command of ['blockers', 'cleanup']) {
+      r = await c.cli(10, [command])
+      assert.equal(r.code, 0, r.err)
+      assert.match(r.out, /nothing blocks withdrawal/)
+    }
+    assert.equal(await c.pub.getTransactionCount({ address: u }), nonce)
+    // Move to a fresh batch so preflight cannot fail only because of lead time.
+    const current = await c.read(c.settlement, 'BlindfoldSettlement', 'currentBatch')
+    await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'commitsClose', [current]))
+    r = await c.cli(10, ['commit', 'sell', '1', '0.9', '--dry-run'])
+    assert.equal(r.code, 0, r.err)
+    assert.doesNotMatch(r.out + r.err, /one active batch per account/)
+    for (const token of ['token0', 'token1']) {
+      r = await c.cli(10, ['withdraw', token, 'all'])
+      assert.equal(r.code, 0, r.err)
+    }
+    assert.equal(await c.read(c.token1, 'MockERC20', 'balanceOf', [u]), parseEther('100') - fee)
+  } finally { c.stop() }
+})

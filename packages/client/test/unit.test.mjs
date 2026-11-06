@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { decrypt, drandClient, encrypt, orderHash, encodePayload, decodePayload } from '../lib.mjs'
 import { validateState } from '../state.mjs'
-import { balances, exitPlan, preflight, track, isOpen } from '../flow.mjs'
+import { balances, deadlines, exitPlan, preflight, track, isOpen } from '../flow.mjs'
 
 const fixture = fileURLToPath(new URL('./fixtures/drand.json', import.meta.url))
 const owner = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
@@ -130,4 +130,25 @@ test('S11 validateState: hashes, owner, deployment and chain state', () => {
   assert.match(check(state, new Map([[4n, `0x${'00'.repeat(32)}`]]))[0], /stale or foreign/)
   assert.match(check({ ...state, settlement: owner })[0], /another chain or settlement/)
   assert.match(check({ ...state, owner: dep.settlement }).join(), /state belongs to/)
+})
+
+
+test('released commitments close only their own blocker and retain other pending work', () => {
+  const args = { committer: owner, batchId: 7n, round: 10n, hash: salt }
+  const logs = [0n, 1n].map(commitId => ({ eventName: 'Committed', args: { ...args, commitId } }))
+  logs.push({ eventName: 'Released', args: { commitId: 0n } })
+  const tracked = track(logs, owner)
+  assert.equal(tracked.get(0n).state, 'released')
+  assert.equal(isOpen(tracked.get(0n)), false)
+  assert.deepEqual([...tracked.values()].filter(isOpen).map(c => c.id), [1n])
+})
+
+test('cleanup and deadline text distinguish released deposits from slashing', () => {
+  const c = { id: 0n, batchId: 7n, state: 'committed', hash: salt }
+  const times = { commitsClose: 5n, revealOpens: 10n, revealCloses: 20n, settleCloses: 30n }
+  const context = { now: 20n, sched: new Map([[7n, times]]), saved: new Set() }
+  assert.equal(exitPlan([c], context)[0].action, 'slash')
+  assert.equal(exitPlan([c], { ...context, admissionRequired: true })[0].action, 'release')
+  assert.match(deadlines(times, true)[2].what, /fee retained/)
+  assert.match(deadlines(times)[2].what, /deposit lost/)
 })

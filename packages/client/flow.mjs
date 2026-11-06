@@ -33,11 +33,11 @@ export function preflight({ order, tokenIn, depositToken, depositAmount, fee, fr
 }
 
 /** Schedule of one batch, with what each deadline means for the user. */
-export function deadlines(v) {
+export function deadlines(v, admissionRequired = false) {
   return [
     { at: v.commitsClose, what: 'commits close' },
     { at: v.revealOpens, what: 'drand round out: anyone can reveal' },
-    { at: v.revealCloses, what: 'reveal window ends: an unrevealed commitment can be slashed (deposit lost)' },
+    { at: v.revealCloses, what: admissionRequired ? 'reveal window ends: unrevealed deposit can be released (fee retained)' : 'reveal window ends: an unrevealed commitment can be slashed (deposit lost)' },
     { at: v.settleCloses, what: 'settle window ends: anyone can expire the batch, unlocking unsettled input' },
   ]
 }
@@ -45,7 +45,7 @@ export function deadlines(v) {
 /**
  * Status of each of an account's commitments from settlement events (viem parseEventLogs output, in order).
  * Returns Map(commitId → {id, batchId, state, ...}); state is one of
- * committed | revealed | padding | unfunded | slashed | filled | unfilled | expired.
+ * committed | revealed | padding | unfunded | slashed | released | filled | unfilled | expired.
  */
 export function track(logs, owner) {
   const mine = new Map()
@@ -59,6 +59,7 @@ export function track(logs, owner) {
     if (e === 'Revealed') Object.assign(c, { state: a.order.amountIn === 0n ? 'padding' : 'revealed', order: a.order })
     if (e === 'RevealedUnfunded') Object.assign(c, { state: 'unfunded', order: a.order })
     if (e === 'Slashed') c.state = 'slashed'
+    if (e === 'Released') c.state = 'released'
     if (e === 'Filled') Object.assign(c, { state: 'filled', amountIn: a.amountIn, amountOut: a.amountOut })
     if (e === 'Unfilled') c.state = 'unfilled'
   }
@@ -76,7 +77,7 @@ export const isOpen = (c) => c.state === 'committed' || c.state === 'revealed'
  * action: 'reveal' (own saved order), 'slash' (unrevealed after the window), 'expire' (unsettled after the deadline)
  * or 'wait' until `at`.
  */
-export function exitPlan(open, { now, sched, saved }) {
+export function exitPlan(open, { now, sched, saved, admissionRequired = false }) {
   return open.map((c) => {
     const s = sched.get(c.batchId)
     if (c.state === 'committed') {
@@ -86,6 +87,7 @@ export function exitPlan(open, { now, sched, saved }) {
           ? { c, action: 'reveal', why: 'own saved order: revealing it yourself keeps the bounty' }
           : { c, action: 'wait', at: s.revealCloses, why: 'order and salt not saved here: a keeper must reveal it, or it can be slashed' }
       }
+      if (admissionRequired) return { c, action: 'release', why: 'never revealed: release returns the deposit, retains the fee and closes the commitment' }
       return { c, action: 'slash', why: 'never revealed: slashing forfeits its deposit and releases the account' }
     }
     if (now < s.settleCloses) return { c, action: 'wait', at: s.settleCloses, why: 'revealed, waiting for settlement; expirable after' }

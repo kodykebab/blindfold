@@ -58,10 +58,13 @@ async function vaultView(t) {
   return { open, rows }
 }
 
+const admissionRequired = async () => abi.settlement.some((f) => f.type === 'function' && f.name === 'admissionRequired')
+  ? read(S, 'admissionRequired') : false
+
 async function schedule(b) {
   const names = ['commitsClose', 'revealOpens', 'revealCloses', 'settleCloses']
   const v = Object.fromEntries(await Promise.all(names.map(async (n) => [n, await read(S, n, [b])])))
-  return deadlines(v)
+  return deadlines(v, await admissionRequired())
 }
 
 async function status() {
@@ -71,7 +74,7 @@ async function status() {
   for (const r of rows) {
     console.log(`  ${r.tok.symbol.padEnd(6)} wallet ${fmt(r.tok, r.wallet)} | available ${fmt(r.tok, r.available)} | reserved ${fmt(r.tok, r.reserved)} | withdrawable ${fmt(r.tok, r.withdrawable)}`)
   }
-  console.log(`  open commitments: ${open}${open ? ' (withdrawals blocked until each is revealed and settled, slashed or expired)' : ''}`)
+  console.log(`  open commitments: ${open}${open ? ' (withdrawals blocked until each is revealed and settled, slashed, released or expired)' : ''}`)
   const [b, now] = await Promise.all([read(S, 'currentBatch'), pub.getBlock().then((x) => x.timestamp)])
   console.log(`batch ${b} (chain time ${now})`)
   for (const d of await schedule(b)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
@@ -158,7 +161,7 @@ async function exitSteps() {
   }
   // by hash, so an entry saved before its commit landed (no id yet) still counts
   const kept = new Map(loadState(dep, me).commitments.map((x) => [x.hash, x]))
-  return { now, kept, steps: exitPlan(open, { now, sched, saved: new Set(kept.keys()) }) }
+  return { now, kept, steps: exitPlan(open, { now, sched, saved: new Set(kept.keys()), admissionRequired: await admissionRequired() }) }
 }
 
 const describe = ({ c, action, at, why }, now) =>
@@ -179,7 +182,7 @@ async function cleanup(dryRun) {
     if (dryRun || s.action === 'wait') continue
     const { id, batchId } = s.c
     if (s.action === 'reveal') await send(S, abi.settlement, 'reveal', [id, kept.get(s.c.hash).order, kept.get(s.c.hash).salt])
-    if (s.action === 'slash') await send(S, abi.settlement, 'slashUnrevealed', [id])
+    if (s.action === 'slash' || s.action === 'release') await send(S, abi.settlement, 'slashUnrevealed', [id])
     if (s.action === 'expire' && !expired.has(batchId)) {
       expired.add(batchId)
       await send(S, abi.settlement, 'expire', [batchId])

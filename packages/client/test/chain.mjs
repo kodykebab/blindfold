@@ -12,14 +12,15 @@ import { ROOT, TEST_MNEMONIC, artifactPath } from '../lib.mjs'
 import { readFileSync } from 'node:fs'
 
 const out = process.env.CONTRACTS_OUT || join(ROOT, 'contracts/out')
-const art = (name) => JSON.parse(readFileSync(artifactPath(out, name), 'utf8'))
+const art = (name) => JSON.parse(readFileSync(name === 'AdmittedSettlement'
+  ? join(out, 'FeesAndTiming.t.sol', 'AdmittedSettlement.json') : artifactPath(out, name), 'utf8'))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 export const CLI = fileURLToPath(new URL('../cli.mjs', import.meta.url))
 export const DRAND = fileURLToPath(new URL('./fixtures/drand.json', import.meta.url))
 export const DEPOSIT = 5n * 10n ** 18n
 export const user = (i) => mnemonicToAccount(TEST_MNEMONIC, { addressIndex: i })
 
-export async function localChain({ timestamp, schedule = {} } = {}) {
+export async function localChain({ timestamp, schedule = {}, settlementContract = 'BlindfoldSettlement', fee = 0n } = {}) {
   const port = await new Promise((r) => { const s = createServer().listen(0, () => { const p = s.address().port; s.close(() => r(p)) }) })
   const rpc = `http://127.0.0.1:${port}`
   const args = ['--silent', '--port', String(port), '--accounts', '20']
@@ -47,10 +48,10 @@ export async function localChain({ timestamp, schedule = {} } = {}) {
   const vault = await deploy('BlindfoldVault')
   const deployBlock = await pub.getBlockNumber()
   const now = (await pub.getBlock()).timestamp
-  const s = { start: Number(now), batchLength: 30, revealLength: 24, settleLength: 60, ...schedule }
-  const settlement = await deploy('BlindfoldSettlement', [{
+  const s = { start: Number(now - (now - 1692803367n) % 3n), batchLength: 30, revealLength: 24, settleLength: 30, ...schedule }
+  const settlement = await deploy(settlementContract, [{
     manager: '0x000000000000000000000000000000000000dEaD', vault, depositToken: token1, depositAmount: DEPOSIT,
-    bountyBps: 2000n, treasury: user(9).address, schedule: s, toleranceBps: 100n,
+    commitFee: fee, bountyBps: 2000n, treasury: user(9).address, schedule: s, toleranceBps: 100n,
   }])
   await write(vault, 'BlindfoldVault', 'setOperator', [settlement])
   await write(settlement, 'BlindfoldSettlement', 'initialize', [{ currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks: '0x0000000000000000000000000000000000000000' }])

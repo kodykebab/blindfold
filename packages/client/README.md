@@ -43,3 +43,14 @@ Starts its own anvil, deploys the vault and settlement from `contracts/out`, and
 source ../../env.sh && (cd ../../contracts && forge build)
 CLIENT_E2E=1 npm test
 ```
+
+
+For a deployment exposing `admissionRequired()`, cleanup uses the onchain policy: an unrevealed admitted commitment releases its deposit and retains the fee; an unchecked commitment is slashed. Both use `slashUnrevealed`. `track` shows `released` as terminal, so it no longer blocks a later batch or offers repeat cleanup.
+
+The fee/timing integration also supplies `AdmittedSettlement` in the generated `FeesAndTiming.t.sol` artifacts. To exercise that policy through the CLI:
+
+```bash
+CONTRACTS_OUT=/absolute/path/to/integrated/contracts/out CLIENT_E2E=1 CLIENT_RELEASE_E2E=1 npm test
+```
+
+This fixture selects the release policy only; it does not verify admission proofs. The test checks a nonzero fee, deposit return, repeated cleanup without sending another transaction, next-batch preflight and withdrawal. Ordinary CLI tests use an aligned, nonoverlapping schedule and work with the original constructor as well as the fee-aware constructor.
