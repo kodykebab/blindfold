@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Q96, atBps, distBps, limitPriceX96, findBand, solve } from '../price.mjs'
+import { Q96, atBps, distBps, limitPriceX96, findBand, solve, allocationsAt, net0At, marginalPriceX96, SearchBudgetExceeded } from '../price.mjs'
 
+const gcd = (a,b) => b === 0n ? a : gcd(b,a%b)
 const E = 10n ** 18n
 const order = (id, zeroForOne, amountIn, minAmountOut) => ({ id, zeroForOne, amountIn, minAmountOut })
 
@@ -13,13 +14,25 @@ function market({ pool = Q96, depth = 5_000n * E, toleranceBps = 100, orders }) 
   const calls = { n: 0 }
   const simulate = async (p, m) => {
     calls.n++
+    const ref = m && orders.find((o) => o.id === m.id)
     let net0 = 0n // token0 the batch sells into the pool
     for (const o of orders) {
       let amountIn = o.amountIn
-      if (m && o.id === m.id) {
-        const limit = limitPriceX96(o)
-        if (limit === null || distBps(limit, p) > BigInt(toleranceBps) || m.amountIn > o.amountIn) return { ok: false }
-        amountIn = m.amountIn
+      if (ref && o.zeroForOne === ref.zeroForOne && o.minAmountOut * ref.amountIn >= ref.minAmountOut * o.amountIn) {
+        if (o.minAmountOut * ref.amountIn > ref.minAmountOut * o.amountIn) continue
+        const limit = limitPriceX96(ref)
+        if (limit === null || distBps(limit, p) > BigInt(toleranceBps) || m.amountIn >= ref.amountIn) return { ok: false, error: 'InvalidMarginalOrder' }
+        amountIn = o.amountIn * m.amountIn / ref.amountIn
+        let minimum = (o.minAmountOut * amountIn + o.amountIn - 1n) / o.amountIn
+        let out = o.zeroForOne ? amountIn * p / Q96 : amountIn * Q96 / p
+        if (out < minimum) {
+          const lot = o.amountIn / gcd(o.amountIn,o.minAmountOut)
+          amountIn = amountIn / lot * lot
+          minimum = (o.minAmountOut * amountIn + o.amountIn - 1n) / o.amountIn
+          out = o.zeroForOne ? amountIn * p / Q96 : amountIn * Q96 / p
+        }
+        if (amountIn === 0n) continue
+        if (out === 0n || out < minimum) return { ok: false, error: 'PartialLimit' }
       } else {
         const out = o.zeroForOne ? (o.amountIn * p) / Q96 : (o.amountIn * Q96) / p
         if (out === 0n || out < o.minAmountOut) continue
@@ -127,5 +140,86 @@ test('random batches with the marginal fill: whatever it returns settles, and it
     if (s?.marginal) rescued++
   }
   t.diagnostic(`${stuck} of 300 batches had no full-fill price; the marginal fill settled ${rescued} of them`)
-  assert.ok(stuck > 0 && rescued > 0, 'the random batches exercise the marginal path')
+  assert.ok(stuck > 0, 'the random batches exercise the marginal path')
+  assert.equal(rescued, stuck, 'every stuck batch in this fixed model corpus is rescued')
+})
+
+
+test('equal-limit orders share the fraction regardless of reveal order', async () => {
+  const orders = [order(8n, true, 1000n * E, 900n * E), order(3n, true, 500n * E, 450n * E)]
+  const m = market({ orders, depth: 10_000n * E })
+  const a = await solve({ ...m, poolX96: m.pool })
+  const b = await solve({ ...m, orders: [...orders].reverse(), poolX96: m.pool })
+  assert.ok(a?.marginal)
+  assert.deepEqual(a, b)
+  const fills = allocationsAt(orders, a.priceX96, a.marginal)
+  assert.equal(fills[0], 2n * fills[1])
+  assert.equal(net0At(orders, a.priceX96, a.marginal), fills[0] + fills[1])
+  assert.ok((await m.simulate(a.priceX96, a.marginal)).ok)
+})
+
+test('priority excludes worse limits and fills better ones before the group', () => {
+  const orders = [order(1n, true, 1000n, 900n), order(2n, true, 100n, 80n), order(3n, true, 100n, 95n)]
+  assert.deepEqual(allocationsAt(orders, Q96, { id: 1n, amountIn: 540n }), [540n, 100n, 0n])
+})
+
+test('partial input below an exact lot stays unfilled without weakening the minimum', () => {
+  const o = order(1n, true, 3n, 2n)
+  assert.equal(marginalPriceX96([o], o, 2n), limitPriceX96(o))
+  assert.deepEqual(allocationsAt([o], limitPriceX96(o), {id:1n,amountIn:2n}),[0n])
+  const buy = order(2n, false, 3n, 2n)
+  assert.equal(marginalPriceX96([buy], buy, 2n), limitPriceX96(buy))
+  assert.deepEqual(allocationsAt([buy], limitPriceX96(buy), {id:2n,amountIn:2n}),[0n])
+})
+
+test('RPC failure propagates instead of being reported as an impossible batch', async () => {
+  const failure = new Error('RPC unavailable')
+  await assert.rejects(solve({ simulate: async () => { throw failure }, poolX96: Q96, toleranceBps: 100, orders: [] }), (e) => e === failure)
+})
+
+test('simulation budget exhaustion is explicit and bounded', async () => {
+  let calls = 0
+  await assert.rejects(solve({ simulate: async () => { calls++; return { ok: true } }, poolX96: Q96,
+    toleranceBps: 100, orders: [], maxSimulations: 2 }), SearchBudgetExceeded)
+  assert.equal(calls, 2)
+})
+
+test('unclassified full-fill failure still tries marginal groups', async () => {
+  const orders = [order(1n, true, 1000n * E, 900n * E)]
+  const m = market({ orders, depth: 5000n * E })
+  const simulate = (p, partial) => partial ? m.simulate(p, partial) : { ok: false, error: 'Imbalanced' }
+  const result = await solve({ simulate, poolX96: Q96, toleranceBps: 100, orders })
+  assert.ok(result?.marginal)
+  assert.ok((await simulate(result.priceX96, result.marginal)).ok)
+})
+
+
+test('known order boundaries avoid a raw-Q96 bisection at a poison gap', async () => {
+  const orders = [order(1n, true, 1000n * E, 900n * E), order(2n, true, 500n * E, 450n * E)]
+  const m = market({ orders, depth: 10000n * E })
+  const s = await solve({ ...m, poolX96: m.pool })
+  assert.ok(s?.marginal)
+  assert.ok(m.calls.n < 30, `used ${m.calls.n} calls for a known discontinuity`)
+})
+
+test('a lowest-ID dust companion cannot control fraction resolution or block useful partial fills', async () => {
+  for (const sell of [true,false]) {
+    const orders = [order(0n,sell,10n,9n), order(1n,sell,1000n*E,900n*E)]
+    const m = market({orders})
+    const result = await solve({simulate:m.simulate,poolX96:Q96,toleranceBps:100,orders})
+    assert.ok(result?.marginal)
+    assert.equal(result.marginal.id,1n)
+    const inputs = allocationsAt(orders,result.priceX96,result.marginal)
+    assert.equal(inputs[0],0n)
+    assert.ok(inputs[1]>0n)
+    assert.ok((sell ? inputs[1]*result.priceX96/Q96 : inputs[1]*Q96/result.priceX96) >= (inputs[1]*9n+9n)/10n)
+    assert.ok((await m.simulate(result.priceX96,result.marginal)).ok)
+  }
+})
+
+test('coprime orders retain partial fills whenever their quoted minimum is met', () => {
+  const o = order(0n,true,1001n,900n)
+  assert.deepEqual(allocationsAt([o],Q96,{id:0n,amountIn:501n}),[501n])
+  const atLimit = limitPriceX96(o)
+  assert.deepEqual(allocationsAt([o],atLimit,{id:0n,amountIn:501n}),[0n])
 })
