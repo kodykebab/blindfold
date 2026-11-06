@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { createServer } from 'node:net'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { createPublicClient, createWalletClient, defineChain, http,
+import { BaseError, ContractFunctionRevertedError, TransactionReceiptNotFoundError, createPublicClient, createWalletClient, defineChain, http,
   getCreate2Address, toHex, parseEventLogs } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
 import { solve, Q96, allocationsAt } from '../price.mjs'
@@ -16,11 +16,11 @@ import { artifactPath } from '../artifacts.mjs'
 
 const enabled = process.env.SOLVER_E2E === '1'
 const contracts = resolve(process.env.CONTRACTS_DIR || new URL('../../../contracts', import.meta.url).pathname)
-const artifact = (name) => JSON.parse(readFileSync(artifactPath(join(contracts, 'out'), name)))
+const artifact = (name) => JSON.parse(readFileSync(artifactPath(join(contracts, 'out'), name, ['RouteFactoryMock', 'RoutePoolMock'].includes(name) ? 'UniswapV3Route.t' : name)))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // No external RPC, real keys, or live funds: this test owns its fresh anvil process.
-test('solver CLI executes AMM and peer-only groups and preserves one-sided recovery', { skip: !enabled, timeout: 180_000 }, async (t) => {
+test('solver CLI executes sealed, peer, public and multi-hop batches with recovery', { skip: !enabled, timeout: 180_000 }, async (t) => {
   const listener = createServer()
   await new Promise((r) => listener.listen(0, '127.0.0.1', r))
   const port = listener.address().port
@@ -35,16 +35,28 @@ test('solver CLI executes AMM and peer-only groups and preserves one-sided recov
   const client = createPublicClient({ chain, pollingInterval: 20, transport: http(rpc, { retryCount: 0, timeout: 15_000 }) })
   const wallet = createWalletClient({ account, chain, transport: http(rpc) })
   const load = (name) => artifact(name)
+  // This fixture owns an automining node and never replaces a transaction.
+  // Poll receipts directly so snapshot rewinds do not enter viem's replacement
+  // watcher for block numbers reused by a later scenario.
+  const minedReceipt = async (hash) => {
+    const deadline = performance.now() + 15_000
+    while (performance.now() < deadline) {
+      try { return await client.getTransactionReceipt({hash}) }
+      catch (e) { if (!(e instanceof TransactionReceiptNotFoundError)) throw e }
+      await sleep(20)
+    }
+    throw new Error(`local transaction did not mine: ${hash}`)
+  }
   const send = async (address, name, functionName, args = []) => {
     const hash = await wallet.writeContract({ address, abi: load(name).abi, functionName, args })
-    const receipt = await client.waitForTransactionReceipt({ hash })
+    const receipt = await minedReceipt(hash)
     assert.equal(receipt.status, 'success', functionName)
     return receipt
   }
   const deploy = async (name, args = []) => {
     const a = load(name)
     const hash = await wallet.deployContract({ abi: a.abi, bytecode: a.bytecode.object, args, gas: 25_000_000n })
-    const receipt = await client.waitForTransactionReceipt({ hash })
+    const receipt = await minedReceipt(hash)
     assert.equal(receipt.status, 'success', name)
     return receipt.contractAddress
   }
@@ -97,9 +109,23 @@ test('solver CLI executes AMM and peer-only groups and preserves one-sided recov
     const deploymentPath = join(directory, 'deployment.json')
     writeFileSync(deploymentPath, JSON.stringify({ chainId: 31337, settlement }))
     let snapshot = await client.request({ method: 'evm_snapshot' })
-    for (const scenario of [{ sell: true }, { sell: false }, { sell: true, noLiquidity: true }, { sell: true, noLiquidity: true, peerMode: true }, { sell: false, noLiquidity: true, peerMode: true }, { sell: true, noLiquidity: true, externalMode: true }, { sell: false, noLiquidity: true, externalMode: true }, { sell: true, noLiquidity: true, externalMode: true, partialExternal: true }, { sell: false, noLiquidity: true, externalMode: true, partialExternal: true }]) {
-      const { sell, noLiquidity = false, peerMode = false, externalMode = false, partialExternal = false } = scenario
-      if (peerMode || externalMode) {
+    for (const scenario of [{ sell: true }, { sell: false }, { sell: true, noLiquidity: true }, { sell: true, noLiquidity: true, peerMode: true }, { sell: false, noLiquidity: true, peerMode: true }, { sell: true, noLiquidity: true, externalMode: true }, { sell: false, noLiquidity: true, externalMode: true }, { sell: true, noLiquidity: true, externalMode: true, partialExternal: true }, { sell: false, noLiquidity: true, externalMode: true, partialExternal: true }, { sell: true, noLiquidity: true, externalMode: true, multiHop: true }, { sell: false, noLiquidity: true, externalMode: true, multiHop: true }]) {
+      const { sell, noLiquidity = false, peerMode = false, externalMode = false, partialExternal = false, multiHop = false } = scenario
+      if (multiHop) {
+        const middle = await deploy('MockERC20', ['Middle', 'M', 18])
+        const factory = await deploy('RouteFactoryMock')
+        const path = [token0, middle, token1]
+        const hops = []
+        for (let i = 0; i < 2; i++) {
+          const [a, b] = [path[i], path[i+1]].sort((x,y)=>BigInt(x)<BigInt(y)?-1:1)
+          const pool = await deploy('RoutePoolMock', [a, b, factory])
+          await send(factory, 'RouteFactoryMock', 'setPool', [a,b,pool])
+          for (const token of [a,b]) await send(token, 'MockERC20', 'mint', [pool, 10n ** 30n])
+          hops.push({pool, minimumLiquidity: 10n ** 17n, maximumObservationAge: 600})
+        }
+        const route = await deploy('UniswapV3Route', [settlement, factory, path, hops, 600, 30, 100n])
+        await send(settlement, 'BlindfoldSettlement', 'configureExternal', [route])
+      } else if (peerMode || externalMode) {
         const market = await deploy('MockExternalMarket', [settlement, token0, token1])
         await send(settlement, 'BlindfoldSettlement', 'configureExternal', [market])
         if (externalMode) {
@@ -128,6 +154,8 @@ test('solver CLI executes AMM and peer-only groups and preserves one-sided recov
             args: peer ? [batch, m.id, m.amountIn] : m ? [batch, p, m.id, m.amountIn] : [batch, p], account })
           return { ok: true }
         } catch (e) {
+          const revert = e instanceof BaseError ? e.walk((x) => x instanceof ContractFunctionRevertedError) : null
+          if (external && revert) return { ok: false, error: revert.data?.errorName ?? 'ExternalRevert' }
           const err = e.walk?.((v) => v.data?.errorName)
           if (!err?.data?.errorName) throw e
           return err.data.errorName === 'NotMarginalPrice' ? { ok: false, poolX96: err.data.args[1] } : { ok: false, error: err.data.errorName }
