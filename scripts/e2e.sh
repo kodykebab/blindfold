@@ -32,6 +32,7 @@ CLIENT_E2E=1 node --test packages/client/test/e2e.test.mjs
 KEEPER_E2E=1 node --test packages/keeper/test/e2e.test.mjs
 OUTAGE_E2E=1 SETTLEMENT_ARTIFACT="$(node -e "import('./packages/solver/artifacts.mjs').then((m) => console.log(m.artifactPath(process.env.CONTRACTS_OUT, 'BlindfoldSettlement')))")" node --test scripts/outage.e2e.test.mjs
 SOLVER_E2E=1 node --test packages/solver/test/integration.test.mjs
+DEMO_E2E=1 node --test scripts/demos.e2e.test.mjs
 if [ "$real_proof" = 1 ]; then
   export ADMISSION_PARAMS="${ADMISSION_PARAMS:-$root/packages/proof-bench/results/admission-params}"
   if [ ! -f "$ADMISSION_PARAMS/manifest.json" ] || [ ! -f "$ADMISSION_PARAMS/out/preparation.sol/Verifier.json" ] || [ ! -f "$ADMISSION_PARAMS/out/online.sol/Verifier.json" ]; then

@@ -27,7 +27,7 @@ print_txs() {
     const from = Number(process.argv[1])
     const latest = await (await fetch(rpc, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }) })).json()
     const to = Number(latest.result)
-    if (to < from + 1) console.log('tx hashes: none in this step')
+    if (to < from + 1) console.log("tx hashes: none in this step")
     else {
       console.log(`tx hashes in blocks ${from + 1}…${to}:`)
       for (let block = from + 1; block <= to; block++) {
