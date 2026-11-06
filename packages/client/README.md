@@ -75,16 +75,15 @@ This creates reusable development parameters when absent, builds generated verif
 
 ## Prepare before choosing an order
 
-Run `npm start -- status`, choose an explicit future batch, then run:
-
 ```bash
-npm start -- prepare-admission 42
-# Once batch 42 is current, choose the order:
-npm start -- commit sell 10 9 --dry-run
+npm start -- prepare-admission             # the earliest batch this device can still make (or name one: prepare-admission 42)
+npm start -- commit sell 10 9 --dry-run    # shows which batch the order goes into
 npm start -- commit sell 10 9
 ```
 
-`prepare-admission` creates and proves a fresh quicknet key wrapper without an order or funding witness. It keeps one ready preparation in the existing private state file; another successful preparation replaces it. A current batch is also accepted while its commit window remains open. Account, chain, settlement, batch, round and parameter manifest must match at submission. The RPC chain ID is checked as well. A mismatched preparation stops preflight; prepare again for the intended batch.
+`prepare-admission` creates and proves a fresh quicknet key wrapper without an order or funding witness. Without a batch number it picks the current batch if this device can still prepare and prove an order in it, otherwise the next one. It keeps one ready preparation in the existing private state file; another successful preparation replaces it. Account, chain, settlement, batch, round and parameter manifest must match at submission. The RPC chain ID is checked as well. A preparation for a batch that has closed is discarded at the next commit.
+
+**Which batch an order goes into.** `commit` uses the current batch when enough time remains to prove there: with the ready preparation if it is for this batch, else inline. Otherwise it proves for the next batch (using a preparation made for it, if there is one), saves the pending submission, waits until that batch opens and submits. The order never waits more than one batch, and `--dry-run` says which batch it chose. If the process stops while waiting, `resume-admission` submits the saved proof while its batch is open.
 
 `commit` durably consumes the preparation before encrypting the selected order, then generates only the online proof. A failed or interrupted attempt consumes that key; run `prepare-admission` again for a fresh one. Completed pending submissions still use `resume-admission`, which resends or reconciles the same saved ciphertext. With no ready preparation, the existing inline two-proof flow remains available. Neither path submits unchecked ciphertext to the enforced settlement.
 
@@ -100,6 +99,6 @@ node packages/proof-bench/measure-admission.mjs 3
 
 The result under `packages/proof-bench/results/advance-preparation-measurements.json` records device/tool identities, parameter hashes, separate loading/proving/verification times and peak prover RSS. Every proof uses a fresh process; filesystem cache is uncontrolled. Use a user-controlled machine with the Go toolchain and the local parameter files. Prover errors stop submission; retry on a machine that completes the local gate if the current device cannot run the helper.
 
-The desktop helper preflight requires at least 120 seconds remaining with a ready preparation, or 180 seconds for inline two-proof generation. `ADMISSION_MIN_LEAD_SECONDS` overrides this margin with a positive integer for a measured desktop configuration. Recheck the deadline after proving; a missed deadline sends nothing. The local gate uses 300-second batches. These margins include headroom over observed local loading/proving costs; production timing remains tracked in REVIEW R6/R7.
+**Proving margin.** The client records how long this device takes for each preparation, online proof and inline proof (the last five of each, in the private state file; exports leave them out because another device measures its own). Once it has three samples for a mode, the time that must remain before commits close is 1.25 × the slowest recent sample plus `ADMISSION_INCLUSION_SECONDS` (default 15) for the transaction, and never under 30 s. On the measured M5 (47 s online proofs) that is 74 s instead of 120 s. Until then it uses the development defaults: 120 s with a ready preparation, 180 s inline. A slow attempt raises the margin straight away, because it is recorded before the deadline check, including when the deadline was missed. `ADMISSION_MIN_LEAD_SECONDS` still overrides everything with a fixed positive integer. Recheck the deadline after proving; a missed deadline sends nothing. Production timing remains tracked in REVIEW R6/R7.
 
 On macOS, prefix a measurement or long proof test with `caffeinate -i` to prevent idle sleep for that process, and keep the lid open. The assertion ends with the process.

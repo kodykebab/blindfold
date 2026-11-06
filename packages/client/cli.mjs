@@ -2,7 +2,7 @@
 //   npm start -- status                          balances (wallet / available / reserved / withdrawable) and the open batch
 //   npm start -- deposit <token0|token1> <amount>
 //   npm start -- commit <sell|buy> <amountIn> <minAmountOut> [--dry-run]   preflight, encrypt, commit
-//   npm start -- prepare-admission <batch-id>   prove a key wrapper before choosing the order
+//   npm start -- prepare-admission [batch-id]   prove a key wrapper before choosing the order (default: the next batch it can make)
 //   npm start -- track                           every commitment of this account and what happened to it
 //   npm start -- blockers                        which commitments block withdrawal and what clears each
 //   npm start -- cleanup [--dry-run]             reveal own saved orders, slash unrevealed, expire unsettled batches
@@ -15,7 +15,7 @@ import { connect, encrypt, newSalt, orderHash } from './lib.mjs'
 import { balances, deadlines, exitPlan, isOpen, preflight, track } from './flow.mjs'
 import { exportState, importState, loadState, parseState, saveCommitment, validateState, writeState, withStateLock } from './state.mjs'
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
-import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead } from './admission.mjs'
+import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead, measuredSeconds, recordProving, targetBatch } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
 
 const ctx = connect()
@@ -97,11 +97,18 @@ async function checkAdmissionNetwork() {
 }
 
 async function prepare(batchText) {
-  if (!/^\d+$/.test(batchText ?? '')) fail('usage: prepare-admission <batch-id>')
+  if (batchText !== undefined && !/^\d+$/.test(batchText)) fail('usage: prepare-admission [batch-id]')
   await checkAdmissionNetwork()
   if (!await admissionRequired()) fail('this deployment does not use proof-enforced admission')
-  const batch = BigInt(batchText)
   const current = await read(S, 'currentBatch')
+  let batch
+  if (batchText === undefined) {
+    // The earliest batch this device can prepare for and still prove an order in.
+    const [close, now] = await Promise.all([read(S, 'commitsClose', [current]), pub.getBlock().then((x) => x.timestamp)])
+    const proving = loadState(dep, me).proving
+    const need = BigInt(measuredSeconds(proving, 'preparation') ?? 60) + admissionLead(true, process.env, proving)
+    batch = close - now >= need ? current : current + 1n
+  } else batch = BigInt(batchText)
   if (batch < current || batch >= 1n << 64n) fail('select an explicit current or future batch')
   const round = await read(S, 'targetRound', [batch])
   console.log(`preparing locally for batch ${batch}, round ${round}…`)
@@ -110,6 +117,7 @@ async function prepare(batchText) {
   await checkAdmissionNetwork()
   const state = loadState(dep, me)
   state.preparation = preparation
+  recordProving(state, 'preparation', preparation.elapsedSeconds)
   writeState(dep, me, state)
   console.log(`prepared batch ${batch} in ${preparation.elapsedSeconds.toFixed(2)}s; private preparation saved locally`)
 }
@@ -126,17 +134,35 @@ async function commit(side, amountIn, minOut, dryRun) {
   const [commitsClose, commits] = await Promise.all([read(S, 'commitsClose', [current]), read(S, 'commitIdsOf', [current])])
   const per = async (f) => Object.fromEntries(await Promise.all(Object.keys(t.byAddress).map(async (a) => [a, await f(a)])))
   const enforced = await admissionRequired()
-  let funding, minLead = 3n
+  let funding, minLead = 3n, target = { batch: current, prepared: false, close: commitsClose }
   if (enforced) {
     await checkAdmissionNetwork()
     if (!dep.admission?.manifestSha256) fail('this deployment requires admission; its deployment file must include the parameter manifest')
     const state = loadState(dep, me)
     funding = reconcileFunding(dep, me, state.admission, await fundingOnchain(), now)
-    if (state.preparation) validatePreparation(state.preparation, { dep, owner: me, batch: current, round: await read(S, 'targetRound', [current]) })
-    minLead = admissionLead(!!state.preparation)
+    let preparedBatch
+    if (state.preparation) {
+      const pb = BigInt(state.preparation.batch)
+      if (pb < current) {
+        console.log(`the ready preparation was for batch ${pb}, which has closed; it is discarded`)
+        delete state.preparation
+      } else {
+        validatePreparation(state.preparation, { dep, owner: me, batch: pb, round: await read(S, 'targetRound', [pb]) })
+        preparedBatch = pb
+      }
+    }
+    // Prove for the current batch if this device has time, else for the next one and submit as it opens.
+    const lead = { online: admissionLead(true, process.env, state.proving), inline: admissionLead(false, process.env, state.proving) }
+    target = targetBatch({ current, commitsClose, batchLength: BigInt(await read(S, 'batchLength')), now, preparedBatch, lead })
+      ?? fail(`not enough time to prove before batch ${current + 1n} closes on this device (needs ${lead.inline}s)`)
+    minLead = target.prepared ? lead.online : lead.inline
+    if (target.batch !== current) {
+      console.log(`batch ${current} closes in ${commitsClose - now}s, too soon to prove here (needs ${minLead}s): the order goes into batch ${target.batch} and is submitted when it opens`)
+    }
     state.admission = funding
     if (!dryRun) writeState(dep, me, state)
   }
+  const targetCommits = target.batch === current ? commits : await read(S, 'commitIdsOf', [target.batch])
   const check = preflight({
     cumulative: enforced ? { [t.token0.address]: funding.totals[0], [t.token1.address]: funding.totals[1] } : {},
     minLead,
@@ -144,17 +170,17 @@ async function commit(side, amountIn, minOut, dryRun) {
     free: await per((a) => read(dep.vault, 'freeBalance', [me, a])),
     wallet: await per((a) => read(a, 'balanceOf', [me], abi.erc20)),
     allowance: await per((a) => read(a, 'allowance', [me, dep.vault], abi.erc20)),
-    batch: { id: current, current, commitsClose, now, commits: BigInt(commits.length), maxCommits },
+    batch: { id: target.batch, current, commitsClose: target.close, now, commits: BigInt(targetCommits.length), maxCommits },
     openBatches: [...new Set([...(await myCommitments()).values()].filter(isOpen).map((c) => c.batchId))],
   })
   const dt = t.byAddress[t.depositToken]
-  console.log(`order: ${side} ${fmt(tin, order.amountIn)} for at least ${fmt(tout, order.minAmountOut)} in batch ${current}`)
+  console.log(`order: ${side} ${fmt(tin, order.amountIn)} for at least ${fmt(tout, order.minAmountOut)} in batch ${target.batch}`)
   console.log(`costs: deposit ${fmt(dt, depositAmount)} (returned minus the revealer's bounty when revealed), fee ${fmt(dt, fee)}`)
   for (const f of check.funding) {
     const tok = t.byAddress[f.token]
     console.log(`funding ${tok.symbol}: need ${fmt(tok, f.need)}, vault free ${fmt(tok, f.free)}${f.shortfall ? `, deposit ${fmt(tok, f.shortfall)} first${f.approve ? ' (needs approval)' : ''}` : ''}`)
   }
-  for (const d of await schedule(current)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
+  for (const d of await schedule(target.batch)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
   if (!enforced) console.log(`keep ${fmt(tin, order.amountIn)} free in the vault until the reveal, or the order is closed as unfunded and the deposit lost`)
   if (!check.ok) fail(`preflight failed:\n  ${check.problems.join('\n  ')}`)
   if (dryRun) return console.log('dry run: nothing sent')
@@ -164,25 +190,34 @@ async function commit(side, amountIn, minOut, dryRun) {
     await send(dep.vault, abi.vault, 'deposit', [f.token, f.shortfall])
   }
   const salt = newSalt()
-  const hash = orderHash(dep.chainId, S, current, order, salt)
-  const round = await read(S, 'targetRound', [current])
+  const hash = orderHash(dep.chainId, S, target.batch, order, salt)
+  const round = await read(S, 'targetRound', [target.batch])
   if (enforced) {
     const budgets = await Promise.all([t.token0, t.token1].map(async (tok) => {
       const free = await read(dep.vault, 'freeBalance', [me, tok.address])
       return free - (tok.address.toLowerCase() === t.depositToken.toLowerCase() ? depositAmount + fee : 0n)
     }))
-    const prepared = consumePreparation(loadState(dep, me), { dep, owner: me, batch: current, round }, (state) => writeState(dep, me, state))
+    const prepared = target.prepared
+      ? consumePreparation(loadState(dep, me), { dep, owner: me, batch: target.batch, round }, (state) => writeState(dep, me, state))
+      : undefined
     console.log(prepared ? 'generating the online admission proof locally…' : 'generating both admission proofs locally…')
-    const result = await proveAdmission({ dep, owner: me, batch: current, round, funding, budgets, order, salt, prepared })
+    const result = await proveAdmission({ dep, owner: me, batch: target.batch, round, funding, budgets, order, salt, prepared })
     console.log(`local proving completed in ${result.timings.elapsedSeconds.toFixed(2)}s`)
+    {
+      // Measure before the deadline check: a slow device must learn from the attempt it missed.
+      const state = loadState(dep, me)
+      recordProving(state, prepared ? 'online' : 'inline', result.timings.elapsedSeconds)
+      writeState(dep, me, state)
+    }
     await checkAdmissionNetwork()
     const latest = (await pub.getBlock()).timestamp
-    if (latest >= commitsClose) fail('proof completed after this batch closed; nothing submitted, start a new order in the current batch')
+    if (latest >= target.close) fail(`proof completed after batch ${target.batch} closed; nothing submitted. This device's margin now reflects the slower proof; commit again`)
     reconcileFunding(dep, me, funding, await fundingOnchain(), latest)
     const state = loadState(dep, me)
-    state.commitments.push({ id: null, batchId: current, round, hash, order, salt })
-    state.admission = { ...funding, pending: { ...result, batch: current, closes: commitsClose } }
+    state.commitments.push({ id: null, batchId: target.batch, round, hash, order, salt })
+    state.admission = { ...funding, pending: { ...result, batch: target.batch, closes: target.close } }
     writeState(dep, me, state)
+    if (target.batch !== current) await untilOpen(target.batch, target.close)
     return resumeAdmission()
   }
   const ciphertext = await encrypt(round, order, salt)
@@ -193,6 +228,24 @@ async function commit(side, amountIn, minOut, dryRun) {
   console.log(`committed #${ev.args.commitId} to round ${round} in ${receipt.transactionHash}`)
 }
 
+
+/**
+ * Wait for `batch` to become current. Chain time moves only when a block is mined, so wall-clock time since the latest
+ * block stands in for it; then poll until a block carries the new batch's time, up to its own close.
+ */
+async function untilOpen(batch, close) {
+  const opens = await read(S, 'commitsClose', [batch - 1n])
+  const base = (await pub.getBlock()).timestamp, started = Date.now()
+  const chainNow = () => base + BigInt(Math.floor((Date.now() - started) / 1000))
+  if (chainNow() < opens) console.log(`proof ready; submitting when batch ${batch} opens in ${opens - chainNow()}s`)
+  while (chainNow() < opens) await new Promise((r) => setTimeout(r, Math.min(Number(opens - chainNow()) * 1000, 2000)))
+  // A live chain mines a block in the new batch within seconds; an idle one never does, so give up after a minute.
+  const giveUp = opens + 60n < close ? opens + 60n : close
+  while (await read(S, 'currentBatch') !== batch) {
+    if (chainNow() >= giveUp) fail(`no block in batch ${batch} yet; the proof is saved: run resume-admission while batch ${batch} is open`)
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+}
 
 async function fundingOnchain() {
   const [batch, root, step] = await read(S, 'admissionState', [me])

@@ -37,10 +37,10 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
     const foreign = await c.cli(10, ['prepare-admission', '1'], { DEPLOYMENTS: wrongNetwork })
     assert.notEqual(foreign.code, 0); assert.match(foreign.err, /RPC network differs/)
 
-    // An early submit must not consume a preparation for a different batch.
-    const early = await c.cli(10, ['commit', 'sell', '1', '1'])
-    assert.notEqual(early.code, 0); assert.match(early.err, /batch or round changed/)
-    assert.ok(loadState(dep, owner).preparation)
+    // An early order goes into the current batch inline and leaves the later batch's preparation untouched.
+    const early = await c.cli(10, ['commit', 'sell', '1', '1', '--dry-run'])
+    assert.equal(early.code, 0, early.err); assert.match(early.out, /in batch 0/)
+    assert.equal(loadState(dep, owner).preparation.batch, '1')
     await c.warp(await c.read(c.settlement, 'AdmittedSettlement', 'commitsClose', [0n]))
     const batch = await c.read(c.settlement, 'AdmittedSettlement', 'currentBatch')
     const round = await c.read(c.settlement, 'AdmittedSettlement', 'targetRound', [batch])
@@ -125,6 +125,49 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
     assert.equal(await c.read(c.vault, 'BlindfoldVault', 'openCommitments', [owner]), 0n)
     assert.equal((await c.cli(10, ['resume-admission'])).code, 0)
     assert.equal(loadState(dep, owner).admission.step, 0n)
+  } finally {
+    c.stop()
+    if (oldState === undefined) delete process.env.CLIENT_STATE; else process.env.CLIENT_STATE = oldState
+  }
+})
+
+test('real proofs: too little time left rolls the order into the next batch, using the key prepared for it', { skip: !process.env.ADMISSION_PARAMS, timeout: 600000 }, async () => {
+  const params = process.env.ADMISSION_PARAMS
+  const manifestSha256 = process.env.ADMISSION_MANIFEST_SHA256
+  const timestamp = 1692803367n + (1000000n - 3n) * 3n - 600n
+  const c = await localChain({ timestamp, admission: { params, manifestSha256 }, schedule: { start: Number(timestamp), batchLength: 300, settleLength: 30 }, fee: 1n })
+  const oldState = process.env.CLIENT_STATE
+  try {
+    process.env.CLIENT_STATE = join(c.dir, 'state')
+    const dep = JSON.parse(readFileSync(c.deployments, 'utf8')), owner = user(10).address
+    for (const token of [c.token0, c.token1]) {
+      await c.mint(owner, token, 100n * 10n ** 18n)
+      await c.write(token, 'MockERC20', 'approve', [c.vault, 100n * 10n ** 18n], user(10))
+      await c.write(c.vault, 'BlindfoldVault', 'deposit', [token, 100n * 10n ** 18n], user(10))
+    }
+    const close = await c.read(c.settlement, 'AdmittedSettlement', 'commitsClose', [0n])
+    await c.warp(close - 40n)
+    // with 40 s left, preparation picks the next batch by itself
+    const prep = await c.cli(10, ['prepare-admission'])
+    assert.equal(prep.code, 0, prep.err)
+    assert.match(prep.out, /prepared batch 1 /)
+    assert.equal(loadState(dep, owner).proving.preparation.length, 1)
+    // a live chain from here on: blocks keep coming while the client proves and waits
+    await c.warp(close - 35n)
+    await c.pub.request({ method: 'evm_setIntervalMining', params: [1] }) // anvil takes seconds
+    const r = await c.cli(10, ['commit', 'sell', '1', '0.9'])
+    await c.pub.request({ method: 'evm_setIntervalMining', params: [0] })
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /the order goes into batch 1 and is submitted when it opens/)
+    assert.match(r.out, /generating the online admission proof locally/)
+    assert.match(r.out, /admitted #/)
+    const ids = await c.read(c.settlement, 'AdmittedSettlement', 'commitIdsOf', [1n])
+    assert.equal(ids.length, 1)
+    assert.equal((await c.read(c.settlement, 'AdmittedSettlement', 'commitIdsOf', [0n])).length, 0)
+    const state = loadState(dep, owner)
+    assert.equal(state.preparation, undefined)
+    assert.equal(state.commitments[0].batchId, 1n)
+    assert.equal(state.proving.online.length, 1)
   } finally {
     c.stop()
     if (oldState === undefined) delete process.env.CLIENT_STATE; else process.env.CLIENT_STATE = oldState
