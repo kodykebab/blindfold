@@ -11,15 +11,14 @@ import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {PoolModifyLiquidityTest} from "v4-core/src/test/PoolModifyLiquidityTest.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
-import {SandwichCourtVerifier} from "../../src/court/SandwichCourtVerifier.sol";
-import {BondRegistry} from "../../src/court/BondRegistry.sol";
+import {feeCappedBudget} from "../../src/court/BondRegistry.sol";
 
 /// @notice R8's economic model, run on a real v4 PoolManager. A coalition plays attacker and victim: fronts that pay
 ///         WETH (token0) for X, its own victim swap, then backs that sell X. It is paid the most BondRegistry would
-///         pay: incidents pair fronts with backs one-to-one, each pays `budgetFor(profit, frontIn, fee)`, and the
-///         coalition picks the best pairing the verifier accepts. The same net holdings are then reached by one direct
-///         trade from the same pool. The
-///         payout must stay below what the sandwich route cost extra, or faking sandwiches would pay.
+///         pay: incidents pair fronts with backs one-to-one, each pays `feeCappedBudget(profit, frontIn, fee)`, and
+///         the coalition picks the best pairing the verifier accepts. The same net holdings are then reached by one
+///         direct trade from the same pool. The payout must stay below what the sandwich route cost extra, or faking
+///         sandwiches would pay.
 ///         Stated assumptions: the coalition earns none of the LP fees (third-party liquidity, listed pool, static
 ///         fee), and gas costs nothing (it only adds to the coalition's cost).
 contract SelfSandwichModelTest is Test {
@@ -31,7 +30,6 @@ contract SelfSandwichModelTest is Test {
     PoolModifyLiquidityTest lp;
     MockERC20 weth; // token0
     MockERC20 x; // token1
-    BondRegistry reg;
 
     function setUp() public {
         manager = new PoolManager(address(this));
@@ -46,8 +44,6 @@ contract SelfSandwichModelTest is Test {
             t.approve(address(router), type(uint256).max);
             t.approve(address(lp), type(uint256).max);
         }
-        BondRegistry.Config memory cfg;
-        reg = new BondRegistry(cfg); // only its pure budget rule is used
     }
 
     /// @dev A pool at 1:1 with third-party liquidity: full range plus a deeper band around the price.
@@ -123,7 +119,7 @@ contract SelfSandwichModelTest is Test {
         if (diff * 10_000 > run.bought[i] * CLOSE_TOLERANCE_BPS) return best; // no back closes this front
         for (uint256 j; j < run.got.length; j++) {
             if (usedBacks & (1 << j) != 0 || run.got[j] <= a) continue; // taken, or no profit
-            uint256 b = reg.budgetFor(run.got[j] - a, a, fee) + _payout(run, a, fee, i + 1, usedBacks | (1 << j));
+            uint256 b = feeCappedBudget(run.got[j] - a, a, fee) + _payout(run, a, fee, i + 1, usedBacks | (1 << j));
             if (b > best) best = b;
         }
     }

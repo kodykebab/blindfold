@@ -10,7 +10,7 @@ import {Currency} from "v4-core/src/types/Currency.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {PoolModifyLiquidityTest} from "v4-core/src/test/PoolModifyLiquidityTest.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
-import {BondRegistry} from "../../src/court/BondRegistry.sol";
+import {feeCappedBudget} from "../../src/court/BondRegistry.sol";
 import {DemoRouter, SandwichBot} from "./demo/DemoSwap.sol";
 
 /// @notice The packages/demo-bots sandwich, offline: a plain ETH/DEMO 0.3% v4 pool, a bot contract that both legs
@@ -70,8 +70,7 @@ contract DemoSandwichTest is Test {
         assertGe(got, 9.5 ether, "the victim still clears its slippage");
         assertEq(MockERC20(Currency.unwrap(key.currency1)).balanceOf(address(bot)), 0, "the back closes the front");
         assertGt(back, frontIn, "the bot profits");
-        BondRegistry.Config memory cfg;
-        uint256 budget = new BondRegistry(cfg).budgetFor(back - frontIn, frontIn, key.fee);
+        uint256 budget = feeCappedBudget(back - frontIn, frontIn, key.fee);
         assertEq(budget, frontIn * 3000 / 1e6, "the front leg's fee caps the budget");
         assertLt(budget, back - frontIn);
     }

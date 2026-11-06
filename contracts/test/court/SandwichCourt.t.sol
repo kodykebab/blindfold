@@ -281,6 +281,28 @@ contract SandwichCourtTest is CourtFixtures {
         assertEq(profit, 2);
     }
 
+    function test_predicate_v4AmountRange() public view {
+        // S17: v4 amounts are int128, so the predicate's arithmetic holds across their whole range
+        int256 m = int256(type(int128).max);
+        SandwichCourtVerifier.Swap memory f = SandwichCourtVerifier.Swap(address(1), m - 1, -m);
+        SandwichCourtVerifier.Swap memory v = SandwichCourtVerifier.Swap(address(2), 1, -1);
+        SandwichCourtVerifier.Swap memory b = SandwichCourtVerifier.Swap(address(1), -m, m);
+        (, uint256 profit, uint256 frontIn) = court.predicate(f, v, b);
+        assertEq(profit, 1);
+        assertEq(frontIn, uint256(m - 1));
+    }
+
+    function test_predicate_rejectsAmountsBeyondRange() public {
+        // S17: a v3 log can carry int256 amounts no real token reaches; those revert instead of verifying
+        SandwichCourtVerifier.Swap memory v = SandwichCourtVerifier.Swap(address(2), 1, -1);
+        vm.expectRevert(); // negating int256.min overflows
+        court.predicate(
+            SandwichCourtVerifier.Swap(address(1), 1, type(int256).min),
+            v,
+            SandwichCourtVerifier.Swap(address(1), -2, type(int256).max)
+        );
+    }
+
     function test_predicate_rejections() public {
         address bot = address(0xB07);
         address user = address(0xA11CE);
