@@ -42,6 +42,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     error Imbalanced();
     error InvalidMarginalOrder();
     error PartialLimit(uint256 id);
+    error UnexpectedDelta(int128 amountIn, int128 amountOut);
 
     event Filled(
         uint64 indexed batchId, uint256 indexed id, address indexed owner, uint256 amountIn, uint256 amountOut
@@ -109,15 +110,25 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     constructor(Config memory c)
         BatchAuction(c.vault, c.depositToken, c.depositAmount, c.bountyBps, c.treasury, c.commitFee, c.schedule)
     {
+        // REVIEW S17/S18: a tolerance above 100% accepts any price, and bounding it keeps
+        // toleranceBps * priceX96 in _checkMarginal inside 256 bits for every v4 price
+        if (c.toleranceBps > BPS) revert InvalidAuctionConfig(ConfigField.ToleranceBps);
         manager = c.manager;
         toleranceBps = c.toleranceBps;
         admin = msg.sender;
     }
 
     /// @notice One-shot: the hook address is mined against this contract's address, so the key comes later.
+    ///         The key must hold two ERC-20 currencies (native ETH is not supported), one of them the deposit token.
+    ///         AdmittedSettlement additionally pins the vault pair, the sealed hook and the pool's initialization.
     function initialize(PoolKey calldata k) public virtual {
         if (msg.sender != admin) revert Unauthorized();
         if (token0 != address(0)) revert AlreadyInitialized();
+        address c0 = Currency.unwrap(k.currency0);
+        address c1 = Currency.unwrap(k.currency1);
+        if (c0 >= c1 || c0.code.length == 0 || c1.code.length == 0 || (depositToken != c0 && depositToken != c1)) {
+            revert InvalidAuctionConfig(ConfigField.PoolKey);
+        }
         key = k;
         token0 = Currency.unwrap(k.currency0);
         token1 = Currency.unwrap(k.currency1);
@@ -347,9 +358,15 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
             }),
             ""
         );
-        uint256 used = uint256(uint128(-(zeroForOne ? d.amount0() : d.amount1())));
+        // v4 deltas are swapper-side: the input leg is paid in (non-positive), the output received (non-negative).
+        // Check the signs before casting so a wrapped cast can never read as a large amount (REVIEW S17).
+        // A swap that used nothing (no liquidity) is reported below as PartialResidual.
+        int128 inDelta = zeroForOne ? d.amount0() : d.amount1();
+        int128 outDelta = zeroForOne ? d.amount1() : d.amount0();
+        if (inDelta > 0 || outDelta < 0) revert UnexpectedDelta(inDelta, outDelta);
+        uint256 used = uint256(-int256(inDelta));
         if (used != amountIn) revert PartialResidual(amountIn, used);
-        uint256 out = uint256(uint128(zeroForOne ? d.amount1() : d.amount0()));
+        uint256 out = uint256(int256(outDelta));
         if (out < owed) revert ResidualShort(out, owed);
 
         Currency cIn = zeroForOne ? k.currency0 : k.currency1;

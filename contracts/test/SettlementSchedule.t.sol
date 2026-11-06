@@ -9,7 +9,7 @@ import {BlindfoldTest} from "./Blindfold.t.sol";
 
 contract ScheduleHarness is BatchAuction {
     constructor(Schedule memory schedule)
-        BatchAuction(BlindfoldVault(address(0)), address(1), 0, 0, address(2), 0, schedule)
+        BatchAuction(new BlindfoldVault(), address(new BlindfoldVault()), 1, 0, address(2), 0, schedule)
     {}
 
     function _inputToken(bool) internal pure override returns (address) {
@@ -40,6 +40,7 @@ contract SettlementScheduleTest is Test {
         uint32 maximum = length / 3 * 3;
         uint64 start = 1_692_803_367 + uint64(startOffset) / 3 * 3;
         uint64 b = uint64(bound(uint256(batchSeed), 0, 100_000));
+        reveal = uint32(bound(uint256(reveal), 1, type(uint32).max));
         ScheduleHarness h = new ScheduleHarness(BatchAuction.Schedule(start, length, reveal, maximum));
         assertLe(h.settleCloses(b), h.revealCloses(b + 1));
         assertGt(h.settleCloses(b), h.revealCloses(b));
