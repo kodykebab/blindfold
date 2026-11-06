@@ -8,9 +8,10 @@ export const COMMITTED = 1 // BatchAuction.Status.Committed
  * commitments: [{id, batchId, status, hash, committer, round, ciphertext}] (status from chain);
  * batches: Map(batchId → {revealOpens, revealCloses, settleCloses, finalized, orders}).
  * reveal: committed and inside its reveal window; slash: committed after it; expire: unsettled batch with locked
- * orders after its settle deadline.
+ * orders after its settle deadline; settle: the same batch inside its settle window once `settleGrace` seconds have
+ * passed since reveals closed without a solver settling it (null grace: never).
  */
-export function due(commitments, batches, now) {
+export function due(commitments, batches, now, settleGrace = null) {
   const reveal = []
   const slash = []
   for (const c of commitments) {
@@ -19,9 +20,15 @@ export function due(commitments, batches, now) {
     if (now >= b.revealCloses) slash.push(c)
     else if (now >= b.revealOpens) reveal.push(c)
   }
-  const expire = [...batches].filter(([, b]) => !b.finalized && b.orders > 0n && now >= b.settleCloses).map(([id]) => id)
-  return { reveal, slash, expire }
+  const open = [...batches].filter(([, b]) => !b.finalized && b.orders > 0n)
+  const expire = open.filter(([, b]) => now >= b.settleCloses).map(([id]) => id)
+  const settle = settleGrace === null ? [] : open
+    .filter(([, b]) => now >= b.revealCloses + BigInt(settleGrace) && now < b.settleCloses).map(([id]) => id)
+  return { reveal, slash, expire, settle }
 }
+
+/** Batches a `solver.mjs --once` run reports as settled ("settled batch N: ..."). */
+export const settledBatches = (output) => [...output.matchAll(/^settled batch (\d+):/gm)].map((m) => BigInt(m[1]))
 
 /**
  * Turn a decrypted payload into reveal arguments, or say why not. A payload that doesn't match its commitment would

@@ -44,7 +44,7 @@ The solver groups equal limits, preserves price priority, constructs common-valu
   "treasury": "0x...",
   "routes": [{
     "path": ["0x...token0...", "0x...token1..."],
-    "hops": [{"pool":"0x...","minimumLiquidity":"...","maximumObservationAge":120}],
+    "hops": [{"pool":"0x...","minimumLiquidity":"...","maximumObservationAge":0}],
     "window": 600,
     "maximumDelay": 360,
     "deviationBps": 100,
@@ -53,7 +53,7 @@ The solver groups equal limits, preserves price priority, constructs common-valu
 }
 ```
 
-All numeric values above are illustrative configuration fields. Calibrate timing and oracle settings before deployment. Every non-base token needs exactly one base-token oracle path. Optional additional paths provide execution choices. Endpoints are sorted by address; intermediate route tokens do not need to be funded by users. `DEPLOYMENT_OUT` optionally writes the completed manifest without overwriting an existing file. Deployments are ordinary sequential transactions; a failed deployment reports the failing transaction, and already deployed contracts remain onchain.
+All numeric values above are illustrative configuration fields. `maximumObservationAge` 0 turns the latest-trade activity check off (recommended; a positive value rejects pools with no trade in that many seconds). Calibrate timing and oracle settings before deployment. Every non-base token needs exactly one base-token oracle path. Optional additional paths provide execution choices. Endpoints are sorted by address; intermediate route tokens do not need to be funded by users. `DEPLOYMENT_OUT` optionally writes the completed manifest without overwriting an existing file. Deployments are ordinary sequential transactions; a failed deployment reports the failing transaction, and already deployed contracts remain onchain.
 
 ## Verification
 

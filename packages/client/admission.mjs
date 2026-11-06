@@ -89,9 +89,54 @@ export async function proveAdmission({ dep, owner, batch, round, funding, budget
     timings: { advancePreparation: !!prepared, elapsedSeconds: (performance.now() - started) / 1000, preparation: { ...prep.timings, peakRssBytes: prep.peakRssBytes }, online: { ...online.timings, peakRssBytes: online.peakRssBytes } } }
 }
 
-/** Development margins for the measured native helper; override after measuring a different desktop. */
-export function admissionLead(prepared, env = process.env) {
-  const value = env.ADMISSION_MIN_LEAD_SECONDS ?? (prepared ? '120' : '180')
-  if (!/^[1-9]\d*$/.test(value) || BigInt(value) >= 1n << 64n) throw new Error('ADMISSION_MIN_LEAD_SECONDS must be a positive uint64 number of seconds')
-  return BigInt(value)
+export const PROVING_SAMPLES = 5
+
+/** Remember how long this device took ('online', 'inline' or 'preparation'), keeping the most recent samples. */
+export function recordProving(state, mode, seconds) {
+  if (!(seconds > 0) || !Number.isFinite(seconds)) return
+  state.proving ??= {}
+  state.proving[mode] = [...(state.proving[mode] ?? []), Math.round(seconds * 100) / 100].slice(-PROVING_SAMPLES)
+}
+
+/** Seconds this device needs for `mode`, with headroom: 1.25 x its slowest recent sample, once it has three. */
+export function measuredSeconds(proving, mode) {
+  const xs = proving?.[mode] ?? []
+  return xs.length >= 3 ? Math.ceil(Math.max(...xs) * 1.25) : null
+}
+
+/**
+ * Seconds that must remain before commits close. ADMISSION_MIN_LEAD_SECONDS overrides everything. Otherwise this
+ * device's own measured proving time plus ADMISSION_INCLUSION_SECONDS (default 15) for the transaction, never under
+ * 30 s; until three proofs are measured, the development defaults (120 s prepared, 180 s inline).
+ */
+export function admissionLead(prepared, env = process.env, proving = {}) {
+  const positive = (name, value) => {
+    if (!/^[1-9]\d*$/.test(value) || BigInt(value) >= 1n << 64n) throw new Error(`${name} must be a positive uint64 number of seconds`)
+    return BigInt(value)
+  }
+  if (env.ADMISSION_MIN_LEAD_SECONDS != null) return positive('ADMISSION_MIN_LEAD_SECONDS', env.ADMISSION_MIN_LEAD_SECONDS)
+  const inclusion = positive('ADMISSION_INCLUSION_SECONDS', env.ADMISSION_INCLUSION_SECONDS ?? '15')
+  const measured = measuredSeconds(proving, prepared ? 'online' : 'inline')
+  if (measured === null) return prepared ? 120n : 180n
+  const lead = BigInt(measured) + inclusion
+  return lead < 30n ? 30n : lead
+}
+
+/**
+ * Which batch an order can still reach, and whether a ready preparation serves it: the current batch if enough time
+ * remains (prepared first, then inline), otherwise the next one, whose commit window opens when this one closes.
+ */
+export function targetBatch({ current, commitsClose, batchLength, now, preparedBatch, lead }) {
+  // Contract reads return uint32 fields as numbers; keep every comparison in BigInt.
+  ;[current, commitsClose, batchLength, now] = [current, commitsClose, batchLength, now].map(BigInt)
+  if (preparedBatch !== undefined) preparedBatch = BigInt(preparedBatch)
+  const options = [
+    { batch: current, close: commitsClose },
+    { batch: current + 1n, close: commitsClose + batchLength },
+  ]
+  for (const { batch, close } of options) {
+    if (preparedBatch === batch && close - now >= lead.online) return { batch, prepared: true, close }
+    if (close - now >= lead.inline) return { batch, prepared: false, close }
+  }
+  return null
 }

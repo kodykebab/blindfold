@@ -28,8 +28,8 @@ function keeper(c, index, env = {}) {
   })
 }
 
-async function setup() {
-  const c = await localChain({ timestamp: START, schedule: { start: START } })
+async function setup({ market = false } = {}) {
+  const c = await localChain({ timestamp: START, schedule: { start: START }, market })
   assert.equal(await c.read(c.settlement, 'BlindfoldSettlement', 'targetRound', [0n]), 1000000n, 'chain aligned to the recorded round')
   for (const i of [10, 11, 12]) {
     await c.mint(user(i).address, c.token0, parseEther('100'))
@@ -57,7 +57,7 @@ test('S8: racing keepers reveal each order once, slash garbage, expire the unset
     // before the round: nothing due
     let r = await keeper(c, 1)
     assert.equal(r.code, 0, r.err)
-    assert.deepEqual(r.st.due, { reveal: 0, slash: 0, expire: 0 })
+    assert.deepEqual(r.st.due, { reveal: 0, slash: 0, settle: 0, expire: 0 })
 
     await c.warp(await at('revealOpens'))
     const [a, b] = await Promise.all([keeper(c, 1), keeper(c, 6)])
@@ -94,7 +94,7 @@ test('S8: racing keepers reveal each order once, slash garbage, expire the unset
 
     // a second pass finds nothing left to do
     r = await keeper(c, 1)
-    assert.deepEqual(r.st.due, { reveal: 0, slash: 0, expire: 0 })
+    assert.deepEqual(r.st.due, { reveal: 0, slash: 0, settle: 0, expire: 0 })
     console.log('gas used:', JSON.stringify({ reveal: [...(a.st.gas.reveal ?? []), ...(b.st.gas.reveal ?? [])].map(String), slash: gasSlash, expire: gasExpire }))
   } finally {
     c.stop()
@@ -134,6 +134,42 @@ test('S7: budget and balance floor stop the keeper; users recover without it', {
     assert.equal(r.code, 0, r.err)
     assert.equal(r.st.slashed, 1) // the garbage commitment
     assert.ok(BigInt(r.st.spentWei) > 0n)
+  } finally {
+    c.stop()
+  }
+})
+
+test('S7: with the solver down, the keeper settles the batch itself after the grace period', { skip: !enabled, timeout: 180_000 }, async () => {
+  const { c, at } = await setup({ market: true }) // a pool and a market, so the crossing orders can settle
+  try {
+    await c.warp(await at('revealOpens'))
+    let r = await keeper(c, 1)
+    assert.equal(r.st.revealed, 2)
+    const closes = await at('revealCloses')
+    // inside the grace period the keeper leaves settlement to the solver
+    await c.warp(closes + 5n)
+    r = await keeper(c, 1)
+    assert.equal(r.code, 0, r.err)
+    assert.equal(r.st.due.settle, 0)
+    assert.equal(await c.read(c.settlement, 'BlindfoldSettlement', 'finalized', [0n]), false)
+    // no solver ran: past the grace period the keeper settles with the solver's own search
+    await c.warp(closes + 16n)
+    r = await keeper(c, 1)
+    assert.equal(r.code, 0, r.err)
+    assert.equal(r.st.due.settle, 1)
+    assert.equal(r.st.settled, 1)
+    assert.ok(BigInt(r.st.spentWei) > 0n, 'settlement gas counts against the keeper budget')
+    assert.equal(await c.read(c.settlement, 'BlindfoldSettlement', 'finalized', [0n]), true)
+    for (const i of [10, 11]) assert.equal(await c.read(c.vault, 'BlindfoldVault', 'openCommitments', [user(i).address]), 0n)
+    // the seller got token1 and the buyer token0, each at least their 9-token limit (deposits only covered the shortfall)
+    assert.ok(await c.read(c.vault, 'BlindfoldVault', 'balanceOf', [user(10).address, c.token1]) >= parseEther('9'))
+    assert.ok(await c.read(c.vault, 'BlindfoldVault', 'balanceOf', [user(11).address, c.token0]) >= parseEther('9'))
+    assert.equal(await c.read(c.vault, 'BlindfoldVault', 'lockedOf', [user(10).address, c.token0]), 0n)
+    // a second pass finds nothing to settle, and disabling the fallback removes the work entirely
+    r = await keeper(c, 1)
+    assert.equal(r.st.due.settle, 0)
+    r = await keeper(c, 1, { KEEPER_SETTLE_GRACE_S: 'off' })
+    assert.equal(r.code, 0, r.err)
   } finally {
     c.stop()
   }

@@ -141,6 +141,49 @@ contract UniswapV3MarketTest is Test {
         market.referencePrice(end);
     }
 
+    function _deployQuiet() internal returns (UniswapV3Market) {
+        // maxObservationAge 0: no activity check
+        return
+            new UniswapV3Market(address(this), IV3Factory(address(pool)), IV3Pool(address(pool)), 600, 30, 0, 1e17, 100);
+    }
+
+    /// A pool nobody traded for a day still prices: its mean and spot are both the last price.
+    function test_activityCheckOff_quietPoolPrices() public {
+        UniswapV3Market quiet = _deployQuiet();
+        assertEq(quiet.maxObservationAge(), 0);
+        pool.setOracle(uint160(Q96), 2, uint32(block.timestamp - 1 days), 0, uint160((uint256(600) << 128) / 1e18));
+        assertEq(quiet.referencePrice(block.timestamp), Q96);
+        // the same pool under a 60 s activity policy is rejected
+        vm.expectRevert(UniswapV3Market.StaleObservation.selector);
+        market.referencePrice(block.timestamp);
+    }
+
+    /// Without the activity check every other safeguard still applies, including against a fresh manipulating swap.
+    function test_activityCheckOff_keepsDeviationLiquidityAndHistoryChecks() public {
+        UniswapV3Market quiet = _deployQuiet();
+        uint160 healthy = uint160((uint256(600) << 128) / 1e18);
+        uint32 dayAgo = uint32(block.timestamp - 1 days);
+        // a swap right before settlement moves spot 4x off the mean (and refreshes the observation)
+        pool.setOracle(uint160(2 * Q96), 2, uint32(block.timestamp), 0, healthy);
+        vm.expectRevert(UniswapV3Market.PriceDeviation.selector);
+        quiet.referencePrice(block.timestamp);
+        // spot inside the 1% band still prices; outside does not
+        pool.setOracle(uint160(Q96 + Q96 / 250), 2, dayAgo, 0, healthy); // ~+0.8%
+        quiet.referencePrice(block.timestamp);
+        pool.setOracle(uint160(Q96 + Q96 / 150), 2, dayAgo, 0, healthy); // ~+1.3%
+        vm.expectRevert(UniswapV3Market.PriceDeviation.selector);
+        quiet.referencePrice(block.timestamp);
+        pool.setOracle(uint160(Q96), 2, dayAgo, 0, type(uint160).max);
+        vm.expectRevert(UniswapV3Market.ThinLiquidity.selector);
+        quiet.referencePrice(block.timestamp);
+        pool.setOracle(uint160(Q96), 1, dayAgo, 0, healthy);
+        vm.expectRevert(UniswapV3Market.InsufficientHistory.selector);
+        quiet.referencePrice(block.timestamp);
+        pool.setOracle(uint160(Q96), 2, dayAgo, 0, healthy);
+        vm.expectRevert(UniswapV3Market.StaleReference.selector);
+        quiet.referencePrice(block.timestamp - 31);
+    }
+
     function test_factoryAuthentication() public {
         pool.setWrongFactory();
         vm.expectRevert(UniswapV3Market.Config.selector);

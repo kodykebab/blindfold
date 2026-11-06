@@ -121,3 +121,16 @@ SOLVER_E2E=1 node --test packages/solver/test/admission.test.mjs
 The test owns its Anvil node and uses 900-second development batches and recorded
 drand data; it never advances a keeper's chain. Without both `SOLVER_E2E=1` and
 `ADMISSION_PARAMS`, ordinary unit-test runs skip this proof-generation test.
+
+## Order-flow replay
+
+`replay.mjs` replays a day of real Uniswap v3 swaps from Ethereum mainnet through the batch rules: every swap becomes an order of the same size and direction with a slippage limit, joins the first batch it can still reach after proving, and settles through the public pool under the external market's checks. It reports filled, unfilled and expired shares, why batches expired, median wait and price against the swap's real execution.
+
+```bash
+source env.sh
+node packages/solver/replay.mjs                                    # 24 h, three pools, default grid
+OBS_AGE=120,0 LEAD=120,60 BATCHES=60,120,300 SLIPPAGE=30,50,100 \
+  REPLAY_OUT=packages/solver/benchmarks/replay.json node packages/solver/replay.mjs
+```
+
+It reads Swap logs only, so no archive node, fork or key is needed. The model in `replay/model.mjs` uses single-range price impact (no tick crossings), and the replayed swaps also remain in the pool's history; treat the output as rates, not settlements. `OBS_AGE=0` removes the latest-observation-age check.

@@ -106,6 +106,13 @@ contract UniswapV3RouteTest is Test {
     }
 
     function _route(uint256 count) internal returns (UniswapV3Route r, RoutePoolMock[] memory pools) {
+        return _route(count, 120);
+    }
+
+    function _route(uint256 count, uint32 maxObservationAge)
+        internal
+        returns (UniswapV3Route r, RoutePoolMock[] memory pools)
+    {
         address[] memory path = new address[](count + 1);
         UniswapV3Route.HopConfig[] memory hs = new UniswapV3Route.HopConfig[](count);
         pools = new RoutePoolMock[](count);
@@ -120,7 +127,7 @@ contract UniswapV3RouteTest is Test {
             factory.setPool(a, b, address(pools[i]));
             MockERC20(a).mint(address(pools[i]), 1e30);
             MockERC20(b).mint(address(pools[i]), 1e30);
-            hs[i] = UniswapV3Route.HopConfig(IV3Pool(address(pools[i])), 1e17, 120);
+            hs[i] = UniswapV3Route.HopConfig(IV3Pool(address(pools[i])), 1e17, maxObservationAge);
         }
         r = new UniswapV3Route(address(this), IV3Factory(address(factory)), path, hs, 600, 30, 100);
     }
@@ -168,6 +175,16 @@ contract UniswapV3RouteTest is Test {
         pools[1].setOracle(0, -60, uint32(block.timestamp), 1e18);
         pools[2].setOracle(0, 60, uint32(block.timestamp), 1e18);
         vm.expectRevert(UniswapV3Route.PriceDeviation.selector);
+        r.referencePrice(block.timestamp);
+    }
+
+    /// Hops without the activity check price through a quiet middle pool, and still fail closed on liquidity.
+    function test_route_quietHopPricesWithoutActivityCheck() public {
+        (UniswapV3Route r, RoutePoolMock[] memory pools) = _route(3, 0);
+        pools[1].setOracle(0, 0, uint32(block.timestamp - 1 days), 1e18);
+        r.referencePrice(block.timestamp);
+        pools[1].setOracle(0, 0, uint32(block.timestamp - 1 days), 1);
+        vm.expectRevert(UniswapV3Market.ThinLiquidity.selector);
         r.referencePrice(block.timestamp);
     }
 
