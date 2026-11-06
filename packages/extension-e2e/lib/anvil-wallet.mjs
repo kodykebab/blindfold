@@ -36,10 +36,11 @@ const rpcError = (code, message) => Object.assign(new Error(message), { code })
  * account: a viem local account (anvil test key). origin: the bridge origin.
  * Returns the wallet state object; mutate it from tests: accounts, chainId, atomic, reject (Set of methods
  * answered with 4001), hold (async (method, params) => void, awaited before a transaction is sent).
+ * Read: log (every request), sent ({to, hash} of every transaction sent).
  */
 export async function installTestWallet(context, { account, origin, accounts = [account] }) {
   const w = {
-    accounts, chainId: '0x7a69', known: new Set(['0x1', '0x7a69']), atomic: false, reject: new Set(), hold: null, log: [], batches: new Map(),
+    accounts, chainId: '0x7a69', known: new Set(['0x1', '0x7a69']), atomic: false, reject: new Set(), hold: null, log: [], sent: [], batches: new Map(),
     pages: new Set(),
     /** Fire an EIP-1193 event in every bridge page. */
     async emit(event, value) {
@@ -62,7 +63,9 @@ export async function installTestWallet(context, { account, origin, accounts = [
     if (!signer || signer !== w.accounts[0]) throw rpcError(4100, `${tx.from} is not the selected account`)
     await w.hold?.('eth_sendTransaction', tx)
     const client = createWalletClient({ account: signer, chain: anvil, transport: http(RPC) })
-    return client.sendTransaction({ to: tx.to, data: tx.data, value: BigInt(tx.value ?? 0) })
+    const hash = await client.sendTransaction({ to: tx.to, data: tx.data, value: BigInt(tx.value ?? 0) })
+    w.sent.push({ to: tx.to, hash })
+    return hash
   }
   async function handle(method, params) {
     if (w.reject.has(method)) throw rpcError(4001, 'User rejected the request.')

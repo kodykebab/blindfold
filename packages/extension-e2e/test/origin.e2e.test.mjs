@@ -64,3 +64,19 @@ test('I1: the bridge page connects to the real extension and stays connected', {
   assert.equal(new URL(page.url()).origin, BRIDGE)
   await page.close()
 })
+
+test('I1 (B1): two bridge tabs: the newest gets the port, the older one stops reconnecting', { skip }, async () => {
+  const first = await b.bridgePage()
+  await first.waitForTimeout(1500)
+  const flips = []
+  await first.exposeFunction('__flip', (t) => flips.push(t))
+  await first.evaluate(() => new MutationObserver(() => window.__flip(document.getElementById('extension').textContent))
+    .observe(document.getElementById('extension'), { childList: true, characterData: true, subtree: true }))
+  const second = await b.bridgePage()
+  await second.waitForTimeout(4000)
+  assert.match(await first.locator('#extension').textContent(), /another tab/)
+  assert.match(await second.locator('#extension').textContent(), /Connected to the Blindfold extension/)
+  assert.ok(flips.length <= 1, `first tab kept reconnecting: ${flips}`)
+  await first.close()
+  await second.close()
+})
