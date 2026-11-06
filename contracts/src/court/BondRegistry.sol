@@ -4,6 +4,19 @@ pragma solidity ^0.8.24;
 import {SandwichCourtVerifier} from "./SandwichCourtVerifier.sol";
 import {RLPReader} from "./lib/RLPReader.sol";
 
+uint256 constant FEE_UNITS = 1e6; // Uniswap fees are in hundredths of a bip
+uint256 constant MAX_BUDGET = type(uint128).max; // wei; more than all ETH there is (S17)
+
+/// @notice An incident's budget (R8, S17): the attacker's profit, capped by the swap fee its front leg paid
+///         (`frontIn * fee / 1e6`, rounded down) and by `MAX_BUDGET`. Exact and overflow-free for any inputs with
+///         `fee <= 1e6`. The `MAX_BUDGET` cap keeps `budget * weight` and the sum of an incident's weights in range.
+function feeCappedBudget(uint256 profit, uint256 frontIn, uint24 fee) pure returns (uint256 budget) {
+    // frontIn * fee / 1e6 without overflow: with frontIn = q * 1e6 + r, it is q * fee + r * fee / 1e6
+    uint256 cap = (frontIn / FEE_UNITS) * fee + ((frontIn % FEE_UNITS) * fee) / FEE_UNITS;
+    budget = profit < cap ? profit : cap;
+    if (budget > MAX_BUDGET) budget = MAX_BUDGET;
+}
+
 /// @title BondRegistry
 /// @notice A protected RPC bonds ETH here and signs an EIP-712 `Protected` receipt for every tx it accepts, before
 ///         that tx runs. The receipt names who gets paid (S15) and the most the RPC will pay (`maxPayout`).
@@ -72,7 +85,6 @@ contract BondRegistry {
     bytes32 public constant PROTECTED_TYPEHASH = keccak256(
         "Protected(bytes32 txHash,uint256 chainId,uint64 acceptedAt,uint64 maxBlock,uint256 maxPayout,address beneficiary)"
     );
-    uint256 internal constant FEE_UNITS = 1e6; // Uniswap fees are in hundredths of a bip
     bytes32 internal constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
@@ -230,10 +242,10 @@ contract BondRegistry {
         return keccak256(abi.encodePacked("\x19\x01", domain, h));
     }
 
-    /// @notice An incident's budget: the attacker's profit, capped by the swap fee its front leg paid.
+    /// @notice An incident's budget: the attacker's profit, capped by the swap fee its front leg paid (see
+    ///         `feeCappedBudget`).
     function budgetFor(uint256 profit, uint256 frontIn, uint24 fee) public pure returns (uint256) {
-        uint256 cap = (frontIn * fee) / FEE_UNITS;
-        return profit < cap ? profit : cap;
+        return feeCappedBudget(profit, frontIn, fee);
     }
 
     // ---- internals

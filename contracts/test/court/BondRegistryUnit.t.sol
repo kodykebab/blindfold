@@ -3,7 +3,8 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import {SandwichCourtVerifier} from "../../src/court/SandwichCourtVerifier.sol";
-import {BondRegistry} from "../../src/court/BondRegistry.sol";
+import {BondRegistry, MAX_BUDGET} from "../../src/court/BondRegistry.sol";
+import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 
 /// @dev Returns whatever verdict the test sets, so BondRegistry's own logic can be fuzzed without proofs.
 contract MockVerifier {
@@ -507,6 +508,45 @@ contract BondRegistryUnitTest is RegistryBase {
         c2.front.logIndex = 1; // a second swap in the same tx and pool: it paid its own fee
         BondRegistry.Protected memory r2 = _receipt("v2", 1 ether);
         assertTrue(reg.claim(c2, r2, _sign(KEY, r2), key) != first);
+    }
+
+    // ---- number ranges (S17)
+
+    /// @dev The budget is min(profit, frontIn * fee / 1e6, MAX_BUDGET), exactly, for any amounts: no overflow.
+    function testFuzz_budget_exactForAnyAmounts(uint256 profit, uint256 frontIn_, uint24 feeRaw) public view {
+        uint24 fee = uint24(bound(feeRaw, 0, 1e6));
+        uint256 expected = FullMath.mulDiv(frontIn_, fee, 1e6); // 512-bit reference
+        if (profit < expected) expected = profit;
+        if (expected > MAX_BUDGET) expected = MAX_BUDGET;
+        assertEq(reg.budgetFor(profit, frontIn_, fee), expected);
+    }
+
+    function test_extremeAmounts_payWithoutOverflow() public {
+        // the largest profit and front input a v3 Swap log can carry (int256), three RPCs' claims with unlimited caps
+        uint256[3] memory keys = [KEY, 0xB0B, 0xC0C];
+        frontIn = uint256(type(int256).max);
+        legs = "huge";
+        bytes32[3] memory ids = [bytes32("a"), "b", "c"];
+        for (uint256 i; i < 3; i++) {
+            address signer = vm.addr(keys[i]);
+            vm.deal(signer, 10 ether);
+            vm.prank(signer);
+            reg.bond{value: 10 ether}();
+            (SandwichCourtVerifier.Claim memory c, bytes memory key) =
+                _setup(ids[i], address(uint160(0xBEEF + i)), type(uint256).max, false, true, WETH, OTHER);
+            BondRegistry.Protected memory r = _receipt(ids[i], type(uint256).max);
+            bytes32 incident = reg.claim(c, r, _sign(keys[i], r), key);
+            (uint256 budget, uint256 totalWeight,) = reg.incidents(incident);
+            assertEq(budget, MAX_BUDGET, "capped above all ETH");
+            assertEq(totalWeight, MAX_BUDGET * (i + 1), "weights add up without overflow");
+        }
+        vm.warp(block.timestamp + WINDOW);
+        uint256 total;
+        for (uint256 i; i < 3; i++) {
+            total += reg.collect(ids[i]); // budget * weight / totalWeight, capped by what each RPC reserved
+        }
+        assertEq(total, 30 ether, "each claim gets its RPC's whole bond, which is all there is");
+        assertEq(address(reg).balance, 0);
     }
 
     // ---- which token the profit is in
