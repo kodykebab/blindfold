@@ -53,9 +53,11 @@ abstract contract RegistryBase is Test {
     bytes32 constant INIT_HASH = keccak256("pool init code");
     address constant PM = address(0x4444);
     uint256 constant DELAY = 1 days;
+    uint256 constant BLOCK_TIME = 1_000;
 
     MockVerifier mock;
     BondRegistry reg;
+    address payee; // the beneficiary _receipt names: the victim of the last _setup
 
     function _deploy() internal {
         mock = new MockVerifier();
@@ -82,6 +84,8 @@ abstract contract RegistryBase is Test {
         internal
         returns (SandwichCourtVerifier.Claim memory c, bytes memory poolKey)
     {
+        payee = victim;
+        c.header = _header(BLOCK_TIME);
         if (v4) {
             poolKey = abi.encode(t0, t1, uint24(3000), int24(60), address(0));
             c.v4 = true;
@@ -104,9 +108,30 @@ abstract contract RegistryBase is Test {
         );
     }
 
+    /// @dev A block header RLP with only the timestamp (field 11) set; the registry reads nothing else from it.
+    function _header(uint256 ts) internal pure returns (bytes memory) {
+        bytes memory items;
+        for (uint256 i; i < 11; i++) {
+            items = bytes.concat(items, hex"80");
+        }
+        bytes memory tsb;
+        for (uint256 x = ts; x != 0; x >>= 8) {
+            tsb = bytes.concat(bytes1(uint8(x)), tsb);
+        }
+        bytes memory enc =
+            ts == 0 ? bytes(hex"80") : ts < 0x80 ? tsb : bytes.concat(bytes1(uint8(0x80 + tsb.length)), tsb);
+        items = bytes.concat(items, enc);
+        return bytes.concat(bytes1(uint8(0xc0 + items.length)), items);
+    }
+
     function _receipt(bytes32 txHash, uint256 maxPayout) internal view returns (BondRegistry.Protected memory) {
         return BondRegistry.Protected({
-            txHash: txHash, chainId: block.chainid, acceptedAt: 0, maxBlock: 100, maxPayout: maxPayout
+            txHash: txHash,
+            chainId: block.chainid,
+            acceptedAt: 0,
+            maxBlock: 100,
+            maxPayout: maxPayout,
+            beneficiary: payee
         });
     }
 
@@ -269,16 +294,29 @@ contract BondRegistryUnitTest is RegistryBase {
         bytes32 structHash = keccak256(
             abi.encode(
                 keccak256(
-                    "Protected(bytes32 txHash,uint256 chainId,uint64 acceptedAt,uint64 maxBlock,uint256 maxPayout)"
+                    "Protected(bytes32 txHash,uint256 chainId,uint64 acceptedAt,uint64 maxBlock,uint256 maxPayout,address beneficiary)"
                 ),
                 r.txHash,
                 r.chainId,
                 r.acceptedAt,
                 r.maxBlock,
-                r.maxPayout
+                r.maxPayout,
+                r.beneficiary
             )
         );
         assertEq(reg.receiptDigest(r), keccak256(abi.encodePacked("\x19\x01", domain, structHash)));
+    }
+
+    function test_acceptedAt_boundary() public {
+        _bond(1 ether);
+        (SandwichCourtVerifier.Claim memory c, bytes memory key) = _setup("tx", victim, 7, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r = _receipt("tx", 1 ether);
+        r.acceptedAt = uint64(BLOCK_TIME + 1);
+        bytes memory sig = _sign(KEY, r);
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.IssuedAfterIncident.selector, BLOCK_TIME + 1, BLOCK_TIME));
+        reg.claim(c, r, sig, key);
+        r.acceptedAt = uint64(BLOCK_TIME);
+        assertEq(reg.claim(c, r, _sign(KEY, r), key), 7);
     }
 
     // ---- transfers and reentrancy

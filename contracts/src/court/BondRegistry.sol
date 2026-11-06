@@ -2,11 +2,17 @@
 pragma solidity ^0.8.24;
 
 import {SandwichCourtVerifier} from "./SandwichCourtVerifier.sol";
+import {RLPReader} from "./lib/RLPReader.sol";
 
 /// @title BondRegistry
-/// @notice A protected RPC bonds ETH here and signs an EIP-712 `Protected` receipt for every tx it accepts.
-///         If that tx is proven sandwiched (SandwichCourtVerifier), the victim is paid from the RPC's bond:
-///         min(attacker profit, receipt.maxPayout), once per tx, plus the prover's execution gas.
+/// @notice A protected RPC bonds ETH here and signs an EIP-712 `Protected` receipt for every tx it accepts, before
+///         that tx runs. The receipt names who gets paid (`beneficiary`, S15) and the most the RPC will pay.
+///         Insured event: the receipted tx is proven to be the victim of a sandwich (SandwichCourtVerifier) in a
+///         canonical Uniswap pool, landed by `maxBlock`, with the attacker's profit in ETH or WETH. That proves a
+///         sandwich-shaped sequence and the attacker's profit; it does not prove the RPC leaked the tx, nor how
+///         much the victim lost, so coverage is capped and profit-based rather than a loss refund.
+///         The beneficiary is paid min(attacker profit, receipt.maxPayout) from the RPC's bond, once per tx, plus
+///         the prover's execution gas.
 ///         - Profit is valued 1:1 only when it is in ETH or WETH; claims for other profit tokens revert
 ///           unpaid (no oracle), so they stay claimable if valuation is added later.
 ///         - The cap is set by the RPC from the tx's own slippage, so sandwiching yourself can't pay more
@@ -19,9 +25,10 @@ contract BondRegistry {
     struct Protected {
         bytes32 txHash;
         uint256 chainId; // chain the protected tx runs on
-        uint64 acceptedAt;
+        uint64 acceptedAt; // unix seconds; must not be after the sandwich block (coverage precedes the event)
         uint64 maxBlock; // the tx must land by this block
         uint256 maxPayout; // wei
+        address beneficiary; // who is paid; not inferred from the tx signer (smart wallets, relayers)
     }
 
     struct Config {
@@ -34,15 +41,18 @@ contract BondRegistry {
         uint256 unbondDelay;
     }
 
-    bytes32 public constant PROTECTED_TYPEHASH =
-        keccak256("Protected(bytes32 txHash,uint256 chainId,uint64 acceptedAt,uint64 maxBlock,uint256 maxPayout)");
+    bytes32 public constant PROTECTED_TYPEHASH = keccak256(
+        "Protected(bytes32 txHash,uint256 chainId,uint64 acceptedAt,uint64 maxBlock,uint256 maxPayout,address beneficiary)"
+    );
     bytes32 internal constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
     error AlreadyPaid(bytes32 txHash);
+    error NoBeneficiary();
     error WrongChain();
     error NotReceipted();
     error TooLate(uint256 blockNumber, uint256 maxBlock);
+    error IssuedAfterIncident(uint256 acceptedAt, uint256 blockTimestamp);
     error UnknownPool();
     error UnvaluedProfit(address token);
     error BadSignature();
@@ -56,7 +66,7 @@ contract BondRegistry {
     event Claimed(
         address indexed rpc,
         bytes32 indexed txHash,
-        address indexed victim,
+        address indexed beneficiary,
         uint256 payout,
         uint256 gasRefund,
         address prover
@@ -112,9 +122,9 @@ contract BondRegistry {
 
     // ---- claims
 
-    /// @notice Prove that a receipted tx was sandwiched and pay its victim from the signing RPC's bond.
+    /// @notice Prove that a receipted tx was sandwiched and pay the receipt's beneficiary from the signing RPC's bond.
     /// @param poolKey v3: abi.encode(token0, token1, fee); v4: abi.encode(PoolKey) (5 words).
-    /// @return payout what the victim received (the prover also gets its execution gas at basefee)
+    /// @return payout what the beneficiary received (the prover also gets its execution gas at basefee)
     function claim(
         SandwichCourtVerifier.Claim calldata c,
         Protected calldata r,
@@ -123,6 +133,7 @@ contract BondRegistry {
     ) external returns (uint256 payout) {
         uint256 gasStart = gasleft();
         if (paid[r.txHash]) revert AlreadyPaid(r.txHash);
+        if (r.beneficiary == address(0)) revert NoBeneficiary();
         // the receipt's chain must be the one this registry judges, through the matching block-hash path
         bool local = c.anchor.header.length == 0;
         if (r.chainId != sourceChainId || local != (sourceChainId == block.chainid)) revert WrongChain();
@@ -134,6 +145,10 @@ contract BondRegistry {
         SandwichCourtVerifier.Verdict memory v = verifier.verify(c);
         if (v.victimTxHash != r.txHash) revert NotReceipted();
         if (v.blockNumber > r.maxBlock) revert TooLate(v.blockNumber, r.maxBlock);
+        // `verify` authenticated this header, so its timestamp is the sandwich block's
+        if (r.acceptedAt > _blockTimestamp(c.header)) {
+            revert IssuedAfterIncident(r.acceptedAt, _blockTimestamp(c.header));
+        }
 
         // shortcut: only ETH/WETH profit is valued (1:1); others revert unpaid so a later valuation can still pay them
         address token = _profitToken(c, poolKey, v.profitInToken0);
@@ -146,9 +161,9 @@ contract BondRegistry {
 
         paid[r.txHash] = true;
         bondOf[rpc] = available - payout - refund;
-        _send(v.victim, payout);
+        _send(r.beneficiary, payout);
         _send(msg.sender, refund);
-        emit Claimed(rpc, r.txHash, v.victim, payout, refund, msg.sender);
+        emit Claimed(rpc, r.txHash, r.beneficiary, payout, refund, msg.sender);
     }
 
     /// @notice The EIP-712 digest an RPC signs for a receipt.
@@ -156,8 +171,9 @@ contract BondRegistry {
         bytes32 domain = keccak256(
             abi.encode(DOMAIN_TYPEHASH, keccak256("BondRegistry"), keccak256("1"), block.chainid, address(this))
         );
-        bytes32 h =
-            keccak256(abi.encode(PROTECTED_TYPEHASH, r.txHash, r.chainId, r.acceptedAt, r.maxBlock, r.maxPayout));
+        bytes32 h = keccak256(
+            abi.encode(PROTECTED_TYPEHASH, r.txHash, r.chainId, r.acceptedAt, r.maxBlock, r.maxPayout, r.beneficiary)
+        );
         return keccak256(abi.encodePacked("\x19\x01", domain, h));
     }
 
@@ -186,6 +202,14 @@ contract BondRegistry {
         address pool = address(uint160(uint256(keccak256(abi.encodePacked(hex"ff", v3Factory, salt, v3InitCodeHash)))));
         if (pool != c.pool) revert UnknownPool();
         return inToken0 ? t0 : t1;
+    }
+
+    /// @dev Header field 11 is the block timestamp (every fork since Frontier).
+    function _blockTimestamp(bytes calldata header) internal pure returns (uint256 t) {
+        bytes memory b = RLPReader.readBytes(RLPReader.readList(header)[11]);
+        for (uint256 i; i < b.length; i++) {
+            t = (t << 8) | uint8(b[i]);
+        }
     }
 
     function _send(address to, uint256 amount) internal {
