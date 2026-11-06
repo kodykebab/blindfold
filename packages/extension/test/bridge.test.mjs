@@ -65,6 +65,7 @@ test('a newer bridge page replaces the old one and fails its pending request', a
   const pending = b.send(call)
   b.accept(fakePort())
   assert.ok(first.disconnected)
+  assert.deepEqual(first.posted.at(-1), { type: 'replaced' }) // so the old tab stops reconnecting
   await assert.rejects(pending, /disconnected/)
   assert.ok(b.connected())
 })

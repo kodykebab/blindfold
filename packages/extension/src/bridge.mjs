@@ -20,7 +20,7 @@ export function bridge({ origin, onWallet = () => {}, onError = () => {} }) {
 
   function accept(p) {
     if (p.name !== 'blindfold-bridge' || p.sender?.origin !== origin) return p.disconnect()
-    if (port) { port.disconnect(); drop() } // the newest bridge page wins
+    if (port) { port.postMessage({ type: 'replaced' }); port.disconnect(); drop() } // the newest bridge page wins
     port = p
     p.onMessage.addListener((m) => {
       if (['hello', 'wallets', 'wallet'].includes(m?.type)) onWallet(m)
