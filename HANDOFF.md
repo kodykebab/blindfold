@@ -3,7 +3,7 @@
 Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEXT.md). Repo rules, setup and gotchas: [AGENTS.md](AGENTS.md).
 
 ## Status
-`forge test`: **143/143 passing** (19 local + 19 Unichain fork + 29 ReservationModel, which re-runs the 19 local + 4 SwapVM + 18 Court verifier + 51 BondRegistry + 3 self-sandwich model).
+`forge test`: **146/146 passing** (19 local + 19 Unichain fork + 29 ReservationModel, which re-runs the 19 local + 4 SwapVM + 21 Court verifier + 51 BondRegistry + 3 self-sandwich model).
 
 | Piece | State | Where |
 |---|---|---|
@@ -31,7 +31,7 @@ Who builds what, phase by phase, is in [PLAN.md](PLAN.md); known design flaws an
 - Schedule views: `currentBatch()`, `commitsClose(b)`, `revealOpens(b)`, `revealCloses(b)`, `settleCloses(b)`.
 - Events for keepers/indexers: `Committed(id, batchId, committer, hash, round, ciphertext)`, `Revealed`, `RevealedUnfunded`, `Slashed`, `Filled`, `Unfilled`, `Settled`, `Expired`.
 - Solver: `poolPriceX96()`, `quote(order, p)`; search `p*` down from the pool price until `settle` succeeds (see `_solve` in `test/Blindfold.t.sol`).
-- Court: `SandwichCourtVerifier.verify(Claim) → Verdict{blockNumber, blockHash, victimTxHash, attacker, victim, profitInToken0, profit, frontIn}` (`frontIn`: what the front leg paid into the pool, in the profit token, fee included); `checkpoint()` on Base.
+- Court: `SandwichCourtVerifier.verify(Claim) → Verdict{blockNumber, blockHash, victimTxHash, attacker, victim, profitInToken0, profit, frontIn}` (`frontIn`: what the front leg paid into the pool, in the profit token, fee included); `checkpoint()` on Base. A sandwich needs one signer for front and back and one contract making both swaps (the pool's caller, `sender` in v3 and v4 Swap events); the victim may use any route, including the attacker's router (S5).
 
 ## Court fixture workflow
 ```bash

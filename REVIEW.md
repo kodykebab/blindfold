@@ -151,7 +151,7 @@ Both are bound together (see the [proof-bench README](packages/proof-bench/READM
 - **In the docs:** list the sequencer as a remaining trust assumption next to drand.
 
 ## R8. Court bonds can be drained by sandwiching yourself
-**Where:** `SandwichCourtVerifier.verify` requires only that the victim and attacker addresses differ ([`:128`](contracts/src/court/SandwichCourtVerifier.sol#L128)); the planned payout `max(profit, minPenalty) + gas` (CONTEXT.md "Court design").
+**Where:** `SandwichCourtVerifier.verify` requires only that the victim and attacker addresses differ ([`:129`](contracts/src/court/SandwichCourtVerifier.sol#L129)); the planned payout `max(profit, minPenalty) + gas` (CONTEXT.md "Court design").
 
 **Problem:** Court proves that a sandwich happened, not that the RPC leaked it.
 1. Someone with two wallets gets a `Protected` receipt for their own transaction.
@@ -171,11 +171,11 @@ Both are bound together (see the [proof-bench README](packages/proof-bench/READM
 - **Docs:** ARCHITECTURE.MD §10 already says "payout caps"; update CONTEXT.md, which still has the old formula.
 
 ## R9. Real sandwichers can easily slip past the Court predicate
-**Where:** same signer for front and back ([`:127`](contracts/src/court/SandwichCourtVerifier.sol#L127)), same `trader` field ([`:253`](contracts/src/court/SandwichCourtVerifier.sol#L253)), back leg within 1% of the front ([`:259`](contracts/src/court/SandwichCourtVerifier.sol#L259)).
+**Where:** same signer for front and back ([`:129`](contracts/src/court/SandwichCourtVerifier.sol#L129)), same pool caller for both legs ([`:263`](contracts/src/court/SandwichCourtVerifier.sol#L263); since S5 it's the contract that made the swap, not the v3 recipient), back leg within 1% of the front ([`:269`](contracts/src/court/SandwichCourtVerifier.sol#L269)).
 
 **Problem:** any of these escapes Court:
 - signing front and back with two wallets;
-- using two recipient contracts;
+- making the two legs from two different contracts;
 - leaving 2% of the position open.
 
 As written, Court catches only naive bots. Loosening the predicate invites false claims, and those feed straight into R8.
