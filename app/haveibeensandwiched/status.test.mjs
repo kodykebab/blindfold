@@ -233,3 +233,10 @@ test('prover, deadline and busy failures each get a sentence and a next step', (
     assert.match(e.title, title, text); assert.match(e.next, next, text)
   }
 })
+
+test('server and network errors never reach the page raw', () => {
+  for (const [text, title] of [['Backup must be a JSON object', /Backup not readable/], ['Invalid action or arguments', /Request not accepted/], ['TypeError: Failed to fetch', /Local service unreachable/]]) {
+    const e = explainClientError(text)
+    assert.match(e.title, title); assert.ok(!e.sentence.includes(text) && e.next.length > 0)
+  }
+})

@@ -49,6 +49,8 @@ function renderSteps(job) {
   if (job.state === 'done' && view.seconds) try { localStorage.setItem('blindfold.proveSeconds', String(view.seconds)) } catch {}
 }
 let lastIdentity = null
+// Server and network errors as a sentence and a next step, never the raw message.
+function showError(message) { const why = explainClientError(message); output.textContent = `${why.sentence} ${why.next}`; state.textContent = 'FAILED' }
 const jobStore = (() => { try { return createJobStore(localStorage) } catch { return createJobStore(null) } })()
 const mobile = matchMedia('(max-width: 760px) and (pointer: coarse)')
 const desktopOnly = new Set(['prepare-admission', 'preflight', 'commit', 'deposit', 'cleanup', 'resume-admission', 'backup-import'])
@@ -120,7 +122,7 @@ async function follow(id) {
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
   } catch (e) {
-    output.textContent = `${e.message}\n\nThe command may still be running on this machine.`
+    output.textContent = `${explainClientError(e.message).sentence} The command may still be running on this machine; use Reconnect.`
     state.textContent = 'DISCONNECTED'; reconnect.hidden = !savedJob()
   } finally {
     setBusy(false)
@@ -147,7 +149,7 @@ async function run(input) {
       document.querySelector('#preparation-state').textContent = 'Submission may consume the prepared key. Refresh status before the next order.'
     }
     await follow(data.id)
-  } catch (e) { output.textContent = e.message; state.textContent = 'FAILED' }
+  } catch (e) { showError(e.message) }
   finally { setBusy(false) }
 }
 async function cleanupWithPreview(row) {
@@ -179,8 +181,7 @@ async function cleanupWithPreview(row) {
     }
   } catch (e) {
     setBusy(false)
-    output.textContent = `${e.message}\n\nWait or refresh status before trying again.`
-    state.textContent = 'FAILED'
+    showError(e.message)
   }
 }
 
@@ -588,7 +589,7 @@ function renderWallet(value) {
 const walletView = createWalletView(window, renderWallet)
 document.querySelector('#wallet-connect').addEventListener('click', async () => {
   try { await walletView.connect(document.querySelector('#wallet-choice').value) }
-  catch (e) { document.querySelector('#wallet-message').textContent = `Could not view wallet: ${e.message}` }
+  catch (e) { document.querySelector('#wallet-message').textContent = e?.code === 4001 ? 'You declined the wallet connection. Nothing was shared.' : 'Could not view the wallet. Unlock it in the extension and try again.' }
 })
 document.querySelector('#wallet-disconnect').addEventListener('click', () => walletView.disconnect())
 mobile.addEventListener('change', () => setBusy(busy))
@@ -601,7 +602,7 @@ document.querySelector('#restore-file').addEventListener('change', async (event)
   try {
     if (file.size > 1_000_000) throw Error('Backup is too large')
     await run({ action: 'backup-import', backup: await file.text() })
-  } catch (e) { output.textContent = e.message; state.textContent = 'FAILED' }
+  } catch (e) { showError(e.message) }
   finally { event.currentTarget.value = '' }
 })
 
