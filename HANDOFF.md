@@ -3,7 +3,7 @@
 Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEXT.md). Repo rules, setup and gotchas: [AGENTS.md](AGENTS.md).
 
 ## Status
-`forge test`: **89/89 passing** (19 local + 19 Unichain fork + 29 ReservationModel, which re-runs the 19 local + 4 SwapVM + 18 Court).
+`forge test`: **107/107 passing** (19 local + 19 Unichain fork + 29 ReservationModel, which re-runs the 19 local + 4 SwapVM + 18 Court verifier + 18 BondRegistry).
 
 | Piece | State | Where |
 |---|---|---|
@@ -14,7 +14,7 @@ Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEX
 | Court verifier (BLOCKHASH / EIP-2935 / L1 anchor, v3 + v4, signer recovery) | ✅ Built + tested on live mainnet sandwiches | `contracts/src/court/` |
 | Sandwich finder, proof + anchor builder | ✅ Working against mainnet | `packages/court-watcher/` |
 | Aqua leg inside `settle` (split residual between v4 and Aqua) | ⬜ | — |
-| `BondRegistry`: bonds, EIP-712 protection receipts, payout + slashing | ⬜ **next Must** | — |
+| `BondRegistry`: bonds, EIP-712 protection receipts, capped payouts, pool pinning | ✅ Built + tested on the mainnet fixtures (deploy script next) | `contracts/src/court/BondRegistry.sol` |
 | Court on Base: deploy + `checkpoint()` live | ⬜ | — |
 | tlock client (encrypt + commit), keeper (Arkiv → drand → reveal), solver | ⬜ | `packages/` |
 | Arkiv entities (writes), Swarm ciphertext storage | ⬜ | `arkiv/` |

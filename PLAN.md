@@ -64,7 +64,7 @@ Additive changes only (new key, event, overload, optional attribute, CLI flag). 
 | R3 fee | Kritarth | client, UI | `commitFee() view returns (uint256)`, charged in `depositToken` on every commit and admit, never refunded |
 | R2 admission | Kritarth | client, keeper | `admit(uint64 batchId, bytes32 hash, bytes ciphertext, bytes proof) returns (uint256 id)`; `admissionRequired() view returns (bool)`. `proof` is opaque bytes whose encoding Kritarth defines: one seal and journal, or the preparation and online seals and journals ABI-encoded together, after the two-proof split on `main` (`725ab8e`). The client passes it through untouched. `admit` emits the same `Committed` event, so the keeper doesn't change. When `admissionRequired`, `commit` reverts |
 | R4 reward | Kritarth | solver | `settleRewardBps() view returns (uint256)`: share of the residual surplus paid to `msg.sender` of `settle` (0 until shipped) |
-| Bonds | Bhoumik | demo-bots, watcher, UI (via Arkiv) | `bond()`, `requestUnbond()`, `unbond()` (delayed); `claim(SandwichCourtVerifier.Claim c, Protected r, bytes sig) returns (uint256 paid)`. EIP-712 `Protected{bytes32 txHash, uint256 chainId, uint64 acceptedAt, uint64 maxBlock, uint256 maxPayout}`; `maxPayout` comes from the tx's own slippage at acceptance |
+| Bonds | Bhoumik | demo-bots, watcher, UI (via Arkiv) | `bond()`, `requestUnbond()`, `unbond()` (delayed); `claim(SandwichCourtVerifier.Claim c, Protected r, bytes sig, bytes poolKey) returns (uint256 payout)`; `receiptDigest(Protected) view returns (bytes32)` is what the RPC signs. EIP-712 `Protected{bytes32 txHash, uint256 chainId, uint64 acceptedAt, uint64 maxBlock, uint256 maxPayout}`; `maxPayout` comes from the tx's own slippage at acceptance. `poolKey` is `abi.encode(token0, token1, fee)` for v3 and `abi.encode(PoolKey)` for v4; the registry checks it against the canonical v3 factory or v4 PoolManager. Payout `min(profit, maxPayout)` only when the profit is in ETH/WETH; other profit tokens revert `UnvaluedProfit` and stay claimable |
 
 ### Files, CLIs and data
 | Seam | Producer | Consumers | Exact shape |
@@ -110,7 +110,7 @@ forge script script/DeployCourt.s.sol     --rpc-url http://127.0.0.1:8545 --broa
 ## Already done
 - **Contracts:** vault, commit, anyone-reveal, slashing, padding orders; verified settle on the sealed v4 pool (local and Unichain fork); `SealedClearing` + router; Court verifier on live mainnet sandwiches.
 - **Off-chain tools:** sandwich finder and proof builder; admission-proof prototype (`packages/proof-bench`) and private funding model (`ReservationModel.t.sol`).
-- **Tests:** `forge test` 89/89.
+- **Tests:** `forge test` 107/107.
 
 ---
 
@@ -164,7 +164,7 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
   - **Check:** the output admits on a local deploy with `ADMISSION=mock`.
 
 ### Bhoumik
-- [ ] **`BondRegistry.sol` + tests (R8)** · Needs: nothing (the verifier exists).
+- [x] **`BondRegistry.sol` + tests (R8)** · Needs: nothing (the verifier exists).
   - **The frozen ABI:** `bond`, a delayed `unbond`, and `claim`.
   - **`claim` requires:**
     - `verdict.victimTxHash == r.txHash`;

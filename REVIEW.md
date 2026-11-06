@@ -13,7 +13,7 @@ Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each
 | R5 | Just-in-time liquidity takes the LP surplus; removing liquidity blocks settlement | Medium | From code | Kritarth |
 | R6 | Admission proofs limit an account to every other batch; proving time is unmeasured | Medium | From code | Kritarth |
 | R7 | Remaining trust in the sequencer and timestamps; the safety margin is 4–6 s, not ≥6 s | Medium | From code | Kritarth |
-| R8 | Court bonds can be drained by sandwiching yourself | High | From code | Bhoumik |
+| R8 | Court bonds can be drained by sandwiching yourself | High | Fixed in `BondRegistry` | Bhoumik |
 | R9 | Real sandwichers can easily slip past the Court predicate | Medium | From code | Bhoumik |
 
 ---
@@ -155,6 +155,8 @@ Both are bound together (see the [proof-bench README](packages/proof-bench/READM
 3. Their wallets' gains and losses cancel except for pool fees, so the payout is profit. They pick the "profit" themselves by giving the victim transaction wide slippage.
 4. The `minPenalty` floor makes even tiny self-sandwiches pay.
 
+**Status:** fixed in [`BondRegistry.sol`](contracts/src/court/BondRegistry.sol): the cap, no floor, once per tx, the unbond delay and chain binding are all tested against the mainnet fixtures. While building it, a related gap turned up: `verify` accepts Swap-shaped logs from whatever `c.pool` the claim names, so a contract emitting fake Swap events could fake a sandwich. BondRegistry pins the pool to the canonical v3 factory (CREATE2) or the v4 PoolManager. **Remaining limit:** profit is valued only in ETH/WETH. The v3 fixture's attacker profits in USDT, so that claim reverts unpaid; paying it needs a price, for example the front leg's own execution price, which `Verdict` doesn't expose yet.
+
 **Fix:** design `BondRegistry` so that sandwiching yourself never pays.
 - **Cap from the receipt:** the RPC writes `maxPayout` into the receipt, derived from the transaction's own slippage when it accepted it (quoted output minus `minAmountOut`). Pay `min(valued profit, maxPayout)`.
 - **No floor:** drop the `minPenalty`.
@@ -188,7 +190,6 @@ As written, Court catches only naive bots. Loosening the predicate invites false
   - "≥6 s margin" (R7);
   - "the solver chooses nothing else" (R4);
   - the free option is killed (R2);
-  - `max(profit, minPenalty)` (R8).
 
 ## Appendix: reproduction tests
 Save as `contracts/test/ReviewPoC.t.sol` and run `forge test --match-contract ReviewPoC -vv`. Each test passes while its flaw exists. Once a fix lands, flip its assertions into a regression test. Don't commit this file as-is: it asserts the bugs.
