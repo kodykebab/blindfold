@@ -4,13 +4,18 @@
 // WATCH_START (first block when there is no state; default head - CONFIRMATIONS); CONFIRMATIONS (3); OVERLAP (12);
 // MAX_BLOCKS (50 per tick); CONCURRENCY (4); PROVE_LIMIT (2 per tick); MAX_ATTEMPTS (3); PROVE_TIMEOUT_MS (300000);
 // POLL_MS (12000); RPC_TIMEOUT_MS (15000, lib.mjs); ANCHOR=1 builds L1 anchors for claims judged on Base.
-// shortcut: claims are proven and kept, not submitted. Submitting needs a signed Protected receipt for the victim
-// tx (the demo-bots RPC, Phase 2); pass a `submit` to createWatcher once receipts exist.
+// Submitting (S21, #27): RECEIPTS=<JSON-lines file of signed Protected receipts> turns on claim + collect for the
+// sandwiches whose victim tx has a receipt (others are kept as 'ignored', unproven). Then also: COURT_DEPLOYMENT
+// (../../deployments/court.local.json), COURT_RPC (ETH_RPC), BOND_REGISTRY_ARTIFACT (contracts/out),
+// WATCHER_KEY or MNEMONIC (anvil's; account 3 is the watcher).
 import { spawn } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createPublicClient, createWalletClient, defineChain, http } from 'viem'
+import { mnemonicToAccount, privateKeyToAccount } from 'viem/accounts'
 import { ETH_RPC, rpc } from './lib.mjs'
+import { createSubmitter, loadReceipts } from './submit.mjs'
 import { createWatcher, fileStore } from './watcher.mjs'
 
 const E = process.env
@@ -41,6 +46,30 @@ function prove(item) {
   })
 }
 
+/** claim + collect against BondRegistry, when RECEIPTS is set. */
+function submitter() {
+  if (!E.RECEIPTS) return {}
+  const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'))
+  const dep = readJson(E.COURT_DEPLOYMENT || join(here, '../../deployments/court.local.json'))
+  // forge names it BondRegistry.<solc>.json when it compiled the file under two solc versions (same ABI)
+  const out = join(here, '../../contracts/out/BondRegistry.sol')
+  const { abi } = readJson(E.BOND_REGISTRY_ARTIFACT || join(out, readdirSync(out).find((n) => n.startsWith('BondRegistry.'))))
+  const url = E.COURT_RPC || ETH_RPC
+  const chain = defineChain({
+    id: dep.chainId, name: 'court', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: { default: { http: [url] } },
+  })
+  const account = E.WATCHER_KEY
+    ? privateKeyToAccount(E.WATCHER_KEY)
+    : mnemonicToAccount(E.MNEMONIC || 'test test test test test test test test test test test junk', { addressIndex: 3 })
+  return createSubmitter({
+    call: (method, params) => rpc(ETH_RPC, method, params),
+    client: createPublicClient({ chain, transport: http(url) }),
+    wallet: createWalletClient({ account, chain, transport: http(url) }),
+    registry: dep.bondRegistry, abi, receipts: () => loadReceipts(E.RECEIPTS),
+  })
+}
+
 const watcher = createWatcher({
   call: (method, params) => rpc(ETH_RPC, method, params),
   store: fileStore(join(DIR, 'state.json')),
@@ -52,6 +81,7 @@ const watcher = createWatcher({
   proveLimit: num(E.PROVE_LIMIT, 2),
   maxAttempts: num(E.MAX_ATTEMPTS, 3),
   prove,
+  ...submitter(),
   log: (m) => console.error(`watcher: ${m}`),
 })
 
@@ -60,7 +90,10 @@ for (;;) {
   try {
     const t = await watcher.tick()
     const range = t.to >= t.from ? `blocks ${t.from}-${t.to}` : `waiting for block ${t.from}`
-    console.log(`${range}: ${t.found} new, ${t.proven} proven, ${t.reorged} dropped by reorg`)
+    console.log(
+      `${range}: ${t.found} new, ${t.proven} proven, ${t.submitted} claimed, ${t.collected} collected, ` +
+        `${t.reorged} dropped by reorg`,
+    )
   } catch (e) {
     console.error(`watcher: tick failed, state kept: ${e.shortMessage ?? e.message} (ETH_RPC ${ETH_RPC})`)
     if (once) process.exit(1)

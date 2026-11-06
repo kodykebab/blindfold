@@ -2,7 +2,9 @@
 //   1. checks the hashes of recently scanned blocks and, on a reorg, drops what it found there and rescans;
 //   2. discovers sandwiches in confirmed blocks only, a bounded range per tick, with bounded concurrency;
 //   3. proves a bounded number of discoveries (the expensive stage, kept separate from discovery);
-//   4. submits proven claims, when a submitter is configured, and records each outcome.
+//   4. submits proven claims, when a submitter is configured, and records each outcome;
+//   5. collects submitted claims once their incident's claim window has closed (by `now`, the registry chain's
+//      time), when a collector is configured.
 // State (next block, recent block hashes, every discovery and its status) is saved after each stage, only once
 // that stage has fully succeeded, so an RPC failure or crash never skips a block. A restart rescans the last
 // `overlap` blocks; discoveries are keyed by block hash and leg tx hashes, so rescans never duplicate them.
@@ -47,11 +49,14 @@ export const keyOf = (blockHash, s) => `${blockHash}:${s.front.txHash}:${s.victi
 /**
  * @param call    (method, params) => result, against the chain being judged
  * @param prove   async (item) => claim info (e.g. { path }); throws to retry later
- * @param submit  optional async (item) => submission info (e.g. { tx }); throws to retry later
+ * @param submit  optional async (item) => submission info (e.g. { tx, closesAt }); throws to retry later
+ * @param collect optional async (item) => collection info (e.g. { tx, payout }), run once `await now() >= closesAt`
+ * @param now     async () => unix seconds on the chain that holds the claims (its latest block's timestamp)
+ * @param wanted  optional (item) => bool at discovery; unwanted sandwiches (no receipt) are kept as 'ignored', unproven
  */
 export function createWatcher({
   call, store, start, confirmations = 3, overlap = 12, maxBlocks = 50, concurrency = 4, proveLimit = 2,
-  maxAttempts = 3, prove, submit, log = () => {},
+  maxAttempts = 3, prove, submit, collect, wanted, now = async () => Date.now() / 1000, log = () => {},
 }) {
   let state
   const hex = (n) => numberToHex(BigInt(n))
@@ -119,6 +124,7 @@ export function createWatcher({
           back: [s.back.txIndex, s.back.logIndex], victimTx: s.victim.txHash, attacker: s.front.from,
           profit: s.profit.toString(), profitInToken0: s.profitInToken0, status: 'discovered', attempts: 0,
         }
+        if (wanted && !wanted(state.items[key])) state.items[key].status = 'ignored'
         found++
       }
     }
@@ -127,9 +133,14 @@ export function createWatcher({
     return { from, to, found }
   }
 
-  /** Runs `stage` on up to `limit` items in `status`; success moves them to `done`, failures retry up to maxAttempts. */
-  async function advance(status, done, limit, stage, field) {
-    const ready = Object.values(state.items).filter((i) => i.status === status).sort((a, b) => a.block - b.block)
+  /**
+   * Runs `stage` on up to `limit` items in `status` that are `due`; success moves them to `done`, failures retry up
+   * to maxAttempts.
+   */
+  async function advance(status, done, limit, stage, field, due = () => true) {
+    const ready = Object.values(state.items)
+      .filter((i) => i.status === status && due(i))
+      .sort((a, b) => a.block - b.block)
     const batch = ready.slice(0, limit)
     await mapLimit(batch, concurrency, async (item) => {
       try {
@@ -158,8 +169,11 @@ export function createWatcher({
       await store.save(state)
       const proven = prove ? await advance('discovered', 'proven', proveLimit, prove, 'claim') : 0
       const submitted = submit ? await advance('proven', 'submitted', proveLimit, submit, 'submission') : 0
+      const t = collect ? await now() : 0
+      const due = (i) => t >= i.submission.closesAt
+      const collected = collect ? await advance('submitted', 'collected', proveLimit, collect, 'collection', due) : 0
       await store.save(state)
-      return { ...scan, reorged, proven, submitted }
+      return { ...scan, reorged, proven, submitted, collected }
     },
   }
 }
