@@ -27,12 +27,12 @@ npm ci --prefix packages/proof-bench --ignore-scripts
 
 ## Test
 ```bash
-cd contracts && forge test                                         # everything: 131 tests
+cd contracts && forge test                                         # everything: 143 tests
 forge test --match-path test/Blindfold.t.sol                       # mechanism, local PoolManager (19)
 forge test --match-contract BlindfoldUnichainForkTest              # same suite on Unichain's real PoolManager (fork, 19)
 forge test --match-path test/ReservationModel.t.sol --fuzz-runs 4096   # private funding model (re-runs the 19 mechanism tests too)
 forge test --match-path 'test/swapvm/*'                            # SealedClearing opcode (4)
-forge test --match-path 'test/court/*'                             # Court: verifier (18) + BondRegistry on real sandwiches (21) + unit/fuzz (20) + 1 invariant suite (3 invariants), offline
+forge test --match-path 'test/court/*'                             # Court: verifier (18) + BondRegistry on real sandwiches (23) + unit/fuzz (27) + self-sandwich model on a v4 PoolManager (3) + 1 invariant suite (3 invariants), offline
 ```
 ```bash
 cargo test --manifest-path packages/proof-bench/Cargo.toml --locked --release                          # native admission relation
