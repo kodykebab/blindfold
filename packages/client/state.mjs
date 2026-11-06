@@ -60,7 +60,11 @@ export function validateState(state, { dep, owner, orderHash, chainHashes }) {
   return problems
 }
 
-export const exportState = (dep, owner) => JSON.stringify(loadState(dep, owner), replacer, 2)
+// Ready encryption keys are deliberately not portable: restoring an old backup must not reuse one for a new order.
+export const exportState = (dep, owner) => {
+  const { preparation, ...state } = loadState(dep, owner)
+  return JSON.stringify(state, replacer, 2)
+}
 export const parseState = (text) => JSON.parse(text, reviver)
 
 /** Merge imported entries into local state by hash; local entries the import lacks are kept. */
