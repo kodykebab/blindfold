@@ -13,6 +13,8 @@ test('only structured supported commands and numeric amounts reach the CLI', () 
   assert.throws(() => command({ action: 'prepare-admission', batch: '1; touch file' }))
   assert.throws(() => command({ action: 'export-state', amount: '/tmp/a' }))
   assert.throws(() => command({ action: 'deposit', token: 'token0', amount: 'all' }))
+  assert.throws(() => command({ action: 'deposit', token: 'USDC', amount: '1' }), /not supported in this deployment/)
+  assert.deepEqual(command({ action: 'commit', side: 'buy', amount: '1', minimum: '1' }), ['commit', 'buy', '1', '1', '--vault-only', '--both-funded'])
 })
 test('jobs serialize, capture output and release the slot on completion', () => {
   const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough()

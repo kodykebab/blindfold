@@ -1,4 +1,8 @@
-import { jobStage, parseBlockers, parseStatus, parseTrack, preparedBatch } from './status.mjs'
+import {
+  amountLimits, balanceFields, batchPhase, displayPair, explainClientError, fundFirst, liquidityNote, mempoolView,
+  parseBlockers, parsePreflight, parseStatus, parseTrack, presentJob, preparedBatch, reviewChanges,
+  stampQuote, transferCheck, validateAmount,
+} from './status.mjs'
 import { createBackupReminder, createJobStore } from './job-store.mjs'
 import { createWalletView, walletMismatch } from './wallet-view.mjs'
 const output = document.querySelector('#output')
@@ -12,6 +16,7 @@ const jobStore = (() => { try { return createJobStore(localStorage) } catch { re
 const mobile = matchMedia('(max-width: 760px) and (pointer: coarse)')
 const desktopOnly = new Set(['prepare-admission', 'preflight', 'commit', 'deposit', 'cleanup', 'resume-admission', 'backup-import'])
 let busy = false, lastStatus = null, walletState = { wallets: [], selected: null }
+let lastReview = null, confirmAfterReview = false, depositWatch = null, transferBlock = null, queued = null
 const savedJob = () => jobStore.get()
 const saveJob = (id) => jobStore.set(id)
 function setBusy(value) {
@@ -21,6 +26,7 @@ function setBusy(value) {
   document.querySelectorAll('button, input, select').forEach((control) => { control.disabled = value || (mobile.matches && Boolean(control.closest('[data-desktop-only]'))) || (Boolean(mismatch) && Boolean(control.closest('[data-wallet-guard]'))) })
   document.querySelector('#wallet-choice').disabled = value || !walletState.wallets.length
   document.querySelector('#wallet-connect').disabled = value || !walletState.wallets.length
+  if (!value) document.querySelector('#confirm').disabled = !canConfirm()
 
 }
 async function follow(id) {
@@ -33,9 +39,11 @@ async function follow(id) {
         if (result.status === 404) saveJob(null)
         throw Error(result.status === 404 ? 'The local service no longer has this command. Check your state and use Resume admission if a submission was interrupted.' : job.error || 'Could not read command')
       }
-      output.textContent = job.output || 'The local client is working…'
-      if (job.state === 'running') state.textContent = jobStage(job)
+      const view = presentJob(job)
+      output.textContent = view.body
+      if (job.state === 'running') state.textContent = view.title
       if (job.state !== 'running') {
+        if (job.action === 'preflight') showReview(job.output, job.state === 'done')
         if (job.state === 'done' && job.action === 'status') showStatus(job.output)
         if (job.state === 'done' && job.action === 'track') showOrders(job.output)
         if (job.state === 'done' && ['blockers', 'cleanup-preview'].includes(job.action)) showBlockers(job.output)
@@ -48,9 +56,8 @@ async function follow(id) {
           const link = document.createElement('a'); link.href = url; link.download = 'blindfold-backup.json'; link.click()
           setTimeout(() => URL.revokeObjectURL(url), 10000)
           output.textContent = 'A backup download was requested. Save it somewhere private, then mark it saved.'
-        } else if (job.state === 'done' && job.action === 'commit') {
-          output.textContent += '\n\nBack up your private state using Export backup below.'
         }
+        if (job.state === 'done' && job.action === 'deposit') noteDeposit(job.output)
         saveJob(null); state.textContent = job.state === 'done' ? 'COMPLETE' : 'FAILED'; break
       }
       await new Promise((resolve) => setTimeout(resolve, 1000))
@@ -58,7 +65,12 @@ async function follow(id) {
   } catch (e) {
     output.textContent = `${e.message}\n\nThe command may still be running on this machine.`
     state.textContent = 'DISCONNECTED'; reconnect.hidden = !savedJob()
-  } finally { setBusy(false) }
+  } finally {
+    setBusy(false)
+    const next = queued
+    queued = null
+    if (next) await run(next)
+  }
 }
 async function run(input) {
   if (busy) return
@@ -67,7 +79,7 @@ async function run(input) {
   const mismatch = walletMismatch(walletState.selected, lastStatus)
   if (mismatch && guarded.has(input.action)) { output.textContent = mismatch; state.textContent = 'ACCOUNT CHECK'; return }
   if (mobile.matches && desktopOnly.has(input.action)) { output.textContent = 'Use a desktop to run this action.'; state.textContent = 'DESKTOP ONLY'; return }
-  setBusy(true); state.textContent = 'STARTING'; output.textContent = `Starting ${input.action} through the local client…`
+  setBusy(true); state.textContent = 'STARTING'; output.textContent = 'Starting the local client on this machine.'
   try {
     const response = await fetch('/api/trade', { method: 'POST', headers: { 'content-type': 'application/json', 'x-blindfold-request': '1' }, body: JSON.stringify(input) })
     const data = await response.json()
@@ -98,12 +110,14 @@ function showOrders(text) {
   const rows = parseTrack(text)
   if (rows === null) return
   const list = document.querySelector('#order-list'); list.replaceChildren()
-  document.querySelector('#orders-message').textContent = rows.length ? 'Latest status from the settlement contract.' : 'No commitments found for this account.'
+  document.querySelector('#orders-message').textContent = rows.length ? 'Latest status from the settlement contract. Fills can be partial, and unused input stays in the vault.' : 'No commitments found for this account.'
+  const mempool = mempoolView(rows)
+  document.querySelector('#mempool-count').textContent = `${mempool.committed} committed and not yet revealed. ${mempool.note}`
   for (const row of rows) {
     const item = document.createElement('li')
     const title = document.createElement('strong'); title.textContent = `Order #${row.id} · batch ${row.batch}`
     const state = document.createElement('span'); state.className = 'order-state'; state.textContent = row.state
-    const detail = document.createElement('p'); detail.textContent = row.detail
+    const detail = document.createElement('p'); detail.textContent = row.summary || row.detail
     item.append(title, state, detail); list.append(item)
   }
 }
@@ -113,39 +127,172 @@ function showStatus(text) {
   lastStatus = parsed
   renderWallet(walletState)
   document.querySelector('#account-address').textContent = parsed.account
-  document.querySelector('#network-pair').textContent = [parsed.network, parsed.pair].filter(Boolean).join(' · ') || 'Network and pair not reported'
+  const pair = displayPair(parsed)
+  document.querySelector('#network-pair').textContent = [parsed.network, pair.label].filter(Boolean).join(' · ')
+  const [token0, token1] = pair.symbols
+  if (token0 && token1) {
+    labelSide('#side-sell', `Sell ${token0}`, `FOR ${token1}`)
+    labelSide('#side-buy', `Buy ${token0}`, `WITH ${token1}`)
+  }
   document.querySelector('#batch-status').textContent = parsed.batch
   document.querySelector('#preparation-state').textContent = parsed.preparation ?? 'Preparation is not required by this deployment'
   const current = parsed.batch.match(/^batch (\d+) /)
   const batchInput = document.querySelector('#prepare input[name=batch]')
   if (!batchInput.value && current && BigInt(current[1]) + 1n < (1n << 64n)) batchInput.value = String(BigInt(current[1]) + 1n)
   document.querySelector('#open-status').textContent = parsed.open
+  const phase = batchPhase(parsed.deadlines)
+  document.querySelector('#batch-phase').textContent = phase.phase === 'unknown'
+    ? parsed.batch
+    : `${parsed.batch}. Phase: ${phase.phase}. ${phase.deadlines.map((row) => `${row.seconds}s ${row.what}`).join(' · ')}`
   const rows = document.querySelector('#balance-rows'); rows.replaceChildren()
   for (const row of parsed.rows) {
     const section = document.createElement('div'); section.className = 'balance-row'
     const token = document.createElement('strong'); token.textContent = row.token; section.append(token)
-    for (const [name, value] of [['Wallet', row.wallet], ['Available', row.available], ['Reserved', row.reserved], ['Withdrawable', row.withdrawable]]) {
-      const item = document.createElement('span'); item.textContent = `${name}: ${value}`; section.append(item)
+    for (const field of balanceFields(row)) {
+      const item = document.createElement('span'); item.textContent = `${field.label}: ${field.value}`; section.append(item)
     }
     rows.append(section)
   }
   document.querySelector('#deadlines').textContent = parsed.deadlines.join(' · ')
+  const side = document.querySelector('#order input[name=side]:checked')?.value || 'sell'
+  const inputDecimals = decimalsFor(parsed, side === 'sell' ? 'token0' : 'token1')
+  const outputDecimals = decimalsFor(parsed, side === 'sell' ? 'token1' : 'token0')
+  document.querySelector('#amount-limits').textContent = `${amountLimits(inputDecimals)} Minimum out: ${amountLimits(outputDecimals)}`
+  if (depositWatch && parsed.rows.length) {
+    const row = parsed.rows.find((item) => item.token === depositWatch.token || item.token.startsWith(depositWatch.token))
+    const check = row ? transferCheck({ before: depositWatch.before, after: row.available, sent: depositWatch.sent }) : { checked: false }
+    if (check.checked && !check.ok) {
+      transferBlock = check.message
+      output.textContent = check.message
+      state.textContent = 'UNSUPPORTED TOKEN'
+    }
+    depositWatch = null
+  }
   document.querySelector('#balances').hidden = false
+}
+function labelSide(selector, title, small) {
+  const node = document.querySelector(selector)
+  node.replaceChildren(document.createTextNode(`${title} `))
+  const note = document.createElement('small'); note.textContent = small; node.append(note)
+}
+function decimalsFor(parsed, role) {
+  return parsed?.tokens?.find((token) => token.role === role)?.decimals ?? null
+}
+function orderFields() {
+  const data = new FormData(document.querySelector('#order'))
+  return { side: data.get('side'), amount: String(data.get('amount') ?? ''), minimum: String(data.get('minimum') ?? '') }
+}
+function selectedDecimals() {
+  const { side } = orderFields()
+  return {
+    input: decimalsFor(lastStatus, side === 'sell' ? 'token0' : 'token1'),
+    output: decimalsFor(lastStatus, side === 'sell' ? 'token1' : 'token0'),
+  }
+}
+function applyAmountValidity() {
+  const { amount, minimum } = orderFields()
+  const { input, output } = selectedDecimals()
+  const amountBox = document.querySelector('#amount-in')
+  const minimumBox = document.querySelector('#minimum-out')
+  const amountCheck = validateAmount(amount, { decimals: input })
+  const minimumCheck = validateAmount(minimum, { decimals: output })
+  amountBox.setCustomValidity(amountCheck.ok ? '' : amountCheck.message)
+  minimumBox.setCustomValidity(minimumCheck.ok ? '' : minimumCheck.message)
+  document.querySelector('#amount-limits').textContent = `Amount in: ${amountLimits(input)} Minimum out: ${amountLimits(output)}`
+  return amountCheck.ok && minimumCheck.ok
+}
+function showReview(text, finished) {
+  const review = parsePreflight(text)
+  const panel = document.querySelector('#review')
+  const confirm = document.querySelector('#confirm')
+  const quote = document.querySelector('#quote-line')
+  const liquidity = document.querySelector('#liquidity-line')
+  if (!review) {
+    panel.hidden = false
+    panel.textContent = finished ? 'The preview did not include an order this page can show. Review it again.' : explainClientError(text).sentence
+    confirm.disabled = true
+    lastReview = null
+    return
+  }
+  const stamped = { ...review, quote: stampQuote(review.quote) }
+  const block = [transferBlock, fundFirst(stamped), stamped.oneBatch].filter(Boolean).join(' ')
+  if (confirmAfterReview && lastReview) {
+    const changes = reviewChanges(lastReview, stamped)
+    if (changes.length) {
+      panel.hidden = false
+      panel.classList.add('blocked')
+      panel.textContent = `The order changed since the last review.\n${changes.join('\n')}\nReview it again, then confirm.`
+      quote.textContent = stamped.quote ? `${stamped.quote.label}: ${stamped.quote.price}, ${stamped.quote.ageSeconds}s old${stamped.quote.stale ? ' (stale)' : ''}.` : 'Public pool price is not in the client preview, so it is not shown as a live quote.'
+      quote.classList.toggle('stale', Boolean(stamped.quote?.stale))
+      liquidity.textContent = liquidityNote(stamped.liquidity)
+      document.querySelector('#batch-rule').textContent = stamped.oneBatch || 'One batch at a time per account. A new order waits until the current one settles or is released.'
+      confirm.disabled = true
+      confirmAfterReview = false
+      lastReview = stamped
+      return
+    }
+  }
+  lastReview = stamped
+  panel.hidden = false
+  panel.classList.toggle('blocked', !stamped.ok || Boolean(block) || Boolean(stamped.quote?.stale))
+  panel.textContent = presentJob({ state: 'done', action: 'preflight', output: text }).body
+  quote.textContent = stamped.quote
+    ? `${stamped.quote.label}: ${stamped.quote.price} token1 per token0, ${stamped.quote.ageSeconds}s old${stamped.quote.stale ? ' (stale)' : ''}. Shown next to your minimum of ${stamped.minimum}.`
+    : 'Public pool price is not in the client preview, so it is not shown as a live quote.'
+  quote.classList.toggle('stale', Boolean(stamped.quote?.stale))
+  liquidity.textContent = liquidityNote(stamped.liquidity)
+  document.querySelector('#batch-rule').textContent = stamped.oneBatch || 'One batch at a time per account. A new order waits until the current one settles or is released.'
+  const allow = stamped.ok && !block && !stamped.quote?.stale
+  confirm.disabled = !allow
+  if (confirmAfterReview && allow) queued = { action: 'commit', ...orderFields() }
+  confirmAfterReview = false
+}
+function canConfirm() {
+  if (transferBlock || !lastReview?.ok || lastReview.oneBatch || fundFirst(lastReview) || lastReview.quote?.stale) return false
+  return true
+}
+function noteDeposit(text) {
+  const sent = text.match(/deposited (\d+(?:\.\d+)?)/)?.[1]
+  const symbol = text.match(/deposited \d+(?:\.\d+)? (\S+)/)?.[1]
+  const row = lastStatus?.rows?.find((item) => item.token === symbol)
+  if (sent && row) {
+    depositWatch = { token: symbol, before: row.available, sent }
+    queued = { action: 'status' }
+  }
 }
 document.querySelector('#backup-confirm').addEventListener('click', () => showBackupReminder(false))
 const order = document.querySelector('#order')
 function orderAction(action) {
-  if (!order.reportValidity()) return
-  const data = new FormData(order)
-  run({ action, side: data.get('side'), amount: data.get('amount'), minimum: data.get('minimum') })
+  if (!applyAmountValidity() || !order.reportValidity()) return
+  if (transferBlock) { output.textContent = transferBlock; state.textContent = 'UNSUPPORTED TOKEN'; return }
+  const fields = orderFields()
+  if (action === 'commit') {
+    if (!lastReview) { output.textContent = 'Review the order before confirming it.'; state.textContent = 'REVIEW'; return }
+    confirmAfterReview = true
+    run({ action: 'preflight', ...fields })
+    return
+  }
+  confirmAfterReview = false
+  lastReview = null
+  run({ action, ...fields })
 }
+document.querySelector('#amount-in').addEventListener('input', applyAmountValidity)
+document.querySelector('#minimum-out').addEventListener('input', applyAmountValidity)
+document.querySelectorAll('#order input[name=side]').forEach((input) => input.addEventListener('change', () => { lastReview = null; document.querySelector('#confirm').disabled = true; applyAmountValidity() }))
 document.querySelector('#preview').addEventListener('click', () => orderAction('preflight'))
-order.addEventListener('submit', (event) => { event.preventDefault(); orderAction('commit') })
+document.querySelector('#confirm').addEventListener('click', () => orderAction('commit'))
+order.addEventListener('submit', (event) => { event.preventDefault(); orderAction('preflight') })
 document.querySelector('#prepare').addEventListener('submit', (event) => { event.preventDefault(); run({ action: 'prepare-admission', batch: new FormData(event.currentTarget).get('batch') }) })
 document.querySelector('#funds').addEventListener('submit', (event) => {
   event.preventDefault()
   const data = new FormData(event.currentTarget)
-  run({ action: event.submitter.value, token: data.get('token'), amount: data.get('amount') })
+  const token = data.get('token')
+  const amount = String(data.get('amount') ?? '')
+  if (!['token0', 'token1'].includes(token)) { output.textContent = 'That token is not supported in this deployment.'; state.textContent = 'UNSUPPORTED TOKEN'; return }
+  const withdrawingAll = event.submitter.value === 'withdraw' && amount === 'all'
+  const check = validateAmount(amount, { decimals: decimalsFor(lastStatus, token), allowAll: withdrawingAll })
+  if (!check.ok) { output.textContent = check.message; state.textContent = 'AMOUNT'; return }
+  run({ action: event.submitter.value, token, amount })
 })
 document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => run({ action: button.dataset.action })))
 reconnect.addEventListener('click', () => { const id = savedJob(); if (id) follow(id) })
@@ -182,3 +329,48 @@ document.querySelector('#restore-file').addEventListener('change', async (event)
   } catch (e) { output.textContent = e.message; state.textContent = 'FAILED' }
   finally { event.currentTarget.value = '' }
 })
+
+async function loadHistory() {
+  const message = document.querySelector('#history-message')
+  const list = document.querySelector('#history-list')
+  try {
+    const response = await fetch('/api/history', { cache: 'no-store' })
+    const body = await response.json()
+    if (!response.ok || body.unavailable) {
+      message.textContent = 'History unavailable. Trading, tracking and withdrawal still use the chain.'
+      list.replaceChildren()
+      return
+    }
+    message.textContent = body.batches.length ? 'Settled batches mirrored from public chain data.' : 'No settled batches are stored yet.'
+    list.replaceChildren()
+    for (const batch of body.batches) {
+      const item = document.createElement('li')
+      item.textContent = `Batch ${batch.batchId}: clearing price ${batch.clearingPrice}, ${batch.orderCount} orders, settle ${batch.settleTx}`
+      list.append(item)
+    }
+  } catch {
+    message.textContent = 'History unavailable. Trading, tracking and withdrawal still use the chain.'
+  }
+}
+async function loadCourt() {
+  const section = document.querySelector('#court-view')
+  try {
+    const response = await fetch('/api/court', { cache: 'no-store' })
+    const body = await response.json()
+    if (body.hidden) { section.hidden = true; return }
+    section.hidden = false
+    const message = document.querySelector('#court-message')
+    const list = document.querySelector('#court-list')
+    if (body.unavailable) { message.textContent = 'Court ledger unavailable.'; list.replaceChildren(); return }
+    message.textContent = 'Bonds, claims and payouts from BondRegistry events.'
+    list.replaceChildren()
+    for (const row of body.rows ?? []) {
+      const item = document.createElement('li')
+      item.textContent = row
+      list.append(item)
+    }
+  } catch { document.querySelector('#court-view').hidden = true }
+}
+document.querySelector('#history-refresh').addEventListener('click', loadHistory)
+loadHistory()
+loadCourt()

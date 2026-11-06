@@ -1,6 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseStatus, jobStage, preparedBatch, parseTrack, parseBlockers } from './status.mjs'
+import {
+  parseStatus, jobStage, preparedBatch, parseTrack, parseBlockers, displayPair, balanceFields, validateAmount, amountLimits,
+  parseQuote, stampQuote, parsePreflight, reviewChanges, explainClientError, presentJob, transferCheck, fillSummary, liquidityNote,
+  batchPhase, mempoolView, fundFirst, QUOTE_STALE_SECONDS,
+} from './status.mjs'
 
 test('status report preserves actual balances, batch and deadlines', () => {
   const value = parseStatus(`account 0x1111111111111111111111111111111111111111\nnetwork 31337\npair TKA / TKB\n  TKA    wallet 100 TKA | available 5 TKA | reserved 10 TKA | withdrawable 0 TKA\n  TKB    wallet 2 TKB | available 1 TKB | reserved 0 TKB | withdrawable 0 TKB\n  open commitments: 1 (withdrawals blocked)\nbatch 7 (chain time 1234)\n    20s commits close\n    -4s reveal opens\npreparation: prepared for batch 8\n`)
@@ -37,6 +41,123 @@ test('tracking displays reported states and distinguishes explicitly reported pa
   assert.match(rows[1].detail, /4 TKA of 10 TKA/)
   assert.deepEqual(parseTrack('no commitments'), [])
   assert.equal(parseTrack('unrecognized result'), null)
+})
+
+test('pair display uses symbols and shortens addresses', () => {
+  const named = parseStatus(`account 0x1111111111111111111111111111111111111111\nnetwork 31337\npair TKA / TKB\n  TKA    wallet 1 TKA | available 1 TKA | reserved 0 TKA | withdrawable 1 TKA\n  TKB    wallet 1 TKB | available 1 TKB | reserved 0 TKB | withdrawable 1 TKB\n  open commitments: 0\nbatch 1 (chain time 1)\n`)
+  assert.deepEqual(displayPair(named), { label: 'TKA / TKB', symbols: ['TKA', 'TKB'], source: 'symbol' })
+  const addressed = parseStatus(`account 0x1111111111111111111111111111111111111111\nnetwork 31337\npair 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa / 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n  0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa    wallet 1 A | available 1 A | reserved 0 A | withdrawable 1 A\n  0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb    wallet 1 B | available 1 B | reserved 0 B | withdrawable 1 B\n  open commitments: 0\nbatch 1 (chain time 1)\n`)
+  assert.equal(displayPair(addressed).label, '0xaaaa…aaaa / 0xbbbb…bbbb')
+  assert.equal(displayPair(addressed).source, 'address')
+  assert.equal(named.tokens.length, 0)
+  const withMeta = parseStatus(`${named ? '' : ''}account 0x1111111111111111111111111111111111111111\nnetwork 1\npair TKA / TKB\ntoken0 TKA 18 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ntoken1 TKB 6 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n  TKA    wallet 1 TKA | available 1 TKA | reserved 0 TKA | withdrawable 1 TKA\n  TKB    wallet 1 TKB | available 1 TKB | reserved 0 TKB | withdrawable 1 TKB\n  open commitments: 0\nbatch 1 (chain time 1)\n`)
+  assert.equal(withMeta.tokens[1].decimals, 6)
+})
+
+test('balance fields keep wallet, vault, reserved and withdrawable apart', () => {
+  const fields = balanceFields({ wallet: '1 TKA', available: '2 TKA', reserved: '3 TKA', withdrawable: '0 TKA' })
+  assert.deepEqual(fields.map((field) => field.label), ['Wallet', 'Available (vault)', 'Reserved (open commitments)', 'Withdrawable'])
+  assert.equal(fields[2].value, '3 TKA')
+})
+
+test('amount validator rejects extra precision and the uint128 cap without rounding', () => {
+  assert.match(amountLimits(6), /6 decimal places/)
+  assert.match(amountLimits(null), /not in the client status/)
+  assert.equal(validateAmount('1.123456', { decimals: 6 }).ok, true)
+  assert.match(validateAmount('1.1234567', { decimals: 6 }).message, /not rounded/)
+  assert.match(validateAmount('1.1234567890123456789', { decimals: null }).message, /not round/)
+  assert.match(validateAmount('0', { decimals: 18 }).message, /1 base unit/)
+  assert.match(validateAmount('1e2', { decimals: 18 }).message, /plain decimal/)
+  assert.equal(validateAmount('all', { allowAll: true }).ok, true)
+  const huge = `${'9'.repeat(40)}`
+  assert.match(validateAmount(huge, { decimals: 0 }).message, /uint128/)
+  assert.equal(validateAmount('1', { decimals: 18 }).capChecked, true)
+})
+
+test('quote parser prefers the external reference and marks it stale', () => {
+  const now = 10_000
+  const quote = parseQuote('quote pool 1.10 age 3s\nquote external 1.20 age 4s\n', now)
+  assert.equal(quote.source, 'external')
+  assert.equal(quote.price, '1.20')
+  assert.equal(quote.stale, false)
+  const later = stampQuote(quote, now + (QUOTE_STALE_SECONDS + 2) * 1000)
+  assert.equal(later.stale, true)
+  assert.equal(later.ageSeconds, 4 + QUOTE_STALE_SECONDS + 2)
+  assert.equal(parseQuote('order: sell 1 TKA for at least 1 TKB in batch 1'), null)
+})
+
+const PREVIEW = `order: sell 10 TKA for at least 9 TKB in batch 7
+costs: deposit 5 DT (returned minus the revealer's bounty when revealed), fee 0.1 DT
+funding TKA: need 10 TKA, vault free 8 TKA, deposit 2 TKA first (needs approval)
+funding DT: need 5.1 DT, vault free 5.1 DT
+    20s  commits close
+    26s  drand round out: anyone can reveal
+quote pool 1.5 age 2s
+liquidity 1000 estimate 9.2 TKB
+gas estimate 180000
+dry run: nothing sent`
+
+test('preflight review restates the order, fee, deposit, approval and gas', () => {
+  const review = parsePreflight(PREVIEW, 0)
+  assert.equal(review.side, 'sell')
+  assert.equal(review.minimum, '9 TKB')
+  assert.equal(review.batch, '7')
+  assert.equal(review.fee, '0.1 DT')
+  assert.match(review.depositReturn, /reveal/)
+  assert.equal(review.funding[0].approval, true)
+  assert.equal(review.funding[0].shortfall, '2 TKA')
+  assert.equal(review.gas, '180000')
+  assert.equal(review.quote.price, '1.5')
+  assert.match(liquidityNote(review.liquidity), /estimate, not guaranteed/i)
+  assert.match(fundFirst(review), /Fund first: deposit 2 TKA/)
+  assert.equal(review.ok, false)
+})
+
+test('a changed balance or a stale quote requires another confirm', () => {
+  const before = parsePreflight(PREVIEW, 0)
+  const after = parsePreflight(PREVIEW.replace('vault free 8 TKA', 'vault free 7 TKA').replace('age 2s', 'age 40s'), 0)
+  const changes = reviewChanges(before, after)
+  assert.match(changes.join('\n'), /Available TKA changed from 8 TKA to 7 TKA/)
+  assert.match(changes.join('\n'), /stale/)
+})
+
+test('one active batch is a submission block with a reason', () => {
+  const text = `${PREVIEW}\npreflight failed:\n  open commitments in batch 3: one active batch per account; wait for it to finish or run cleanup`
+  const review = parsePreflight(text, 0)
+  assert.match(review.oneBatch, /batch 3/)
+  assert.match(explainClientError(text).next, /cleanup/)
+})
+
+test('partial fills report executed and unused input from the fill numbers', () => {
+  const rows = parseTrack('#1 batch 2: filled (sell 10) → got 3 TKB [partial fill: 4 TKA of 10 TKA]')
+  assert.equal(rows[0].fill.unused, '6 TKA')
+  assert.match(fillSummary(rows[0].fill), /Executed 4 TKA of 10 TKA/)
+  assert.match(rows[0].summary, /stays in the vault/)
+  assert.doesNotMatch(rows[0].summary, /→ got/)
+})
+
+test('client errors become a sentence and a next step', () => {
+  const shown = presentJob({ state: 'failed', action: 'commit', output: 'client: fund the required vault balances before trading; automatic deposits are disabled' })
+  assert.match(shown.body, /will not deposit/)
+  assert.doesNotMatch(shown.body, /client:/)
+  assert.match(presentJob({ state: 'running', action: 'commit', output: 'generating the online admission proof locally…' }).body, /proving/)
+  assert.match(explainClientError('client: unknown token USDC; use token0 or token1').sentence, /not supported/)
+})
+
+test('a short vault credit is treated as a fee-on-transfer or rebasing token', () => {
+  const bad = transferCheck({ before: '1 TKA', after: '1.5 TKA', sent: '1' })
+  assert.equal(bad.ok, false)
+  assert.match(bad.message, /Fee-on-transfer/)
+  assert.equal(transferCheck({ before: '1 TKA', after: '2 TKA', sent: '1' }).ok, true)
+  assert.equal(transferCheck({ before: 'n/a', after: '2 TKA', sent: '1' }).checked, false)
+})
+
+test('batch phase and mempool use only public schedule and counts', () => {
+  assert.equal(batchPhase(['20s commits close', '26s drand round out: anyone can reveal']).phase, 'committing')
+  assert.equal(batchPhase(['-2s commits close', '-1s drand round out: anyone can reveal', '10s reveal window ends']).phase, 'reveal window')
+  const view = mempoolView([{ state: 'committed' }, { state: 'revealed' }, { state: 'committed' }])
+  assert.equal(view.committed, 2)
+  assert.match(view.note, /count only/)
 })
 
 test('withdrawal blockers preserve the actual action and policy explanation', () => {
