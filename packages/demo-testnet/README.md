@@ -49,26 +49,51 @@ anvil tips 1 gwei per transaction, about 700 times Unichain Sepolia's tip. A for
 
 ## Run the demo
 
+The order follows CONTEXT.md's demo script. Every command runs from `packages/demo-testnet` with `RPC_URL` and `DEMO_MNEMONIC` set (both are read from `.env`).
+
+### 1. The problem: a normal swap gets sandwiched
 Terminal 1: the sniper, which also serves the mempool the victims send through (`http://127.0.0.1:8546`):
 ```bash
 npm run sniper
 ```
-
-Scene 1, unprotected swaps. Each victim loses about its whole slippage to a front/back pair in the same block:
+Terminal 2:
 ```bash
 npm run traffic -- swap
 ```
+Each victim loses about its whole slippage to a front-run and back-run in the same block. The sniper prints its profit, and every transaction gets a Uniscan link.
 
-Scene 2, Blindfold. Start the keeper and solver against the testnet deployment first:
+### 2. Blindfold: the same bot finds nothing
 ```bash
-(cd ../keeper && RPC_URL=$RPC_URL DEPLOYMENTS=../../deployments/blindfold.testnet.json MNEMONIC="$DEMO_MNEMONIC" npm start)
-(cd ../solver && RPC_URL=$RPC_URL DEPLOYMENTS=../../deployments/blindfold.testnet.json MNEMONIC="$DEMO_MNEMONIC" npm start)
-npm run traffic -- blindfold
+npm run traffic -- blindfold --settle
 ```
-The victims deposit and commit at the same time, so every order lands in one batch. If the open batch closes within 15 s, they wait for the next one.
-The sniper sees each commit and fails to decrypt it ("too early to decrypt"). It then tries to swap on the sealed pool and gets `OnlySettlement` from the pool's hook. About a minute later the keeper reveals the batch, and the solver settles every order at one price.
+- The victims deposit and commit at once, so every order lands in one batch. If the open batch closes within 15 s, they wait for the next one.
+- The sniper sees each commit and can't decrypt it ("too early to decrypt"). Its front-run on the sealed pool reverts with `OnlySettlement` from the pool's hook. Once per batch it lands that attempt onchain, so the revert has a Uniscan link (`SNIPER_ONCHAIN=0` only simulates it).
+- `--settle` then runs the keeper (account 1) and the solver (account 2) once each. The keeper reveals after the drand round, and the solver settles every order at one price. Each victim's fill is printed.
+- Without `--settle`, run them as services in their own terminals:
+```bash
+(cd ../keeper && DEPLOYMENTS=../../deployments/blindfold.testnet.json MNEMONIC="$DEMO_MNEMONIC" npm start)
+(cd ../solver && DEPLOYMENTS=../../deployments/blindfold.testnet.json MNEMONIC="$DEMO_MNEMONIC" npm start)
+```
 
-Each account can hold commitments in one open batch at a time. Wait for the batch to settle before you run scene 2 again.
+### 3. The user stories, scenario by scenario
+`scenarios.mjs` plays STORIES.md's acceptance scenarios on the testnet deployment. Each prints the story IDs it covers and the evidence the story asks for. Stop any keeper or solver service first: the scenarios run them once each when work is due, and the outage scenario needs them absent.
+
+| Command | Stories | What happens |
+|---|---|---|
+| `npm run scenario -- first-trade` | T01–T05, T10, T11, T14 | victim1 reviews balances and a dry run (limit, fee, deposit, funding, deadlines). It commits and goes offline. The keeper reveals, the solver settles, and victim1 withdraws. |
+| `npm run scenario -- repeat` | T08, T14 | victim2 places two orders in one batch, then a third paid from the vault proceeds with no tokens leaving the wallet. |
+| `npm run scenario -- restore` | T15 | victim3's private state is deleted after it commits. `restore-backup` brings it back from the encrypted backup, and victim3 reveals its own order. |
+| `npm run scenario -- no-fill` | T03, T11–T14 | victim4's limit can't be met, so its order stays unfilled while another order in the batch fills. `resubmit --dry-run` shows the replacement, then everything withdraws. |
+| `npm run scenario -- outage` | T10, T12, O01, O03 | The solver is down, and after the 15 s grace period the keeper settles with the solver's own search. Then the keeper and solver are both down: victim5 reveals its own order, and the batch expires and unlocks. |
+| `npm run scenario -- griefers` | O01, O02 | A commitment of random bytes is slashed after the reveal window. A clearing price 50% off the pool reverts onchain (Uniscan link), and the honest solver settles the same batch. |
+| `npm run scenario -- all` | all of the above | About 20 minutes with 60 s batches. |
+
+Each account can hold commitments in only one open batch at a time. Scenarios use different victims; rerun one only after its last batch has settled or expired.
+
+### Not on the testnet
+- **Proof-backed admission (T06, T07, T09):** the testnet deployment uses `admission: off`, because a real proof takes minutes per order. `scripts/e2e.sh --real-proof` covers these locally.
+- **Court (C01–C04):** `scripts/court-demo.sh` runs the covered sandwich, claim and collection on a local chain.
+- **Multi-token batches (G01):** `packages/global-auction`.
 
 ## Env
 
@@ -77,6 +102,7 @@ Each account can hold commitments in one open batch at a time. Wait for the batc
 | `RPC_URL` | `https://sepolia.unichain.org` |
 | `POOL_MANAGER` | Uniswap's on Unichain Sepolia; elsewhere, or `new`, deploys one |
 | `MEMPOOL_PORT` | `8546` |
+| `SNIPER_ONCHAIN` | `1`: land one reverted front-run per batch; `0` simulates only |
 | `FUND_ETH` / `POOL_ETH` / `BOT_ETH` | `0.01` / `0.02` / `0.02` ETH |
 | `SWAP_ETH` / `SLIPPAGE_BPS` | `0.004` ETH / `300` |
 | `BATCH_SECONDS` / `DEPOSIT` / `VICTIM_TOKENS` / `SEALED_LIQUIDITY` / `ORDER_SIZE` | `60` / `1` / `1000` / `10000` / `10` |

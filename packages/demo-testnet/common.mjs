@@ -74,4 +74,6 @@ export async function mined(hash) {
 }
 export const same = (a, b) => a?.toLowerCase() === b?.toLowerCase()
 export const eth = (wei) => `${formatEther(wei)} ETH`
+// Uniscan on Unichain Sepolia; elsewhere the bare hash
+export const explorerTx = (hash) => (chain.id === 1301 ? `https://sepolia.uniscan.xyz/tx/${hash}` : hash)
 export { poolIdOf } from './lib.mjs'

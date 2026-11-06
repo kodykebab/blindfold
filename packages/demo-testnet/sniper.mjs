@@ -4,13 +4,14 @@
 //     sends it with a higher tip, lets the victim through, then sends the back leg selling everything it bought.
 //   - A Blindfold commit: the order is a tlock ciphertext to a future drand round. The bot tries to decrypt it,
 //     can't, sees no side, size or limit. It then tries to front-run the batch's sealed pool blind anyway; the
-//     pool's hook lets only the settlement swap, so that reverts too.
+//     pool's hook lets only the settlement swap, so that reverts too. Once per batch it lands the attempt onchain, so the
+//     revert has an explorer link (SNIPER_ONCHAIN=0 only simulates).
 // Run it in its own terminal for the whole demo:  npm run sniper
 import { createServer } from 'node:http'
 import { decodeErrorResult, decodeFunctionData, formatEther, parseAbi, parseTransaction, recoverTransactionAddress } from 'viem'
 import { planSandwich } from '../demo-bots/lib.mjs'
 import {
-  BLINDFOLD_FILE, MEMPOOL_PORT, ROLES, RPC_URL, SANDWICH_FILE, account, artifact, eth, mined, poolIdOf, pub, same, wallet,
+  BLINDFOLD_FILE, MEMPOOL_PORT, ROLES, RPC_URL, SANDWICH_FILE, account, artifact, eth, mined, poolIdOf, pub, same, wallet, explorerTx,
 } from './common.mjs'
 import { readFileSync, existsSync } from 'node:fs'
 
@@ -78,6 +79,7 @@ async function front(demo, tx) {
     const profit = (await pub.getBalance({ address: demo.bot })) - before
     const gas = f.gasUsed * f.effectiveGasPrice + b.gasUsed * b.effectiveGasPrice
     log(RED(`SANDWICHED: front block ${f.blockNumber}#${f.transactionIndex}, victim ${v.blockNumber}#${v.transactionIndex}, back ${b.blockNumber}#${b.transactionIndex}; bot profit ${eth(profit)} (${eth(profit - gas)} after gas)`))
+    log(RED(`  front ${explorerTx(f.transactionHash)}\n  back  ${explorerTx(b.transactionHash)}`))
   }
 }
 
@@ -93,13 +95,21 @@ async function sealed(tx, dep) {
     log(GREEN(`bot: can't decrypt (${e.message.split('\n')[0]}). No side, size or limit price`))
   }
   if (!dep.poolKey) return
+  const attempt = { address: load(SANDWICH_FILE).bot, abi: [...BOT.abi, ...ERRORS], functionName: 'swap', args: [dep.poolKey, true, 10n ** 18n] }
   try {
-    await pub.simulateContract({ account: owner, address: load(SANDWICH_FILE).bot, abi: [...BOT.abi, ...ERRORS], functionName: 'swap', args: [dep.poolKey, true, 10n ** 18n] })
+    await pub.simulateContract({ account: owner, ...attempt })
     log(RED('bot: the sealed pool accepted an outside swap?!'))
   } catch (e) {
     log(GREEN(`bot: tried to front-run the sealed pool blind: reverted ${why(e)}. Nothing to sandwich`))
+    // once per batch, land the attempt for real so the revert shows in the explorer (SNIPER_ONCHAIN=0: simulate only)
+    if ((process.env.SNIPER_ONCHAIN ?? '1') === '0' || tried.has(batchId)) return
+    tried.add(batchId)
+    const hash = await wallet(owner).writeContract({ ...attempt, gas: 500_000n }) // fixed gas: estimation would refuse a revert
+    const rc = await pub.waitForTransactionReceipt({ hash })
+    log(GREEN(`bot: its onchain front-run attempt ${rc.status === 'success' ? 'SUCCEEDED?!' : 'reverted'}: ${explorerTx(hash)}`))
   }
 }
+const tried = new Set() // batches the bot already attacked onchain
 
 async function sendRaw(raw) {
   const tx = parseTransaction(raw)

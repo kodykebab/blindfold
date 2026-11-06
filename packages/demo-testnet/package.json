@@ -7,6 +7,7 @@
     "deploy": "node deploy.mjs",
     "sniper": "node sniper.mjs",
     "traffic": "node traffic.mjs",
+    "scenario": "node scenarios.mjs",
     "start": "node sniper.mjs",
     "test": "node --test"
   },

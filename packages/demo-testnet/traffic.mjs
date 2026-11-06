@@ -1,19 +1,21 @@
 // Victim traffic, sent through the sniper's mempool (MEMPOOL_URL). Run `npm run sniper` first.
 //   npm run traffic -- swap [n]        scene 1: n victims (default all) each swap SWAP_ETH (0.004) ETH for DEMO on the
 //                                      plain pool with SLIPPAGE_BPS (300) slippage; prints each one's loss vs its quote
-//   npm run traffic -- blindfold [n]   scene 2: n victims commit sealed orders to the open Blindfold batch through the
+//   npm run traffic -- blindfold [n] [--settle]
+//                                      scene 2: n victims commit sealed orders to the open Blindfold batch through the
 //                                      client CLI, alternating sell/buy of ORDER_SIZE (10) tokens so they cross.
-//                                      Run the keeper and solver against deployments/blindfold.testnet.json to settle.
-import { execFile } from 'node:child_process'
+//                                      --settle then runs the keeper and the solver once each (accounts 1 and 2) and
+//                                      prints every victim's fill; without it, run them as services to settle.
 import { formatEther, parseEther } from 'viem'
 import {
-  BLINDFOLD_FILE, E, MEMPOOL_URL, MNEMONIC, RPC_URL, SANDWICH_FILE, VICTIMS, account, artifact, here, mined, pub, readJson,
+  BLINDFOLD_FILE, E, MEMPOOL_URL, RPC_URL, SANDWICH_FILE, VICTIMS, account, artifact, explorerTx, mined, pub, readJson,
   victimIndex, wallet,
 } from './common.mjs'
+import { cli as clientAs, openBatch, revealBatch, settleBatch } from './flow.mjs'
+import { parseTrack } from './lib.mjs'
 
 const ROUTER = artifact('DemoSwap.sol', 'DemoRouter')
 const ERC20 = artifact('MockERC20.sol', 'MockERC20')
-const SETTLEMENT = artifact('BlindfoldSettlement.sol', 'BlindfoldSettlement')
 
 async function swap(n = VICTIMS) {
   const demo = readJson(SANDWICH_FILE, 'Run `npm run deploy` first.')
@@ -35,23 +37,17 @@ async function swap(n = VICTIMS) {
     const got = (await pub.readContract({ address: demo.token, abi: ERC20.abi, functionName: 'balanceOf', args: [victim.address] })) - before
     lost += quote - got
     const pct = Number(((quote - got) * 10_000n) / quote) / 100
-    console.log(`victim${i + 1}: quoted ${formatEther(quote)} DEMO, got ${formatEther(got)} (${pct}% lost) block ${rc.blockNumber} ${hash}`)
+    console.log(`victim${i + 1}: quoted ${formatEther(quote)} DEMO, got ${formatEther(got)} (${pct}% lost) block ${rc.blockNumber} ${explorerTx(hash)}`)
     await new Promise((r) => setTimeout(r, 3000)) // let the bot's back leg land before the next victim quotes
   }
   console.log(`total lost to the sandwich bot: ${formatEther(lost)} DEMO`)
 }
 
-const cli = (i, args) => new Promise((resolve) => {
-  execFile(process.execPath, [here('../client/cli.mjs'), ...args], {
-    env: {
-      ...process.env, RPC_URL: MEMPOOL_URL, DEPLOYMENTS: BLINDFOLD_FILE, MNEMONIC, CLIENT_ACCOUNT_INDEX: String(victimIndex(i)),
-      CLIENT_STATE: here('.state/client'),
-    },
-  }, (e, out, err) => resolve({ code: e ? e.code ?? 1 : 0, out, err }))
-})
+// victims send through the sniper's mempool, so the bot sees every commit
+const cli = (i, args) => clientAs(victimIndex(i), args, { RPC_URL: MEMPOOL_URL })
 
-async function blindfold(n = VICTIMS) {
-  const dep = readJson(BLINDFOLD_FILE, 'Run `npm run deploy` first.')
+async function blindfold(n = VICTIMS, settle = false) {
+  readJson(BLINDFOLD_FILE, 'Run `npm run deploy` first.')
   const size = E.ORDER_SIZE || '10'
   const min = String(Number(size) * 0.9)
   const victims = Array.from({ length: n }, (_, i) => i)
@@ -63,26 +59,28 @@ async function blindfold(n = VICTIMS) {
       if (d.code) console.log(`victim${i + 1} deposit ${t} FAILED\n${d.err || d.out}`)
     }
   }))
-  const read = (functionName, args) => pub.readContract({ address: dep.settlement, abi: SETTLEMENT.abi, functionName, args })
-  const batch = await read('currentBatch')
-  const left = Number(await read('commitsClose', [batch])) - Number((await pub.getBlock()).timestamp)
-  if (left < 15) {
-    console.log(`batch ${batch} closes in ${left} s; waiting for the next one`)
-    await new Promise((r) => setTimeout(r, (left + 2) * 1000))
-  }
+  const batch = await openBatch(15n)
   await Promise.all(victims.map(async (i) => {
     const side = i % 2 ? 'buy' : 'sell'
     const r = await cli(i, ['commit', side, size, min])
     console.log(`victim${i + 1} sealed ${side} ${size} (min ${min}): ${r.code ? `FAILED\n${r.err || r.out}` : r.out.trim().split('\n').at(-1)}`)
   }))
-  console.log(`orders are sealed until the batch's drand round; keeper + solver on ${RPC_URL} reveal and settle them`)
+  console.log(`orders are sealed until batch ${batch}'s drand round; keeper + solver on ${RPC_URL} reveal and settle them`)
+  if (!settle) return
+  await revealBatch(batch, n)
+  await settleBatch(batch)
+  for (const i of victims) {
+    const mine = parseTrack((await cli(i, ['track'])).out).filter((c) => c.batch === Number(batch))
+    for (const c of mine) console.log(`victim${i + 1} #${c.id}: ${c.state} (${c.what})${c.fill ? ` ${c.fill}` : ''}`)
+  }
 }
 
-const [cmd, arg] = process.argv.slice(2)
+const [cmd, ...rest] = process.argv.slice(2)
 const commands = { swap, blindfold }
 if (!commands[cmd]) {
-  console.error(`usage: npm run traffic -- ${Object.keys(commands).join(' | ')} [n]`)
+  console.error(`usage: npm run traffic -- ${Object.keys(commands).join(' | ')} [n] [--settle]`)
   process.exit(2)
 }
-await commands[cmd](arg ? Number(arg) : undefined)
+const n = rest.find((a) => /^\d+$/.test(a))
+await commands[cmd](n ? Number(n) : undefined, rest.includes('--settle'))
 process.exit(0) // open keep-alive sockets to the mempool proxy would hold the process

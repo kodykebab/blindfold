@@ -23,3 +23,7 @@ export function drandSchedule(now, batchSeconds) {
   const len = BigInt(batchSeconds)
   return { start: now - ((now - DRAND_GENESIS) % 3n), batchLength: len - (len % 3n), revealLength: 30n, settleLength: 60n }
 }
+
+/** The client's `track` lines: "#id batch b: state (what)" plus " → got X" for a fill. */
+export const parseTrack = (out) => [...out.matchAll(/^#(\d+) batch (\d+): (\w+) \((.*?)\)(.*)$/gm)]
+  .map(([, id, batch, state, what, rest]) => ({ id: Number(id), batch: Number(batch), state, what, fill: rest.trim() }))

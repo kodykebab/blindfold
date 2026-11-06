@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { getCreate2Address, keccak256, zeroAddress } from 'viem'
-import { DRAND_GENESIS, drandSchedule, mineHookSalt, poolIdOf } from '../lib.mjs'
+import { DRAND_GENESIS, drandSchedule, mineHookSalt, parseTrack, poolIdOf } from '../lib.mjs'
 
 test('poolIdOf matches a live mainnet v4 pool (ETH/USDC 0.05%)', () => {
   const key = { currency0: zeroAddress, currency1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', fee: 500, tickSpacing: 10, hooks: zeroAddress }
@@ -23,4 +23,18 @@ test('drandSchedule sits on the 3 s drand grid', () => {
     assert.ok(s.start <= now && now - s.start < 3n)
     assert.equal(s.batchLength, 60n)
   }
+})
+
+test('parseTrack reads the client\'s track lines, fills included', () => {
+  const out = [
+    'account 0xabc',
+    '#3 batch 7: filled (sell 10000000000000000000) → got 9.97 dUSD [full fill: 10 dWETH of 10 dWETH]',
+    '#4 batch 7: unfilled (buy 10000000000000000000)',
+    '#5 batch 8: committed (sealed)',
+  ].join('\n')
+  assert.deepEqual(parseTrack(out), [
+    { id: 3, batch: 7, state: 'filled', what: 'sell 10000000000000000000', fill: '→ got 9.97 dUSD [full fill: 10 dWETH of 10 dWETH]' },
+    { id: 4, batch: 7, state: 'unfilled', what: 'buy 10000000000000000000', fill: '' },
+    { id: 5, batch: 8, state: 'committed', what: 'sealed', fill: '' },
+  ])
 })
