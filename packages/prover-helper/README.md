@@ -13,10 +13,16 @@ bash packages/prover-helper/install.sh            # extension ID eaoidifkamkmkbc
 bash packages/prover-helper/install.sh <extension-id> [chromium-user-data-dir ...]
 bash packages/prover-helper/uninstall.sh [chromium-user-data-dir ...]
 ```
-`install.sh` builds `bin/blindfold-prover-helper`, writes `bin/config.json` (extension ID, absolute paths to
-`local-prover` and the parameters, and the parameters' manifest SHA-256), and registers `xyz.blindfold.prover.json`
+`npm start --silent -- chrome-extension://eaoidifkamkmkbcomcbpldjlhipogdgo/` starts the installed native host
+with framed stdin/stdout for manual protocol checks. Chrome normally launches it directly.
+
+`install.sh` builds `blindfold-prover-helper` and writes `config.json` in
+`~/Library/Application Support/Blindfold/Prover` on macOS or
+`${XDG_DATA_HOME:-~/.local/share}/blindfold/prover` on Linux. It copies the prover and pinned parameter files into
+that directory's `runtime/` folder, so the installed host works independently of the source checkout. The config
+contains the extension ID, installed runtime paths and manifest SHA-256. The script registers `xyz.blindfold.prover.json`
 with `allowed_origins` set to that one extension. `ADMISSION_PROVER` and `ADMISSION_PARAMS` override the prover and
-parameter paths, as for the client; `INSTALL_DIR` overrides `bin/`. Re-run it after regenerating parameters: the
+source parameter paths, as for the client; `INSTALL_DIR` overrides the installation directory. Re-run it after regenerating parameters: the
 helper refuses parameters whose manifest hash differs from the one pinned at install.
 
 It registers the host per user, in each installed browser's `NativeMessagingHosts` folder (D7). A browser that isn't
@@ -57,7 +63,7 @@ cd packages/prover-helper && go test -count=1 .        # or npm test; offline, u
 ADMISSION_PARAMS=$PWD/../proof-bench/results/admission-params go test -count=1 -v -run TestRealProofsVerifyOnchain .
 ```
 The offline tests cover framing and oversized messages, origin refusal, protocol and parameter-hash refusal,
-sessions, witness cleanup after disconnect, `SIGTERM` and `SIGKILL` mid-proof, and the installer. The opt-in test
+sessions, witness cleanup after disconnect, `SIGTERM` and `SIGKILL` mid-proof, and an installation that keeps working after its source prover and parameters are moved. The opt-in test
 proves a real order through the helper and verifies both proofs with the generated Solidity verifiers on an isolated
 anvil (port 8562), deriving the public inputs from the journals as `AdmissionProof.verify` does. It needs `anvil`,
 `cast` and the verifier artifacts that `check-admission.sh` builds. Measurements: [MEASUREMENTS.md](MEASUREMENTS.md).

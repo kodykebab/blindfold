@@ -21,7 +21,8 @@ Implemented in `packages/prover-helper/main.go` (tests: `main_test.go`); the ext
 
 - **Host.** Name `xyz.blindfold.prover`; host manifest `allowed_origins: ["chrome-extension://eaoidifkamkmkbcomcbpldjlhipogdgo/"]`
   only. The helper also checks the caller origin Chrome passes as its first argument (`E_ORIGIN`). `install.sh` writes
-  the manifest and a `config.json` next to the binary: `{ extensionId, prover, params, manifestSha256 }` (absolute paths).
+  the manifest and a `config.json` next to the binary: `{ extensionId, prover, params, manifestSha256 }` (absolute installed paths). Runtime assets
+  are copied into the installation directory; the host does not read the source checkout.
 - **Framing.** Chrome native messaging: 4-byte little-endian length, then UTF-8 JSON. At most 1 MB each way, requests
   included (`E_TOO_LARGE`).
 - **Envelope.** Request `{ "id": string, "cmd": string, ... }`. Response `{ "id", "ok": true, "result": {...} }` or
@@ -40,7 +41,7 @@ Implemented in `packages/prover-helper/main.go` (tests: `main_test.go`); the ext
 `install.sh`), `E_TOO_LARGE`, `E_BAD_REQUEST` (not JSON, unknown `cmd`), `E_VERSION` (`protocol` is not 1), `E_PARAMS`
 (manifest differs from the pinned one, or parameter files changed), `E_CHAIN` (development parameters: chain 31337
 only), `E_SESSION` (no matching `prepare` on this port), `E_PROVER` (local-prover failed; for `prepare` the message
-may carry its validation error, never witness values), `E_TIMEOUT` (1 min fixture, 10 min proof), `E_CANCELLED`
+may carry its validation error, never witness values), `E_TIMEOUT` (1 min fixture, 10 min proof; extension transport deadlines: 15 s hello, 12 min prepare, 11 min online), `E_CANCELLED`
 (helper shutting down), `E_INTERNAL`.
 
 **Privacy.** The order, salt and blinding cross this port because the proof needs them; they stay on the machine. The

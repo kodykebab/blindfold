@@ -20,8 +20,11 @@ test('calls are matched by id on one port until close()', async () => {
   h.close()
   assert.ok(ports[0].disconnected)
   await assert.rejects(c, /closed/)
-  h.call('hello')
+  const reopened = h.call('hello')
   assert.equal(ports.length, 2) // reopened on demand
+  ports[1].emit({ id: ports[1].posted[0].id, ok: true, result: { protocol: 1 } })
+  assert.deepEqual(await reopened, { protocol: 1 })
+  h.close()
 })
 
 test('a host that exits rejects every pending call with install advice', async () => {
@@ -30,4 +33,11 @@ test('a host that exits rejects every pending call with install advice', async (
   const a = h.call('prove')
   p.drop()
   await assert.rejects(a, /prover helper disconnected.*install\.sh/)
+})
+
+test('an unresponsive native host times out and is disconnected', async () => {
+  const p = fakePort()
+  const h = helper(() => p, { hello: 10 })
+  await assert.rejects(h.call('hello'), (e) => e.code === 'E_TIMEOUT' && /timed out during hello/.test(e.message))
+  assert.equal(p.disconnected, true)
 })

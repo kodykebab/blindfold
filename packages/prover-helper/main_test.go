@@ -239,6 +239,17 @@ func TestInstallScript(t *testing.T) {
 	if st, err := os.Stat(filepath.Join(bin, "config.json")); err != nil || st.Mode().Perm() != 0600 {
 		t.Fatalf("config.json: %v %v", st, err)
 	}
+	var installed config
+	data, err := os.ReadFile(filepath.Join(bin, "config.json"))
+	if err != nil || json.Unmarshal(data, &installed) != nil || installed.Prover != filepath.Join(bin, "runtime", "local-prover") || installed.Params != filepath.Join(bin, "runtime", "params") {
+		t.Fatalf("runtime config: %v %s", err, data)
+	}
+	// Installed native messaging must still work after the source checkout is moved or becomes inaccessible.
+	for _, source := range []string{filepath.Join(filepath.Dir(s.params), "local-prover"), s.params} {
+		if err := os.Rename(source, source+".moved"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	h := startArgs(t, setup{dir: bin}, []string{"chrome-extension://" + testID + "/"}, nil)
 	if r := h.call(map[string]any{"cmd": "hello"}); !r.OK || r.Result["manifestSha256"] != s.pin {
 		t.Fatalf("installed host hello: %+v", r)
