@@ -141,3 +141,8 @@ Still needs a person: an Arkiv access key inside `ARKIV_RPC`, and tGLM for the `
 ### Requests from orders-ui (rule 8)
 - None. All interfaces and schemas required for Section 5 are fully implemented and integrated.
 
+
+## Requests from the release stack (Bhoumik's session, 2026-11-07)
+
+- **@kodykebab — `contracts/test/ExternalEthereumFork.t.sol` is time-dependent.** With `ETH_FORK_BLOCK` unset it forks the live tip, and two tests (`test_ethereum_publicPoolFillsOneSidedBatchBothDirections`, `test_ethereum_largeResidualRevertsThenPartialFillExecutes`) need the USDC/WETH 0.05% v3 pool (`0x88e6…5640`) to have swapped within `maxObservationAge` (120 s). On 7 Nov 2026 its latest observation was 240 s old at the tip, so both revert `StaleObservation()` on every run; the contract is right to refuse. Pin `ETH_FORK_BLOCK` to a block just after a swap, or `vm.warp` to the pool's last observation in `setUp`. The other 109 fork tests pass.
+- **GitHub Actions has never run in this repo**, so `.github/workflows/check.yml` (#80) is unproven until Actions is enabled.
