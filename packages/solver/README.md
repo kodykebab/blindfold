@@ -20,15 +20,17 @@ RPC failures propagate. The sealed AMM search has a 4,096-simulation budget; exh
 
 This test launches and stops its own anvil, deploys a real PoolManager and the auction contracts, and runs the actual CLI. It covers ordinary proportional sells/buys, peer-only crossings in both directions after liquidity removal, and a one-sided batch that expires and recovers its input. Peer cases assert there are no pool Swap events and no stranded settlement balances. It uses only public anvil test accounts. It also covers one-sided external routing in both directions using a funded mock market with a 10-basis-point execution cost. Contract artifacts must include the external-market configuration, peer-only entry point and proportional overload; the fixture fails explicitly otherwise.
 
+The fixture aligns the start to the drand schedule and charges a nonzero commit fee to a separate treasury. Every scenario checks that fees remain charged after settlement or expiry.
+
 From the repository root:
 
 ```bash
 source env.sh
 export CONTRACTS_DIR="$PWD/contracts"
-forge build --root "$CONTRACTS_DIR"
+forge build --root "$CONTRACTS_DIR" --no-dynamic-test-linking
 cd packages/solver
 npm ci --ignore-scripts
-forge build --root "$CONTRACTS_DIR" "$PWD/test/fixtures/SolverHookFactory.sol" \
+forge build --root "$CONTRACTS_DIR" --no-dynamic-test-linking "$PWD/test/fixtures/SolverHookFactory.sol" \
   --remappings "blindfold/=$CONTRACTS_DIR/src/"
 SOLVER_E2E=1 node --test test/integration.test.mjs
 ```

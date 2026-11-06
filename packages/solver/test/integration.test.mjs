@@ -79,9 +79,12 @@ test('solver CLI executes sealed, peer, public and multi-hop batches with recove
     const [token0, token1] = [tokenA, tokenB].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1)
     const vault = await deploy('BlindfoldVault')
     const now = (await client.getBlock()).timestamp
+    const start = now - (now - 1692803367n) % 3n
+    const commitFee = 10n ** 17n
+    const treasury = mnemonicToAccount('test test test test test test test test test test test junk', { addressIndex: 1 }).address
     const settlement = await deploy('BlindfoldSettlement', [{ manager, vault, depositToken: token1,
-      depositAmount: 5n * 10n ** 18n, bountyBps: 2000n, treasury: account.address,
-      schedule: { start: Number(now), batchLength: 300, revealLength: 24, settleLength: 30 }, toleranceBps: 100n }])
+      depositAmount: 5n * 10n ** 18n, bountyBps: 2000n, treasury, commitFee,
+      schedule: { start: Number(start), batchLength: 300, revealLength: 24, settleLength: 30 }, toleranceBps: 100n }])
     await send(vault, 'BlindfoldVault', 'setOperator', [settlement])
     const factory = await deploy('SolverHookFactory')
     const bytecodeHash = await read(factory, 'SolverHookFactory', 'initCodeHash', [manager, settlement])
@@ -142,6 +145,7 @@ test('solver CLI executes sealed, peer, public and multi-hop batches with recove
         const hash = await read(settlement, 'BlindfoldSettlement', 'orderHash', [batch, o, salt])
         await send(settlement, 'BlindfoldSettlement', 'commit', [batch, hash, '0x01'])
       }
+      assert.equal(await read(vault, 'BlindfoldVault', 'balanceOf', [treasury, token1]), BigInt(orders.length) * commitFee)
       await warp(await read(settlement, 'BlindfoldSettlement', 'revealOpens', [batch]))
       for (const o of orders) await send(settlement, 'BlindfoldSettlement', 'reveal', [o.id, o, toHex(o.id + 1n, { size: 32 })])
       await warp(await read(settlement, 'BlindfoldSettlement', 'revealCloses', [batch]))
@@ -208,6 +212,7 @@ test('solver CLI executes sealed, peer, public and multi-hop batches with recove
       }
       assert.equal(await read(settlement, 'BlindfoldSettlement', 'finalized', [batch]), true)
       assert.equal(await read(vault, 'BlindfoldVault', 'openCommitments', [account.address]), 0n)
+      assert.equal(await read(vault, 'BlindfoldVault', 'balanceOf', [treasury, token1]), BigInt(orders.length) * commitFee, 'commit fees remain charged after settlement or expiry')
       assert.equal(await read(vault, 'BlindfoldVault', 'lockedOf', [account.address, sell ? token0 : token1]), 0n)
       const logs = await client.getLogs({ address: settlement, fromBlock: startBlock, toBlock: 'latest' })
       const fills = parseEventLogs({ abi: load('BlindfoldSettlement').abi, logs, eventName: 'Filled' })
