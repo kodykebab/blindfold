@@ -54,6 +54,8 @@ test('real CLI backup exports a committed order and restores it to another local
     const parsed = parseStatus(status.output)
     assert.equal(parsed.account.toLowerCase(), user(10).address.toLowerCase())
     assert.equal(parsed.rows.length, 2)
+    assert.equal(parsed.tokens[0].decimals, 18, 'status --json reports token decimals')
+    assert.equal(parsed.tokens[1].decimals, 18)
     assert.equal((await original.get(status.id)).state, 'done', 'a new page can recover an existing non-secret job result')
     assert.match(parsed.open, /open commitments: 1/)
     const tracked = await original.run({ action: 'track' })

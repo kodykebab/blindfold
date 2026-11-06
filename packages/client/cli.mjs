@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { confirmTx, confirmationsFor, describeOutcome } from './tx.mjs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
+import { cleanSymbol, statusPayload } from './quote.mjs'
 
 const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
@@ -37,8 +38,10 @@ async function validateDeployment() {
 async function tokens() {
   const [t0, t1, depositToken] = await Promise.all([read(S, 'token0'), read(S, 'token1'), read(S, 'depositToken')])
   const meta = async (address) => {
-    const [symbol, decimals] = await Promise.all(['symbol', 'decimals'].map((f) => read(address, f, [], abi.erc20)))
-    return { address, symbol, decimals }
+    let raw = null
+    try { raw = await read(address, 'symbol', [], abi.erc20) } catch { raw = null }
+    const decimals = await read(address, 'decimals', [], abi.erc20)
+    return { address, symbol: cleanSymbol(raw, address), decimals }
   }
   const [token0, token1, dt] = await Promise.all([meta(t0), meta(t1), meta(depositToken)])
   return { token0, token1, depositToken, byAddress: { [depositToken]: dt, [t0]: token0, [t1]: token1 } }
@@ -81,9 +84,36 @@ async function schedule(b) {
   return deadlines(v, await admissionRequired())
 }
 
-async function status() {
+async function preparationState(b, now) {
+  if (!dep.admission?.manifestSha256) return null
+  let prepared
+  try { prepared = loadState(dep, me).preparation }
+  catch { return 'local state unreadable; restore a backup' }
+  if (!prepared) return 'none'
+  try {
+    await checkAdmissionNetwork()
+    const preparedBatch = BigInt(prepared.batch)
+    const round = await read(S, 'targetRound', [preparedBatch])
+    validatePreparation(prepared, { dep, owner: me, batch: preparedBatch, round })
+    const closes = await read(S, 'commitsClose', [preparedBatch])
+    const state = preparedBatch < b || now >= closes ? 'expired' : 'prepared'
+    return `${state} for batch ${preparedBatch}`
+  } catch { return 'invalid for this account, network or deployment' }
+}
+
+async function status(json = false) {
   const t = await tokens()
   const { open, rows } = await vaultView(t)
+  const [b, now] = await Promise.all([read(S, 'currentBatch'), pub.getBlock().then((x) => x.timestamp)])
+  const times = await schedule(b)
+  const preparation = await preparationState(b, now)
+  if (json) {
+    console.log(JSON.stringify(statusPayload({
+      account: me, chainId: dep.chainId, token0: t.token0, token1: t.token1, rows,
+      openCommitments: open, batchId: b, now, deadlines: times, preparation, quote: null,
+    })))
+    return
+  }
   console.log(`account ${me}`)
   console.log(`network ${dep.chainId}`)
   console.log(`pair ${t.token0.symbol} / ${t.token1.symbol}`)
@@ -91,26 +121,9 @@ async function status() {
     console.log(`  ${r.tok.symbol.padEnd(6)} wallet ${fmt(r.tok, r.wallet)} | available ${fmt(r.tok, r.available)} | reserved ${fmt(r.tok, r.reserved)} | withdrawable ${fmt(r.tok, r.withdrawable)}`)
   }
   console.log(`  open commitments: ${open}${open ? ' (withdrawals blocked until each is revealed and settled, slashed, released or expired)' : ''}`)
-  const [b, now] = await Promise.all([read(S, 'currentBatch'), pub.getBlock().then((x) => x.timestamp)])
   console.log(`batch ${b} (chain time ${now})`)
-  for (const d of await schedule(b)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
-  if (dep.admission?.manifestSha256) {
-    let prepared
-    try { prepared = loadState(dep, me).preparation }
-    catch { console.log('preparation: local state unreadable; restore a backup'); return }
-    if (!prepared) console.log('preparation: none')
-    else {
-      try {
-        await checkAdmissionNetwork()
-        const preparedBatch = BigInt(prepared.batch)
-        const round = await read(S, 'targetRound', [preparedBatch])
-        validatePreparation(prepared, { dep, owner: me, batch: preparedBatch, round })
-        const closes = await read(S, 'commitsClose', [preparedBatch])
-        const state = preparedBatch < b || now >= closes ? 'expired' : 'prepared'
-        console.log(`preparation: ${state} for batch ${preparedBatch}`)
-      } catch { console.log('preparation: invalid for this account, network or deployment') }
-    }
-  }
+  for (const d of times) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
+  if (preparation) console.log(`preparation: ${preparation}`)
 }
 
 async function deposit(name, amount) {
@@ -432,7 +445,7 @@ async function importCmd(file) {
 
 const [cmd, ...args] = process.argv.slice(2)
 const commands = {
-  status: () => status(),
+  status: () => status(args.includes('--json')),
   deposit: () => deposit(args[0], args[1]),
   commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run'), args.includes('--vault-only'), args.includes('--both-funded')),
   track: () => trackAll(args.includes('--json')),
