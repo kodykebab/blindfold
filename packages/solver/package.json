@@ -1,0 +1,12 @@
+{
+  "name": "@blindfold/solver",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node solver.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "viem": "2.21.0"
+  }
+}
