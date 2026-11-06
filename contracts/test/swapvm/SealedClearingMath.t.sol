@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import { Test } from "forge-std/Test.sol";
-import { Context } from "swap-vm/src/libs/VM.sol";
-import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
-import { SealedClearing } from "../../src/swapvm/SealedClearing.sol";
+import {Test} from "forge-std/Test.sol";
+import {Context} from "swap-vm/src/libs/VM.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SealedClearing} from "../../src/swapvm/SealedClearing.sol";
 
 /// Runs the instruction on a bare Context; `this` plays the settlement (taker and price source).
 contract SealedClearingHarness is SealedClearing {
@@ -80,6 +80,7 @@ contract SealedClearingMathTest is Test {
             assertGe(Math.mulDiv(inp, price, Q96, Math.Rounding.Ceil), amount);
         }
     }
+
     function test_reversePriceDoesNotLoseOneWeiThroughReciprocalRounding() public {
         price = 3 * Q96;
         (, uint256 out) = h.run(true, 3e18, 0, abi.encodePacked(address(this)), true);
@@ -95,5 +96,4 @@ contract SealedClearingMathTest is Test {
         (uint256 inp,) = h.run(false, 0, amount, abi.encodePacked(address(this)), true);
         assertEq(inp, Math.mulDiv(amount, price, Q96, Math.Rounding.Ceil));
     }
-
 }

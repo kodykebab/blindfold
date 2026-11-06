@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import { AquaSwapVMTest } from "swap-vm/test/base/AquaSwapVMTest.sol";
-import { SwapVM } from "swap-vm/src/SwapVM.sol";
-import { ISwapVM } from "swap-vm/src/interfaces/ISwapVM.sol";
-import { BlindfoldAquaRouter } from "../../src/swapvm/BlindfoldAquaRouter.sol";
+import {AquaSwapVMTest} from "swap-vm/test/base/AquaSwapVMTest.sol";
+import {SwapVM} from "swap-vm/src/SwapVM.sol";
+import {ISwapVM} from "swap-vm/src/interfaces/ISwapVM.sol";
+import {BlindfoldAquaRouter} from "../../src/swapvm/BlindfoldAquaRouter.sol";
 
 contract SealedClearingTest is AquaSwapVMTest {
     bytes4 constant PRICE_SIG = bytes4(keccak256("activeClearingPriceX96(address,address)"));
@@ -27,7 +27,14 @@ contract SealedClearingTest is AquaSwapVMTest {
     }
 
     function _program(address t, uint256 amount, bool exactIn) internal view returns (SwapProgram memory) {
-        return SwapProgram({ amount: amount, taker: t == address(taker) ? taker : taker2, tokenA: tokenA, tokenB: tokenB, zeroForOne: true, isExactIn: exactIn });
+        return SwapProgram({
+            amount: amount,
+            taker: t == address(taker) ? taker : taker2,
+            tokenA: tokenA,
+            tokenB: tokenB,
+            zeroForOne: true,
+            isExactIn: exactIn
+        });
     }
 
     function _setPrice(uint256 p) internal {

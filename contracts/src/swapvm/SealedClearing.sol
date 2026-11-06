@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import { Context } from "swap-vm/src/libs/VM.sol";
-import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Context} from "swap-vm/src/libs/VM.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 interface IClearingPriceSource {
     /// @return priceX96 tokenOut per tokenIn (Q96) of the batch being settled right now; 0 if none
@@ -27,16 +27,15 @@ contract SealedClearing {
         address settlement = address(bytes20(args[0:20]));
         if (ctx.query.taker != settlement) revert SealedClearingWrongTaker(ctx.query.taker, settlement);
         bool forward = ctx.query.tokenIn < ctx.query.tokenOut;
-        uint256 priceX96 = IClearingPriceSource(settlement).activeClearingPriceX96(
-            forward ? ctx.query.tokenIn : ctx.query.tokenOut,
-            forward ? ctx.query.tokenOut : ctx.query.tokenIn
-        );
+        uint256 priceX96 = IClearingPriceSource(settlement)
+            .activeClearingPriceX96(
+                forward ? ctx.query.tokenIn : ctx.query.tokenOut, forward ? ctx.query.tokenOut : ctx.query.tokenIn
+            );
         if (priceX96 == 0) revert SealedClearingInactive();
         if (ctx.query.isExactIn) {
             if (ctx.swap.amountOut != 0) revert SealedClearingAmountPreset();
-            ctx.swap.amountOut = forward
-                ? Math.mulDiv(ctx.swap.amountIn, priceX96, Q96)
-                : Math.mulDiv(ctx.swap.amountIn, Q96, priceX96);
+            ctx.swap.amountOut =
+                forward ? Math.mulDiv(ctx.swap.amountIn, priceX96, Q96) : Math.mulDiv(ctx.swap.amountIn, Q96, priceX96);
         } else {
             if (ctx.swap.amountIn != 0) revert SealedClearingAmountPreset();
             // round up against the taker
