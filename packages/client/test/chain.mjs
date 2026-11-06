@@ -100,7 +100,7 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
     cli: (i, args, env = {}) => new Promise((resolve) => {
       execFile(process.execPath, [CLI, ...args], {
         // local chains run at recorded past timestamps, so the wall-clock quote age check is off here
-        env: { ...process.env, RPC_URL: rpc, DEPLOYMENTS: deployments, CLIENT_ACCOUNT_INDEX: String(i), DRAND, CLIENT_STATE: join(dir, 'state'), QUOTE_MAX_AGE_S: 'off', ...env },
+        env: { ...process.env, RPC_URL: rpc, DEPLOYMENTS: deployments, CLIENT_ACCOUNT_INDEX: String(i), DRAND, CLIENT_STATE: join(dir, 'state'), QUOTE_MAX_AGE_S: 'off', CLIENT_BACKUP_DIR: join(dir, 'backups'), ...env },
       }, (e, out, err) => resolve({ code: e ? e.code : 0, out, err }))
     }),
     stop: () => anvil.kill(),

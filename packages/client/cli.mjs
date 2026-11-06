@@ -12,6 +12,8 @@
 //   npm start -- withdraw <token0|token1> <amount|all>
 //   npm start -- export-state <file>             back up saved orders and salts (needed to reveal your own orders)
 //   npm start -- import-state <file>             restore them, after checking each against its hash and the chain
+//   npm start -- backup                          write the encrypted backup now (otherwise automatic after every change)
+//   npm start -- restore-backup [file]           decrypt a backup with this wallet (or passphrase) and import it
 // sell = token0 in, token1 out; buy = token1 in, token0 out. Amounts are decimal token units.
 import { formatUnits, parseEventLogs, parseUnits } from 'viem'
 import { connect, encrypt, loadAbi, newSalt, orderHash } from './lib.mjs'
@@ -20,6 +22,7 @@ import { exportState, importState, loadState, parseState, saveCommitment, valida
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead, measuredSeconds, recordProving, targetBatch } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
+import { backupDir, backupPath, openBackup, readBackupFile, writeBackup } from './backup.mjs'
 import { limitFromQuote, nextPreparation, parseSlippage, quoteOut, retryable, routeFeePpm } from './quote.mjs'
 
 const ctx = connect()
@@ -416,7 +419,12 @@ function exportCmd(file) {
 
 async function importCmd(file) {
   if (!file) fail('usage: import-state <file>')
-  const state = parseState(readFileSync(file, 'utf8'))
+  return importText(readFileSync(file, 'utf8'), file)
+}
+
+/** Check exported state against its hashes and the chain, then merge it into local state. */
+async function importText(text, file) {
+  const state = parseState(text)
   const chainHashes = new Map()
   for (const c of state.commitments ?? []) {
     if (c.id != null) chainHashes.set(c.id, (await read(S, 'commitments', [c.id]))[3])
@@ -429,6 +437,23 @@ async function importCmd(file) {
     if (local.admission?.pending) fail('resolve the local pending admission before importing another state')
   }
   console.log(`imported; ${importState(dep, me, state)} commitment(s) saved`)
+}
+
+const passphrase = () => process.env.CLIENT_BACKUP_PASSPHRASE || undefined
+
+/**
+ * Encrypted copy of exported state (FIXES.md fix 6): orders, salts and funding openings, never ready keys or timings.
+ * CLIENT_BACKUP_DIR picks the folder (point it at a synced or external location); CLIENT_BACKUP=off disables it.
+ */
+async function backup(text = exportState(dep, me), quiet = false) {
+  const path = await writeBackup({ dep, owner: me, account, text, passphrase: passphrase() })
+  if (!quiet) console.log(`encrypted backup written to ${path}${process.env.CLIENT_BACKUP_DIR ? '' : ' (set CLIENT_BACKUP_DIR to keep it off this device)'}`)
+  return path
+}
+
+async function restoreBackup(file = backupPath(backupDir(), dep, me)) {
+  const text = await openBackup(readBackupFile(file), { dep, owner: me, account, passphrase: passphrase() })
+  await importText(text, file)
 }
 
 /** Place the most recent unfilled or expired order again: re-quoted when the deployment has a market, else same limit. */
@@ -488,11 +513,22 @@ const commands = {
   withdraw: () => withdraw(args[0], args[1] ?? 'all'),
   'export-state': () => exportCmd(args[0]),
   'import-state': () => importCmd(args[0]),
+  backup: () => backup(),
+  'restore-backup': () => restoreBackup(args[0]),
 }
 if (!commands[cmd]) fail(`usage: npm start -- <${Object.keys(commands).join('|')}> ...`)
 try {
   // keep-ready takes the lock only while it prepares, so the same account can commit while it runs
-  const mutates = ['prepare-admission', 'commit', 'resubmit', 'resume-admission', 'import-state', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
-  await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())
+  const mutates = ['prepare-admission', 'commit', 'resubmit', 'resume-admission', 'import-state', 'restore-backup', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
+  const before = mutates ? exportState(dep, me) : null
+  try {
+    await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())
+  } finally {
+    // Back up whatever changed, also when the command failed after saving (a commit saves its order before sending).
+    if (mutates && process.env.CLIENT_BACKUP !== 'off') {
+      const after = exportState(dep, me)
+      if (after !== before) await backup(after, true).catch((e) => console.error(`client: backup failed: ${e.message}`))
+    }
+  }
 }
 catch (e) { console.error(`client: ${e.shortMessage ?? e.message}`); process.exitCode = 1 }

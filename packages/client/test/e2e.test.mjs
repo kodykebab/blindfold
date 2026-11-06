@@ -319,3 +319,46 @@ test('fixes 4-5: quote-based limits, refusals without a usable market, resubmit 
     plain.stop()
   }
 })
+
+test('fix 6: a wiped device restores from the encrypted backup, reveals its own order and withdraws', { skip: !enabled, timeout: 120_000 }, async () => {
+  const c = await localChain({ market: true })
+  try {
+    const u = user(10).address
+    for (const tok of [c.token0, c.token1]) await c.mint(u, tok, parseEther('100'))
+    let r = await c.cli(10, ['commit', 'sell', '10', '9'])
+    assert.equal(r.code, 0, r.err)
+    const backups = join(c.dir, 'backups')
+    const file = join(backups, readdirSync(backups)[0])
+    assert.doesNotMatch(readFileSync(file, 'utf8'), new RegExp(savedState(c).commitments[0].salt.slice(2)), 'the backup hides the salt')
+
+    // the device loses its private state
+    rmSync(join(c.dir, 'state'), { recursive: true, force: true })
+    await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'revealOpens', [0n]))
+    r = await c.cli(10, ['cleanup', '--dry-run'])
+    assert.match(r.out, /order and salt not saved here/)
+
+    // another wallet's backup and a tampered one are refused; this wallet's restores
+    r = await c.cli(11, ['restore-backup', file])
+    assert.notEqual(r.code, 0); assert.match(r.err, /belongs to/)
+    const tampered = join(c.dir, 'tampered.json')
+    const b = JSON.parse(readFileSync(file, 'utf8'))
+    writeFileSync(tampered, JSON.stringify({ ...b, tag: (b.tag[0] === '0' ? '1' : '0') + b.tag.slice(1) }))
+    r = await c.cli(10, ['restore-backup', tampered])
+    assert.notEqual(r.code, 0); assert.match(r.err, /does not decrypt/)
+    r = await c.cli(10, ['restore-backup'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /imported; 1 commitment/)
+
+    // with the order and salt back, the user reveals their own order and, once the batch expires, withdraws
+    r = await c.cli(10, ['cleanup'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /reveal/)
+    await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'settleCloses', [0n]))
+    assert.equal((await c.cli(10, ['cleanup'])).code, 0)
+    r = await c.cli(10, ['withdraw', 'token0', 'all'])
+    assert.equal(r.code, 0, r.err)
+    assert.equal(await c.read(c.token0, 'MockERC20', 'balanceOf', [u]), parseEther('100'))
+  } finally {
+    c.stop()
+  }
+})

@@ -18,9 +18,19 @@ npm start -- cleanup [--dry-run]           # reveal own saved orders, slash unre
 npm start -- withdraw token0 all           # lists the blockers instead if any remain
 npm start -- export-state backup.json      # back up saved orders and salts
 npm start -- import-state backup.json      # restore; refused unless every entry hashes right and matches the chain
+npm start -- restore-backup                # decrypt the automatic backup with this wallet and import it
 ```
 
 `sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units.
+
+## Automatic encrypted backup (FIXES.md fix 6)
+Orders, salts and funding openings exist only on this device. Without them you can't reveal your own order (a keeper must, or the commitment is released or slashed), and you can't append to your funding root. After every command that changes them, the client writes an encrypted backup to `CLIENT_BACKUP_DIR` (default `~/.blindfold/backups`). Point it at a synced or external folder so it survives the device. `npm start -- backup` writes one immediately.
+
+- **Key.** By default it comes from your wallet: the client signs a fixed, labelled message ("Blindfold backup key v1 …"). Local accounts sign deterministically, so the same wallet on a new device recreates it, and there's nothing else to remember. Sign that message only in this client. `CLIENT_BACKUP_PASSPHRASE` uses a passphrase (scrypt) instead.
+- **Format.** AES-256-GCM. The chain, settlement, owner and salt are bound as authenticated data, so an edited file or header fails to decrypt. The file is written atomically with owner-only permissions.
+- **Restore.** `restore-backup [file]` decrypts the backup and runs the same checks as `import-state`: every order must hash to its commitment, and every id must match the chain.
+- **What it leaves out:** ready preparation keys and proving times, like exports.
+- `CLIENT_BACKUP=off` disables it.
 
 ## Limits from a fresh quote (FIXES.md fix 4)
 Without a minimum output, `commit` quotes the order from the deployment's external market and sets the limit `--slippage` basis points below the quote (default 50). The quote is the market's validated reference price ending at the latest block, after the pool fee (combined over a route's hops). It is the same price check a batch settles against, so a market that can't price the pair now refuses the order before anything is sent, instead of letting it expire. The order is shown as "at least X, or you keep your funds". The limit is the only promise: the batch clears at one price, and you may get more than X but never less.
@@ -48,6 +58,8 @@ The client saves each order and salt (`.state/`, or `CLIENT_STATE`) **before** i
 | `PRIVATE_KEY` | — | Use this key instead of an anvil account |
 | `DRAND` | quicknet over HTTP | Path to recorded rounds (`test/fixtures/drand.json` format) for offline runs |
 | `CLIENT_STATE` | `packages/client/.state` | Where orders and salts are kept |
+| `CLIENT_BACKUP_DIR` | `~/.blindfold/backups` | Where the encrypted backup goes; `CLIENT_BACKUP=off` disables it |
+| `CLIENT_BACKUP_PASSPHRASE` | — | Encrypt backups with this passphrase instead of a wallet-derived key |
 | `QUOTE_MAX_AGE_S` | `120` | Refuse a quote when the latest block is older than this; `off` disables |
 | `KEEP_READY_POLL_MS` | `10000` | How often `keep-ready` checks its key |
 
