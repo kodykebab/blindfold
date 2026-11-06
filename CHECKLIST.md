@@ -1,7 +1,7 @@
 # Release checklist
 
 Status: `[x]` done · `[~]` partly done · `[ ]` open. Owner: **Claude** (this branch stack), **Cursor** (sections 3 and 8, see `CURSOR_PROMPT.md`), **Antigravity** (section 5 on branch `bhoumik/orders-ui`, see `ANTIGRAVITY_PROMPT.md`), **Team** (needs a decision or another lane).
-Updated after every 3 completed tasks. Last update: 2026-11-07, 35 done, 6 partly done, 52 open of 93.
+Updated after every 3 completed tasks. Last update: 2026-11-07, 49 done, 10 partly done, 34 open of 93.
 
 ## 1. Local setup and operation (Claude)
 - [~] Repeatable clean-clone setup: install, build, deploy. `scripts/dev.sh` works; the clean-clone rehearsal remains.
@@ -24,18 +24,18 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 35 done, 6 partl
 - [ ] Review the webpage/local-service/wallet/prover trust boundary.
 
 ## 3. Trading interface (Cursor)
-- [x] Configured pair and token symbols in status.
-- [x] Wallet, available, reserved and withdrawable balances shown separately.
-- [ ] Amount precision and numeric limits.
-- [ ] Fresh external quote comparison.
-- [ ] Limit and expiry review.
-- [ ] Fee, deposit and approval review.
-- [ ] Explain the one-active-batch rule before submission.
-- [ ] Expected partial execution and unused input.
-- [ ] Stale quotes and changed balances caught before submission.
-- [ ] Liquidity and estimated execution, without promising it.
+- [x] Configured pair and token symbols in status. `status.test.mjs`: "status JSON is read first and still fills the text-shaped view".
+- [x] Wallet, available, reserved and withdrawable balances shown separately. `status.test.mjs`: "balance fields keep wallet, vault, reserved and withdrawable apart".
+- [x] Amount precision and numeric limits. `status.test.mjs`: "amount validator rejects extra precision and the uint128 cap without rounding".
+- [x] Fresh external quote comparison. `quote.test.mjs`: "X96 prices convert with both decimals, including a price below 1" and "a reverted reference price is null and carries the reason".
+- [x] Limit and expiry review. `status.test.mjs`: "preflight review restates the order, fee, deposit, approval and gas".
+- [x] Fee, deposit and approval review. `status.test.mjs`: "preflight review restates the order, fee, deposit, approval and gas".
+- [x] Explain the one-active-batch rule before submission. `status.test.mjs`: "one active batch is a submission block with a reason".
+- [x] Expected partial execution and unused input. `status.test.mjs`: "partial fills report executed and unused input from the fill numbers".
+- [x] Stale quotes and changed balances caught before submission. `status.test.mjs`: "a changed balance or a stale quote requires another confirm".
+- [x] Liquidity and estimated execution, without promising it. `status.test.mjs`: "dry-run JSON keeps the contract source and does not invent an execution estimate".
 - [ ] No raw CLI output anywhere.
-- [ ] Unsupported tokens and odd transfer behaviour.
+- [x] Unsupported tokens and odd transfer behaviour. `e2e.test.mjs`: "a fee-on-transfer token is refused before the vault is credited". `status.test.mjs`: "a short vault credit is treated as a fee-on-transfer or rebasing token".
 - [x] No automatic order-specific shortfall deposit. e2e: "vault-only trading refuses shortfalls".
 
 ## 4. Prover and admission (Claude)
@@ -88,15 +88,15 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 35 done, 6 partl
 - [x] Optional JSON status per solver cycle, checked against the local service.
 
 ## 8. Arkiv, Court and demo (Cursor)
-- [ ] Choose the Arkiv-backed user feature.
-- [ ] Arkiv writes and a user-visible read or query.
-- [ ] An optional-indexer outage doesn't block recovery.
-- [ ] Batch, mempool and Court-ledger views.
-- [ ] Arkiv schema, setup, query and integration docs.
-- [ ] Court coverage → claim → collection demonstration.
-- [ ] Aqua token movement, if still in scope.
-- [ ] Multi-user demo, written and rehearsed.
-- [ ] Decide on optional Swarm support.
+- [x] Choose the Arkiv-backed user feature. Public settled batches. `arkiv.test.mjs`: "a settled batch round-trips through the file and drops private fields".
+- [x] Arkiv writes and a user-visible read or query. `arkiv.test.mjs`: "a later store reads the same file, newest first". `local-stack.e2e.test.mjs` asserts `GET /api/history` after settle.
+- [x] An optional-indexer outage doesn't block recovery. `history.test.mjs`: "history stays unavailable when Arkiv is down, without throwing". `mirror.test.mjs`: "a throwing Arkiv does not fail the settlement".
+- [x] Batch, mempool and Court-ledger views. `status.test.mjs`: "batch phase and mempool use only public schedule and counts". `court-view` test: "court ledger skips the registry events it does not show instead of going unavailable".
+- [x] Arkiv schema, setup, query and integration docs. `arkiv/schema.md`. Fields locked by `arkiv.test.mjs`: "query rows unwrap Arkiv values and sort oldest first before the recent-batches reverse".
+- [~] Court coverage → claim → collection demonstration. `scripts/court-demo.sh` prints each step's transactions. Not a `node --test`.
+- [~] Aqua token movement, if still in scope. Out of this demo. See DEMO.md.
+- [~] Multi-user demo, written and rehearsed. `scripts/demo-multi.sh` and DEMO.md. Not a `node --test`.
+- [~] Decide on optional Swarm support. Out of this release. See DEMO.md.
 
 ## 9. Testing and release (Claude)
 - [ ] Final web → fresh proof → v4 → keeper → solver → withdrawal test.

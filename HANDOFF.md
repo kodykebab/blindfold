@@ -90,30 +90,28 @@ A claim pays only if it passes every gate. Each gate has its own offline tests: 
 - `scripts/court-demo.sh` prints transaction hashes per step. `scripts/demo-multi.sh` ran three accounts through commit, keeper reveal, solver settle and withdraw (see DEMO.md). Swarm is out. Aqua-in-settle is out of this demo.
 
 ### Left
-- The client does not yet print decimals, a pool or external price, liquidity, or gas, so those panels say they are not reported until the lines below exist.
-- Arkiv testnet writes are not sent. The SDK is not bundled; a configured testnet reports history unavailable rather than writing.
-- `scripts/court-demo.sh` prints a hash list per step. The empty build step prints `tx hashes: none in this step`.
+- Pool liquidity is the raw v4 figure from `poolLiquidity()`. The page says `estimate not available`. Nothing here turns that figure into a token amount.
+- A commit preview does not build an admission proof, so that dry-run reports gas as unavailable and names the reason. A non-admission dry-run estimates `commit` and multiplies by `eth_gasPrice`.
+- `ARKIV=testnet` writes only when `.env` has `ARKIV_RPC` and `ARKIV_KEY`, and the writer account has testnet tGLM. Otherwise the page says `history unavailable`. `ARKIV=off` uses `$CLIENT_STATE/arkiv-local.json` (or `ARKIV_FILE`).
+- The activity log still receives client error text. The checklist item "No raw CLI output anywhere" stays open.
+- Court and the three-user demo were rehearsed in the previous round. This round did not re-run those scripts.
 
 ### Requests from the trading page
-For the client owner, additive status lines (or `status --json`):
+None for the client or the solver. `status --json`, the quote, the fee-on-transfer check and `mirrorSettled` are in place.
 
-- `token0 <symbol> <decimals> <address>` and the same for `token1`. If `symbol()` fails, print the address so the page can shorten it.
-- `quote pool <price> age <seconds>s` and, when a reference exists, `quote external <price> age <seconds>s`. Price is token1 per token0. Include when the sample was taken.
-- `liquidity <amount> estimate <amount> <symbol>` only for a real estimate. Do not invent one.
-- `gas estimate <units>` on commit `--dry-run`.
-
-`track --json` with `amountIn`, `amountOut` and the order's `amountIn` would replace parsing the fill sentence.
-
-A deposit check that compares the vault's token balance increase with the amount sent, and refuses fee-on-transfer and rebasing tokens, would make that check happen before the page's follow-up status read.
-
-For the solver and keeper owners: after a successful settle, call `mirrorSettled` in `packages/arkiv` with `batchId`, `pair`, `clearingPrice` (`priceX96`), `orderCount`, `settleTx`. No order bodies. The page reads that for Recent batches.
+Still needs a person: an Arkiv access key inside `ARKIV_RPC`, and tGLM for the `ARKIV_KEY` account, before a testnet history row exists.
 
 ### Commands
-- `npm test --prefix app/haveibeensandwiched` — pass (39 pass, 1 skipped without `WEB_E2E`).
-- `WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs` — pass.
-- `npm test --prefix packages/arkiv` — pass.
-- `source env.sh && node scripts/demo-multi.mjs` — pass (exit 0, about 5s).
-- `scripts/court-demo.sh` — pass (exit 0, about 27s). Claim `0xd37e69330908947fdba0572c59a5f865773ed5fdc05e3e8145878e0ec87db4f9`. Collect `0xa52a1f173bfeec27fa034a20c3674f6045ad4601708687ff64e74cf28ca38dcf`.
+- `npm test --prefix packages/client` — pass (e2e skipped without `CLIENT_E2E`).
+- `npm test --prefix app/haveibeensandwiched` — pass (59 pass, 4 skipped without `WEB_E2E`).
+- `npm test --prefix packages/arkiv` — pass (6 pass).
+- `forge build --root contracts --force --no-dynamic-test-linking` — pass (warnings only, isolated `FOUNDRY_OUT`).
+- `forge build --root contracts --no-dynamic-test-linking packages/solver/test/fixtures/SolverHookFactory.sol` — pass.
+- `WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs` — pass (1 pass).
+- `STACK_E2E=1 node --test packages/solver/test/local-stack.e2e.test.mjs` — pass (1 pass, about 69s). History returned the settled batch.
+- `CLIENT_E2E=1 node --test packages/client/test/e2e.test.mjs` — pass (6 pass, 1 skipped). The skip is "released commitment: real CLI cleanup, repeat cleanup, next batch and withdrawal", which also needs `CLIENT_RELEASE_E2E=1`.
+- `source env.sh && node scripts/demo-multi.mjs` — pass in the previous round (exit 0, about 5s). Not re-run this round.
+- `scripts/court-demo.sh` — pass in the previous round (exit 0, about 27s). Claim `0xd37e69330908947fdba0572c59a5f865773ed5fdc05e3e8145878e0ec87db4f9`. Collect `0xa52a1f173bfeec27fa034a20c3674f6045ad4601708687ff64e74cf28ca38dcf`. Not re-run this round.
 
 ## Needs a person
 - An **Arkiv access key** (hub.arkiv.network/access-keys) and faucet **tGLM** for a team wallet.
