@@ -80,6 +80,23 @@ async function status() {
   const [b, now] = await Promise.all([read(S, 'currentBatch'), pub.getBlock().then((x) => x.timestamp)])
   console.log(`batch ${b} (chain time ${now})`)
   for (const d of await schedule(b)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
+  if (dep.admission?.manifestSha256) {
+    let prepared
+    try { prepared = loadState(dep, me).preparation }
+    catch { console.log('preparation: local state unreadable; restore a backup'); return }
+    if (!prepared) console.log('preparation: none')
+    else {
+      try {
+        await checkAdmissionNetwork()
+        const preparedBatch = BigInt(prepared.batch)
+        const round = await read(S, 'targetRound', [preparedBatch])
+        validatePreparation(prepared, { dep, owner: me, batch: preparedBatch, round })
+        const closes = await read(S, 'commitsClose', [preparedBatch])
+        const state = preparedBatch < b || now >= closes ? 'expired' : 'prepared'
+        console.log(`preparation: ${state} for batch ${preparedBatch}`)
+      } catch { console.log('preparation: invalid for this account, network or deployment') }
+    }
+  }
 }
 
 async function deposit(name, amount) {
@@ -114,7 +131,7 @@ async function prepare(batchText) {
   console.log(`prepared batch ${batch} in ${preparation.elapsedSeconds.toFixed(2)}s; private preparation saved locally`)
 }
 
-async function commit(side, amountIn, minOut, dryRun) {
+async function commit(side, amountIn, minOut, dryRun, vaultOnly = false, bothFunded = false) {
   if (side !== 'sell' && side !== 'buy') fail('side must be sell or buy')
   const t = await tokens()
   const [tin, tout] = side === 'sell' ? [t.token0, t.token1] : [t.token1, t.token0]
@@ -157,6 +174,11 @@ async function commit(side, amountIn, minOut, dryRun) {
   for (const d of await schedule(current)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
   if (!enforced) console.log(`keep ${fmt(tin, order.amountIn)} free in the vault until the reveal, or the order is closed as unfunded and the deposit lost`)
   if (!check.ok) fail(`preflight failed:\n  ${check.problems.join('\n  ')}`)
+  if (bothFunded) {
+    const balances = await Promise.all([t.token0, t.token1].map((token) => read(dep.vault, 'balanceOf', [me, token.address])))
+    if (balances.some((balance) => balance === 0n)) fail('fund both tokens in the vault before trading')
+  }
+  if (vaultOnly && check.funding.some((f) => f.shortfall > 0n)) fail('fund the required vault balances before trading; automatic deposits are disabled')
   if (dryRun) return console.log('dry run: nothing sent')
   for (const f of check.funding) {
     if (!f.shortfall) continue
@@ -333,7 +355,7 @@ const [cmd, ...args] = process.argv.slice(2)
 const commands = {
   status: () => status(),
   deposit: () => deposit(args[0], args[1]),
-  commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run')),
+  commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run'), args.includes('--vault-only'), args.includes('--both-funded')),
   track: () => trackAll(),
   'prepare-admission': () => prepare(args[0]),
   'resume-admission': () => resumeAdmission(),

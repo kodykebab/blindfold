@@ -260,3 +260,30 @@ test('released commitment: real CLI cleanup, repeat cleanup, next batch and with
     assert.equal(await c.read(c.token1, 'MockERC20', 'balanceOf', [u]), parseEther('100') - fee)
   } finally { c.stop() }
 })
+
+test('vault-only trading refuses shortfalls and does not auto-fund the chosen side', { skip: !enabled, timeout: 120_000 }, async () => {
+  const c = await localChain({ schedule: { batchLength: 300 } })
+  const env = { PRIVATE_KEY: '', MNEMONIC: 'test test test test test test test test test test test junk' }
+  try {
+    const owner = user(10).address
+    for (const token of [c.token0, c.token1]) await c.mint(owner, token, parseEther('100'))
+    const count = () => c.pub.getTransactionCount({ address: owner, blockTag: 'latest' })
+    let nonce = await count()
+    let result = await c.cli(10, ['commit', 'sell', '1', '0.9', '--vault-only', '--both-funded'], env)
+    assert.equal(result.code, 1); assert.match(result.err, /fund both tokens/)
+    assert.equal(await count(), nonce, 'an unfunded order must not approve, deposit or commit')
+    assert.equal((await c.cli(10, ['deposit', 'token0', '10'], env)).code, 0)
+    assert.equal((await c.cli(10, ['deposit', 'token1', '1'], env)).code, 0)
+    nonce = await count()
+    result = await c.cli(10, ['commit', 'sell', '1', '0.9', '--vault-only', '--both-funded'], env)
+    assert.equal(result.code, 1); assert.match(result.err, /automatic deposits are disabled/)
+    assert.equal(await count(), nonce, 'a partial shortfall must not cause a transaction')
+    assert.equal((await c.cli(10, ['deposit', 'token1', '9'], env)).code, 0)
+    const before = await Promise.all([c.token0, c.token1].map((token) => c.read(token, 'MockERC20', 'balanceOf', [owner])))
+    nonce = await count()
+    result = await c.cli(10, ['commit', 'sell', '1', '0.9', '--vault-only', '--both-funded'], env)
+    assert.equal(result.code, 0, result.err); assert.match(result.out, /committed #0/)
+    assert.equal(await count(), nonce + 1, 'only the commitment is sent')
+    assert.deepEqual(await Promise.all([c.token0, c.token1].map((token) => c.read(token, 'MockERC20', 'balanceOf', [owner]))), before)
+  } finally { c.stop() }
+})

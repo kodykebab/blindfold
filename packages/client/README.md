@@ -17,7 +17,7 @@ npm start -- export-state backup.json      # back up saved orders and salts
 npm start -- import-state backup.json      # restore; refused unless every entry hashes right and matches the chain
 ```
 
-`sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units.
+`sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units. `commit` also accepts `--vault-only` to refuse automatic shortfall deposits and `--both-funded` to require nonzero vault balances in both assets. Both flags also apply to `--dry-run`.
 
 Proceeds stay in the vault after a fill, so a repeat trader pays no extra transfers; `withdraw` takes them out. The vault blocks every withdrawal while the account has an open commitment, and `status` says so.
 

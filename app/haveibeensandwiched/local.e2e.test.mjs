@@ -6,8 +6,10 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
+import { parseStatus } from './status.mjs'
 
 const enabled = process.env.WEB_E2E === '1'
+const testKeys = { PRIVATE_KEY: '', MNEMONIC: 'test test test test test test test test test test test junk' }
 async function port() {
   const server = createServer().listen(0, '127.0.0.1')
   await once(server, 'listening'); const value = server.address().port
@@ -17,7 +19,7 @@ async function web(c, state) {
   const p = await port(), origin = `http://127.0.0.1:${p}`
   const child = spawn(process.execPath, ['server.mjs'], { cwd: new URL('.', import.meta.url),
     env: { ...process.env, PORT: String(p), OFFLINE: '1', RPC_URL: c.rpc, DEPLOYMENTS: c.deployments,
-      CLIENT_ACCOUNT_INDEX: '10', CLIENT_STATE: state, DRAND: (await import('../../packages/client/test/chain.mjs')).DRAND, PRIVATE_KEY: '' },
+      ...testKeys, CLIENT_ACCOUNT_INDEX: '10', CLIENT_STATE: state, DRAND: (await import('../../packages/client/test/chain.mjs')).DRAND, PRIVATE_KEY: '' },
     stdio: ['ignore', 'pipe', 'pipe'] })
   await Promise.race([once(child.stdout, 'data'), once(child, 'exit').then(([code]) => { throw Error(`server exited ${code}`) })])
   return {
@@ -43,9 +45,16 @@ test('real CLI backup exports a committed order and restores it to another local
   let original, restored
   try {
     for (const token of [c.token0, c.token1]) await c.mint(user(10).address, token, 100n * 10n ** 18n)
-    const commit = await c.cli(10, ['commit', 'sell', '1', '0.9'])
+    const commit = await c.cli(10, ['commit', 'sell', '1', '0.9'], testKeys)
     assert.equal(commit.code, 0, commit.err)
     original = await web(c, join(c.dir, 'state'))
+    const status = await original.run({ action: 'status' })
+    assert.equal(status.state, 'done', status.output)
+    const parsed = parseStatus(status.output)
+    assert.equal(parsed.account.toLowerCase(), user(10).address.toLowerCase())
+    assert.equal(parsed.rows.length, 2)
+    assert.equal((await original.get(status.id)).state, 'done', 'a new page can recover an existing non-secret job result')
+    assert.match(parsed.open, /open commitments: 1/)
     const exportJob = await original.run({ action: 'backup-export' })
     assert.equal(exportJob.state, 'done', exportJob.output)
     const backup = JSON.parse(exportJob.backup)
@@ -59,7 +68,7 @@ test('real CLI backup exports a committed order and restores it to another local
     assert.equal(accepted.state, 'done', accepted.output)
     assert.match(accepted.output, /1 commitment\(s\) saved/)
     const path = join(c.dir, 'verified.json')
-    const check = await c.cli(10, ['export-state', path], { CLIENT_STATE: join(c.dir, 'restored') })
+    const check = await c.cli(10, ['export-state', path], { ...testKeys, CLIENT_STATE: join(c.dir, 'restored') })
     assert.equal(check.code, 0, check.err)
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).commitments, backup.commitments)
   } finally { if (restored) await restored.stop(); if (original) await original.stop(); c.stop() }

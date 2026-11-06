@@ -14,7 +14,7 @@ export function command(input) {
   if (['status', 'track', 'blockers', 'resume-admission'].includes(action)) return [action]
   if (action === 'cleanup' || action === 'cleanup-preview') return action === 'cleanup' ? ['cleanup'] : ['cleanup', '--dry-run']
   if (['deposit', 'withdraw'].includes(action) && ['token0', 'token1'].includes(token) && (number(amount) || (action === 'withdraw' && amount === 'all'))) return [action, token, amount]
-  if (['preflight', 'commit'].includes(action) && ['buy', 'sell'].includes(side) && number(amount) && number(minimum)) return ['commit', side, amount, minimum, ...(action === 'preflight' ? ['--dry-run'] : [])]
+  if (['preflight', 'commit'].includes(action) && ['buy', 'sell'].includes(side) && number(amount) && number(minimum)) return ['commit', side, amount, minimum, ...(action === 'preflight' ? ['--dry-run'] : []), '--vault-only', '--both-funded']
   throw Error('Invalid action or arguments')
 }
 

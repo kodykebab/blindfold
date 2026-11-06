@@ -5,3 +5,11 @@
 .file-button{position:relative;display:inline-flex;align-items:center;border:1px solid var(--edge);padding:12px 15px;color:var(--text);font-size:12px;cursor:pointer;overflow:hidden}.file-button:hover{background:#18202a}.file-button:focus-within{outline:2px solid var(--seal);outline-offset:3px}.file-button input[type=file]{position:absolute;width:1px;height:1px;opacity:0}.backup .fine{color:var(--mute);line-height:1.6}
 
 .mobile-note{display:none;color:var(--mute);font-size:13px;border:1px solid var(--edge);background:#0e131a;padding:14px;margin:0 0 18px}@media(max-width:760px) and (pointer:coarse){.mobile-note{display:block}[data-desktop-only]:disabled,[data-desktop-only] :disabled{opacity:.45;cursor:not-allowed}}
+
+.balances{padding:15px;margin:0 0 20px;border:1px solid var(--edge);background:#0e131a}.balances[hidden]{display:none}.balance-row{display:grid;grid-template-columns:70px repeat(4,minmax(0,1fr));gap:8px;padding:10px 0;border-top:1px solid var(--edge);font:11px/1.5 ui-monospace,monospace;color:var(--mute)}.balance-row strong{color:var(--text)}.balances .fine{margin:10px 0 0;color:var(--mute);line-height:1.6}#account-address{overflow-wrap:anywhere}@media(max-width:760px){.balance-row{grid-template-columns:repeat(2,minmax(0,1fr))}.balance-row strong{grid-column:1/-1}}
+
+.backup-reminder{border:1px solid var(--seal);background:#101832;padding:15px;margin:0 0 18px;font-size:13px}.backup-reminder[hidden]{display:none}.backup-reminder a{text-decoration:underline;text-underline-offset:3px}
+
+.order-note{color:var(--mute);line-height:1.6;margin:15px 0 0}
+
+#job-progress{display:block;width:100%;height:4px;margin:16px 0 -6px;accent-color:var(--seal)}#job-progress[hidden]{display:none}
