@@ -501,3 +501,14 @@ Validation on 2026-11-06:
 - Touched Solidity files pass `forge fmt --check`; the patch passes `git diff --check`.
 
  Other S-items remain proposals and are not fixed by this patch.
+
+
+Exact-lot refinement for the PR #6 dust-companion review: partial input now rounds
+down to amountIn/gcd(amountIn,minAmountOut). Equal-limit orders share that reduced
+lot size. This leaves unfillable dust with its owner without rounding down the
+minimum output or allowing price-selected exceptions within the group. Zero-minimum
+orders use one input unit; zero-output allocations remain unfilled. The Solidity
+regressions include the review's 300-token/40-wei pair and both trade directions.
+Coprime amount/minimum orders may have no nonzero partial lot; full fills remain
+available. This is a discrete feasibility boundary, not a promise that every
+batch clears. The matching solver and model must use the same lot rounding.

@@ -122,11 +122,11 @@ contract ProportionalClearingTest is BlindfoldTest {
         assertEq(vault.lockedOf(alice, address(t0)), 1000e18);
     }
 
-    function test_partial_roundingCannotWeakenMinimumAndRevertIsAtomic() public {
+    function test_partial_dustUnfilledAndMarginalCheckStillAtomic() public {
         BatchAuction.Order[] memory os = new BatchAuction.Order[](1);
         os[0] = _o(alice, true, 3, 2);
         (uint64 b, uint256[] memory ids) = _ready(os);
-        vm.expectRevert(abi.encodeWithSelector(BlindfoldSettlement.PartialLimit.selector, ids[0]));
+        vm.expectPartialRevert(BlindfoldSettlement.NotMarginalPrice.selector);
         s.settle(b, (2 * Q96 + 2) / 3, ids[0], 2);
         assertFalse(s.finalized(b));
         assertEq(s.clearingPriceX96(b), 0);
@@ -136,6 +136,42 @@ contract ProportionalClearingTest is BlindfoldTest {
         s.expire(b);
         assertEq(vault.lockedOf(alice, address(t0)), 0);
         assertEq(vault.openCommitments(alice), 0);
+        _assertSolvent();
+    }
+
+    function test_partial_dustCompanionCannotBlockEitherDirection() public {
+        uint256 snap = vm.snapshotState();
+        for (uint256 side; side < 2; side++) {
+            bool sell = side == 0;
+            BatchAuction.Order[] memory os = new BatchAuction.Order[](2);
+            os[0] = _o(alice, sell, sell ? 1000e18 : 900e18, sell ? 900e18 : 810e18);
+            os[1] = _o(bob, sell, 10, 9);
+            (uint64 b, uint256[] memory ids) = _ready(os);
+            address input = sell ? address(t0) : address(t1);
+            uint256 beforeDust = vault.balanceOf(bob, input);
+            s.settle(b, sell ? _sellPrice() : 10 * Q96 / 9, ids[0], 540e18);
+            assertEq(vault.balanceOf(bob, input), beforeDust);
+            assertEq(vault.lockedOf(bob, input), 0);
+            assertEq(vault.openCommitments(bob), 0);
+            _assertSolvent();
+            if (side == 0) vm.revertToState(snap);
+        }
+    }
+
+    function test_partial_reviewFortyWeiCompanionRegression() public {
+        BatchAuction.Order[] memory os = new BatchAuction.Order[](3);
+        os[0] = _o(alice, true, 300e18, 292.5e18);
+        os[1] = _o(bob, false, 10e18, 9e18);
+        os[2] = _o(carol, true, 40, 39);
+        (uint64 b, uint256[] memory ids) = _ready(os);
+        lp.modifyLiquidity(key, IPoolManager.ModifyLiquidityParams(-60_000, 60_000, -9e21, 0), "");
+        uint256 p = (975 * Q96 + 999) / 1000;
+        p += p / 100;
+        s.settle(b, p, ids[0], 13e18);
+        assertEq(vault.balanceOf(alice, address(t0)), 987e18);
+        assertEq(vault.balanceOf(carol, address(t0)), 1000e18);
+        assertEq(vault.lockedOf(carol, address(t0)), 0);
+        assertEq(vault.openCommitments(carol), 0);
         _assertSolvent();
     }
 

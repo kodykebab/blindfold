@@ -5,6 +5,7 @@ Allocation and payout arithmetic use integer raw token units. No float arithmeti
 Run: python3 -m unittest discover -s contracts/test/clearing_model -v
 """
 from dataclasses import dataclass
+from math import gcd
 from fractions import Fraction as F
 
 
@@ -53,7 +54,8 @@ def prorata(orders, numerator, denominator):
         raise ValueError("invalid fraction")
     if orders and any(not orders[0].same_limit(o) for o in orders):
         raise ValueError("not an equal-limit group")
-    return tuple(o.amount * numerator // denominator for o in orders)
+    return tuple((o.amount * numerator // denominator) // (o.amount // gcd(o.amount, o.minimum)) *
+                 (o.amount // gcd(o.amount, o.minimum)) for o in orders)
 
 
 @dataclass(frozen=True)
