@@ -56,6 +56,7 @@ contract BlindfoldTest is Test {
                 depositAmount: DEPOSIT,
                 bountyBps: BOUNTY_BPS,
                 treasury: treasury,
+                commitFee: 0,
                 schedule: BatchAuction.Schedule({start: T0, batchLength: 30, revealLength: 24, settleLength: 30}),
                 toleranceBps: TOL_BPS
             })

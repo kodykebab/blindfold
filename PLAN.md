@@ -367,3 +367,10 @@ Cut in this order, and never cut a Must (R1, R3, R7, R8, the Aqua fill with real
 5. R9 suspects.
 6. `ADMISSION=real` (demo with `mock`).
 7. The side-by-side normal-pool sandwich.
+
+
+## Fee and schedule integration
+
+Deployments pass `Config.commitFee` explicitly. `schedule.start - DRAND_GENESIS` and `schedule.batchLength` are multiples of three, and `0 < settleLength <= batchLength`. Round a local start down to the current drand boundary. Both constraints apply: aligned beacon publication and nonoverlapping settlement windows.
+
+Validate the combined contracts with `cd contracts && forge test --fuzz-runs 4096` and `python3 -m unittest discover -s contracts/test/clearing_model -v` from the repository root. Client/keeper fixtures must use the generated configuration tuple and compatible schedules. Consumers treat `Released` as a terminal commitment status and read `admissionRequired()` to distinguish release from slashing when describing cleanup.

@@ -9,7 +9,7 @@ import {BlindfoldTest} from "./Blindfold.t.sol";
 
 contract ScheduleHarness is BatchAuction {
     constructor(Schedule memory schedule)
-        BatchAuction(BlindfoldVault(address(0)), address(1), 0, 0, address(2), schedule)
+        BatchAuction(BlindfoldVault(address(0)), address(1), 0, 0, address(2), 0, schedule)
     {}
 
     function _inputToken(bool) internal pure override returns (address) {
@@ -23,18 +23,22 @@ contract SettlementScheduleTest is Test {
         new ScheduleHarness(BatchAuction.Schedule(1_800_000_000, 30, 24, 60));
         vm.expectRevert(abi.encodeWithSelector(BatchAuction.InvalidSettlementWindow.selector, 0, 30));
         new ScheduleHarness(BatchAuction.Schedule(1_800_000_000, 30, 24, 0));
-        vm.expectRevert(abi.encodeWithSelector(BatchAuction.InvalidSettlementWindow.selector, 10, 9));
+        vm.expectRevert(
+            abi.encodeWithSelector(BatchAuction.MisalignedSchedule.selector, uint64(1_800_000_000), uint32(10))
+        );
         new ScheduleHarness(BatchAuction.Schedule(1_800_000_000, 10, 24, 10));
-        vm.expectRevert(abi.encodeWithSelector(BatchAuction.InvalidSettlementWindow.selector, 1, 0));
+        vm.expectRevert(
+            abi.encodeWithSelector(BatchAuction.MisalignedSchedule.selector, uint64(1_800_000_000), uint32(2))
+        );
         new ScheduleHarness(BatchAuction.Schedule(1_800_000_000, 2, 24, 1));
     }
 
     function testFuzz_windowsNeverOverlap(uint32 lengthSeed, uint32 startOffset, uint32 batchSeed, uint32 reveal)
         public
     {
-        uint32 length = uint32(bound(uint256(lengthSeed), 3, 100_000));
+        uint32 length = uint32(3 * bound(uint256(lengthSeed), 1, 33_333));
         uint32 maximum = length / 3 * 3;
-        uint64 start = 1_692_803_367 + uint64(startOffset);
+        uint64 start = 1_692_803_367 + uint64(startOffset) / 3 * 3;
         uint64 b = uint64(bound(uint256(batchSeed), 0, 100_000));
         ScheduleHarness h = new ScheduleHarness(BatchAuction.Schedule(start, length, reveal, maximum));
         assertLe(h.settleCloses(b), h.revealCloses(b + 1));
@@ -44,6 +48,15 @@ contract SettlementScheduleTest is Test {
     function test_allDrandAlignmentsAndCadenceRemainders() public {
         for (uint64 offset; offset < 3; offset++) {
             for (uint32 cadence = 30; cadence <= 32; cadence++) {
+                if (offset != 0 || cadence % 3 != 0) {
+                    vm.expectRevert(
+                        abi.encodeWithSelector(
+                            BatchAuction.MisalignedSchedule.selector, uint64(1_692_803_367 + offset), cadence
+                        )
+                    );
+                    new ScheduleHarness(BatchAuction.Schedule(1_692_803_367 + offset, cadence, 24, 30));
+                    continue;
+                }
                 ScheduleHarness h = new ScheduleHarness(BatchAuction.Schedule(1_692_803_367 + offset, cadence, 24, 30));
                 for (uint64 b; b < 6; b++) {
                     assertLe(h.settleCloses(b), h.revealCloses(b + 1));

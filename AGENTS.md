@@ -27,12 +27,13 @@ npm ci --prefix packages/proof-bench --ignore-scripts
 
 ## Test
 ```bash
-cd contracts && forge test                                         # everything: 89 tests
+cd contracts && forge test                                         # full suite, including configured forks
 forge test --match-path test/Blindfold.t.sol                       # mechanism, local PoolManager (19)
 forge test --match-contract BlindfoldUnichainForkTest              # same suite on Unichain's real PoolManager (fork, 19)
 forge test --match-path test/ReservationModel.t.sol --fuzz-runs 4096   # private funding model (re-runs the 19 mechanism tests too)
 forge test --match-path 'test/swapvm/*'                            # SealedClearing opcode (4)
 forge test --match-path 'test/court/*'                             # Court, offline, real mainnet sandwiches (18)
+forge test --match-path test/FeesAndTiming.t.sol                   # commit fee, schedule alignment, unrevealed policy (11)
 ```
 ```bash
 cargo test --manifest-path packages/proof-bench/Cargo.toml --locked --release                          # native admission relation
@@ -125,8 +126,8 @@ Planned, with owners in [PLAN.md](PLAN.md#team-and-lanes): `contracts/script/` (
 6. **Public RPCs prune state after ~128 blocks.** Build anchor proofs (`eth_getProof`) right after choosing the anchor. Anchors must be L1 blocks Base's `L1Block` has actually reported (`prove.mjs` reads it from Base).
 7. **The L1 anchor window is 8,191 blocks** (~27 h): the target sandwich must be within it.
 8. Prices are `token1 per token0 × 2^96` (= `sqrtPriceX96² / 2^96`). `activeClearingPriceX96(t1, t0)` returns the inverse.
-9. drand quicknet: genesis `1692803367`, period 3 s, chain hash `52db9ba7…c84e971`. Batch `b` targets round `roundAt(commitsClose(b)) + 2`, which is 4–6 s after commits close; it's 6 s only when `start − genesis` and `batchLength` are multiples of 3 (REVIEW R7).
-10. **`ReservationModelTest` inherits `BlindfoldTest`**, so it re-runs the 19 mechanism tests. That's why the total is 89, not 70.
+9. drand quicknet: genesis `1692803367`, period 3 s, chain hash `52db9ba7…c84e971`. Batch `b` targets round `roundAt(commitsClose(b)) + 2`, exactly 6 s after commits close: the constructor reverts with `MisalignedSchedule` unless `start − genesis` and `batchLength` are multiples of 3 (REVIEW R7). Deploy scripts and test chains must round `start` to a round boundary.
+10. **`ReservationModelTest` inherits `BlindfoldTest`**, so it re-runs the 19 mechanism tests. Count inherited tests separately when reporting suite totals.
 11. **Admission proofs are a prototype.** `commit()` still accepts any ciphertext; `ReservationModel.t.sol` uses plaintext witnesses. Don't treat either as enforced until the admission entry point lands (REVIEW R2).
 12. **Don't time-travel a chain the keeper uses.** drand runs on wall-clock time, so `evm_increaseTime` puts chain time ahead of the round and reveals break. Run time-travel fixtures (`SeedBatch.s.sol`) on their own fresh anvil.
 
