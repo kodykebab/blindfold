@@ -273,6 +273,8 @@ test('fixes 4-5: quote-based limits, refusals without a usable market, resubmit 
     assert.equal(r.code, 0, r.err)
     assert.match(r.out, /quote: 10 TKA ≈ 10 TKB at the market reference; limit 50 bps below it/)
     assert.match(r.out, /order: sell 10 TKA for at least 9\.95 TKB in batch 0, or you keep your funds/)
+    assert.match(r.out, /wait: settles about \d+s from now/)
+    assert.match(r.out, /cost of waiting: typically 3-6 bps/)
     r = await plain.cli(10, ['commit', 'sell', '10', '--dry-run'])
     assert.notEqual(r.code, 0)
     assert.match(r.err, /no external market to quote from/)

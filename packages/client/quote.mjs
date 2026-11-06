@@ -62,3 +62,22 @@ export function nextPreparation({ prepBatch, current, commitsClose, batchLength,
   if (prepBatch !== undefined && prepBatch !== null && BigInt(prepBatch) >= target) return null
   return target
 }
+
+/**
+ * What waiting for the batch typically costs, from the order-flow replay of 2026-11-06 (packages/solver/replay.mjs,
+ * PR #76): filled orders against the same swap executed immediately, median, 50 bps limits. Shown before every order
+ * so users can judge whether the protection is worth it (FIXES.md fix 8).
+ */
+export const WAIT_COST = { deepBps: [3, 6], thinBps: [8, 18], source: 'order-flow replay, 2026-11-06' }
+
+/** Seconds from `now` until the batch can settle: its reveal deadline plus about one block for the solver. */
+export const settlesIn = ({ now, revealCloses, block = 12n }) => (revealCloses > now ? revealCloses - now : 0n) + block
+
+export function waitNote({ now, revealCloses }) {
+  const { deepBps: d, thinBps: t, source } = WAIT_COST
+  return [
+    `wait: settles about ${settlesIn({ now, revealCloses })}s from now`,
+    `cost of waiting: typically ${d[0]}-${d[1]} bps on deep pools and ${t[0]}-${t[1]} bps on thin ones against an immediate swap (${source}).`
+      + ' Blindfold pays off when MEV protection is worth more than that: larger orders, or pairs that get sandwiched.',
+  ]
+}

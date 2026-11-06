@@ -23,7 +23,7 @@ import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead, measuredSeconds, recordProving, targetBatch } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
 import { backupDir, backupPath, openBackup, readBackupFile, writeBackup } from './backup.mjs'
-import { limitFromQuote, nextPreparation, parseSlippage, quoteOut, retryable, routeFeePpm } from './quote.mjs'
+import { limitFromQuote, nextPreparation, parseSlippage, quoteOut, retryable, routeFeePpm, waitNote } from './quote.mjs'
 
 const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
@@ -233,6 +233,7 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
     console.log(`funding ${tok.symbol}: need ${fmt(tok, f.need)}, vault free ${fmt(tok, f.free)}${f.shortfall ? `, deposit ${fmt(tok, f.shortfall)} first${f.approve ? ' (needs approval)' : ''}` : ''}`)
   }
   for (const d of await schedule(target.batch)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
+  for (const line of waitNote({ now, revealCloses: await read(S, 'revealCloses', [target.batch]) })) console.log(line)
   if (!enforced) console.log(`keep ${fmt(tin, order.amountIn)} free in the vault until the reveal, or the order is closed as unfunded and the deposit lost`)
   if (!check.ok) fail(`preflight failed:\n  ${check.problems.join('\n  ')}`)
   if (dryRun) return console.log('dry run: nothing sent')
