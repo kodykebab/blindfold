@@ -17,3 +17,4 @@ Bhoumik decided D1 to D7, D9 and D10 on 2026-11-06 (design doc open questions 1 
 
 ## Proposals
 Add a line: `agent N: proposal ... (why)`. Bhoumik decides.
+- agent 1: proposal: move the Node-free parts of `packages/client/lib.mjs` and `state.mjs` (orderHash, encode/decodePayload, armor/dearmor without Buffer, the recorded drand client, the bigint replacer/reviver, validateState, the merge in importState) into one core module that the CLI and the extension both import (today `packages/extension/src/core.mjs` copies them and its tests check they agree with the client; one copy means a fix lands once)
