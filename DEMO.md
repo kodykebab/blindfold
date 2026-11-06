@@ -36,11 +36,16 @@ forge build --root contracts
 scripts/demo-multi.sh
 ```
 
-### Timings from a rehearsal
+The rehearsal record, with timings and transactions, is under **Rehearsal** at the end of this file.
 
-Recorded below after a local run. If that run failed, the failure line is the record, not a claim that settlement happened.
+## Both demos as tests
 
-See the command log at the bottom of this file after the rehearsal note is filled in.
+```bash
+source env.sh
+DEMO_E2E=1 node --test scripts/demos.e2e.test.mjs   # also part of scripts/e2e.sh
+```
+
+The Court test passes only when the beneficiary's balance increases by the payout (`PASS  beneficiary … paid … ETH`). The three-user test passes only when every step, including all withdrawals, succeeds. Court's transaction printer had a quoting bug that stopped the script at its first step; it was fixed when these tests were added.
 
 ## Swarm
 
