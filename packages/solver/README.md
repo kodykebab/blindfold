@@ -74,3 +74,20 @@ Its 13 samples cover blocks 26,353,849–26,353,945: observation ages 0–84 sec
 harmonic liquidity 1.663–1.687 × 10^18, approximate spot/TWAP deviations 4.34–12.52
 basis points and aggregate RPC read latency 545–760 ms per sample. This is a
 96-block sample, not a volatile-period or day-long calibration.
+
+## Multi-hop market integration
+
+A settlement configured with `UniswapV3Route` uses the same external reference
+and settlement calls. No solver-supplied router calldata or per-batch route
+selection is added. The route's endpoint tokens remain the auction pair.
+
+The CLI integration test additionally deploys a real two-hop adapter over local
+pool fixtures and submits batches in both directions. It covers eleven scenarios
+in total. The contract suite separately executes WBTC/WETH/USDC against real
+Ethereum pools and verifies intermediate balance cleanup and endpoint payouts.
+
+The allocation model retains the nominal proportional input when it meets the
+ceil-rounded minimum. Only a violating allocation falls back to whole reduced
+input lots; a zero result stays unfilled. Largest-order representatives preserve
+fraction precision when dust orders share a limit. This is a bounded candidate
+search, not proof of maximum volume or universal clearing.
