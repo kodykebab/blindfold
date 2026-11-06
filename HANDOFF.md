@@ -119,3 +119,27 @@ For the solver and keeper owners: after a successful settle, call `mirrorSettled
 - An **Arkiv access key** (hub.arkiv.network/access-keys) and faucet **tGLM** for a team wallet.
 - A **Swarm postage batch** (Arkiv/Swarm booth, or a funded Bee light node).
 - **Booth questions:** 1inch: is the re-composed router (official SwapVM + AquaOpcodes + one appended opcode) eligible? Uniswap: are the sealed hook and Court both in scope? Arkiv: sanity-check the entity and expiry design.
+
+## Orders UI (section 5)
+
+### Test summary
+- `(cd packages/client && npm test)`: **55 passing**, 7 skipped (offline fixtures / opt-in gates), 0 failing.
+- `(cd app/haveibeensandwiched && npm test)`: **55 passing**, 4 skipped (opt-in e2e gates), 1 failed (`server.test.mjs` network bind blocked by sandbox). Offline unit tests (`orders.test.mjs`, `status.test.mjs`, `check.test.mjs`, `arkiv.test.mjs`, `court.test.mjs`, `backup.test.mjs`, `trading-server.test.mjs`): **46/46 passing**.
+- `ORDERS_E2E=1 node --test app/haveibeensandwiched/orders.e2e.test.mjs`: **3 scenarios implemented** (Beacon delay, Keeper outage, Expiry); skipped in sandbox due to Anvil spawn / network restrictions (`spawn EPERM`), ready for live unsandboxed execution.
+
+### What's done
+- Added `--json` flag to `track`, `blockers`, and `cleanup` in `packages/client/cli.mjs`, backed by pure model functions in `packages/client/orders.mjs`. Plain terminal text output remains identical without the flag.
+- Created `packages/client/orders.mjs` exporting `orderView`, `ordersPayload`, `blockersPayload`, and `cleanupPayload`, tested in `packages/client/test/orders.test.mjs` across every state, partial/full fill, sealed orders with/without local state, and string conversions.
+- Updated `app/haveibeensandwiched/trading-server.mjs` to invoke `--json` on `track`, `blockers`, `cleanup`, and `cleanup-preview`.
+- Built pure view model `app/haveibeensandwiched/orders.mjs` with `parseTrack`, `parseBlockers`, `parseCleanup` (never throwing on unreadable output), `orderRows`, `withdrawalSummary`, `policyText`, and duration/countdown formatters. Thoroughly tested in `app/haveibeensandwiched/orders.test.mjs` (17/17 tests passing).
+- Added accessible `<section id="orders" aria-labelledby="orders-h">` to `trade.html` with policy paragraph, live withdrawal summary, accessible table with `<th scope="col">` columns (Order, Batch, Stage, Amounts, Next step), responsive table wrapping (375px compatible), and dynamic "Withdraw all" actions.
+- Wired live tracking, sequential job execution, confirm preview dialog for "Reveal now" and "Clean up", countdown timers with automatic refresh, and formatted amounts in `trade.mjs`.
+- Implemented Playwright browser acceptance scenarios in `app/haveibeensandwiched/orders.e2e.test.mjs` for beacon delay, keeper outage, and expiry with accessibility and no-raw-CLI assertions.
+- Updated Section 5 of `CHECKLIST.md` with passing test citations and updated item counts (34 done, 7 partly done, 52 open of 93).
+
+### What's left
+- Running `ORDERS_E2E=1 node --test app/haveibeensandwiched/orders.e2e.test.mjs` in an unsandboxed environment where `anvil` can bind local ports.
+
+### Requests from orders-ui (rule 8)
+- None. All interfaces and schemas required for Section 5 are fully implemented and integrated.
+

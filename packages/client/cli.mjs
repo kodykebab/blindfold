@@ -282,16 +282,52 @@ async function resumeAdmission() {
 const myCommitments = async () =>
   track(await pub.getContractEvents({ address: S, abi: abi.settlement, fromBlock: BigInt(dep.deployBlock ?? 0) }), me)
 
-async function trackAll() {
+async function trackAll(asJson) {
   const t = await tokens()
   const mine = await myCommitments()
-  if (!mine.size) return console.log('no commitments')
-  for (const c of mine.values()) {
-    const o = c.order
-    const what = o ? `${o.zeroForOne ? 'sell' : 'buy'} ${o.amountIn}` : 'sealed'
-    const fill = fillDescription(c, (token, amount) => fmt(t[token], amount))
-    console.log(`#${c.id} batch ${c.batchId}: ${c.state} (${what})${fill}`)
+  if (!asJson) {
+    if (!mine.size) return console.log('no commitments')
+    for (const c of mine.values()) {
+      const o = c.order
+      const what = o ? `${o.zeroForOne ? 'sell' : 'buy'} ${o.amountIn}` : 'sealed'
+      const fill = fillDescription(c, (token, amount) => fmt(t[token], amount))
+      console.log(`#${c.id} batch ${c.batchId}: ${c.state} (${what})${fill}`)
+    }
+    return
   }
+  const has = (n) => abi.settlement.some((f) => f.type === 'function' && f.name === n)
+  const [depositAmount, bountyBps, now, enforced] = await Promise.all([
+    read(S, 'depositAmount'),
+    has('bountyBps') ? read(S, 'bountyBps') : 0n,
+    pub.getBlock().then((x) => x.timestamp),
+    admissionRequired(),
+  ])
+  const fee = has('commitFee') ? await read(S, 'commitFee') : 0n
+  const dt = t.byAddress[t.depositToken]
+  const policy = {
+    depositToken: dt.symbol,
+    depositAmount: formatUnits(depositAmount, dt.decimals),
+    commitFee: formatUnits(fee, dt.decimals),
+    bountyBps: Number(bountyBps),
+    admissionRequired: Boolean(enforced),
+  }
+  const open = [...mine.values()]
+  const sched = new Map()
+  for (const b of new Set(open.map((c) => c.batchId))) {
+    const [revealOpens, revealCloses, settleCloses] = await Promise.all(['revealOpens', 'revealCloses', 'settleCloses'].map((f) => read(S, f, [b])))
+    sched.set(b, { revealOpens, revealCloses, settleCloses })
+  }
+  const kept = new Map(loadState(dep, me).commitments.map((x) => [x.hash, x]))
+  const { ordersPayload } = await import('./orders.mjs')
+  const payload = ordersPayload({
+    policy,
+    now: Number(now),
+    commitments: [...mine.values()],
+    tokens: t,
+    saved: kept,
+    schedules: sched,
+  })
+  console.log(JSON.stringify(payload))
 }
 
 async function exitSteps() {
@@ -310,29 +346,49 @@ async function exitSteps() {
 const describe = ({ c, action, at, why }, now) =>
   `#${c.id} batch ${c.batchId} (${c.state}): ${action === 'wait' ? `wait ${at - now}s` : action} — ${why}`
 
-async function blockers() {
+async function blockers(asJson) {
   const { now, steps } = await exitSteps()
+  if (asJson) {
+    const { blockersPayload } = await import('./orders.mjs')
+    return console.log(JSON.stringify(blockersPayload({ now, steps })))
+  }
   if (!steps.length) return console.log('nothing blocks withdrawal')
   for (const s of steps) console.log(describe(s, now))
 }
 
 /** Guided exit: one transaction per step, in order; reports what still blocks withdrawal. */
-async function cleanup(dryRun) {
+async function cleanup(dryRun, asJson) {
   const { now, kept, steps } = await exitSteps()
   const expired = new Set()
+  const done = []
   for (const s of steps) {
-    console.log(describe(s, now))
-    if (dryRun || s.action === 'wait') continue
+    if (!asJson) console.log(describe(s, now))
+    if (s.action === 'wait') continue
     const { id, batchId } = s.c
-    if (s.action === 'reveal') await send(S, abi.settlement, 'reveal', [id, kept.get(s.c.hash).order, kept.get(s.c.hash).salt])
-    if (s.action === 'slash' || s.action === 'release') await send(S, abi.settlement, 'slashUnrevealed', [id])
-    if (s.action === 'expire' && !expired.has(batchId)) {
-      expired.add(batchId)
-      await send(S, abi.settlement, 'expire', [batchId])
+    let tx = null
+    if (!dryRun) {
+      if (s.action === 'reveal') {
+        const receipt = await send(S, abi.settlement, 'reveal', [id, kept.get(s.c.hash).order, kept.get(s.c.hash).salt])
+        tx = receipt.transactionHash
+      }
+      if (s.action === 'slash' || s.action === 'release') {
+        const receipt = await send(S, abi.settlement, 'slashUnrevealed', [id])
+        tx = receipt.transactionHash
+      }
+      if (s.action === 'expire' && !expired.has(batchId)) {
+        expired.add(batchId)
+        const receipt = await send(S, abi.settlement, 'expire', [batchId])
+        tx = receipt.transactionHash
+      }
     }
+    done.push({ id: String(id), action: s.action, tx })
+  }
+  const open = await read(dep.vault, 'openCommitments', [me])
+  if (asJson) {
+    const { cleanupPayload } = await import('./orders.mjs')
+    return console.log(JSON.stringify(cleanupPayload({ dryRun, done, stillBlocking: open })))
   }
   if (dryRun) return console.log('dry run: nothing sent')
-  const open = await read(dep.vault, 'openCommitments', [me])
   console.log(open ? `${open} commitment(s) still block withdrawal; run blockers` : 'nothing blocks withdrawal')
 }
 
@@ -380,11 +436,11 @@ const commands = {
   status: () => status(),
   deposit: () => deposit(args[0], args[1]),
   commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run'), args.includes('--vault-only'), args.includes('--both-funded')),
-  track: () => trackAll(),
+  track: () => trackAll(args.includes('--json')),
   'prepare-admission': () => prepare(args[0]),
   'resume-admission': () => resumeAdmission(),
-  blockers: () => blockers(),
-  cleanup: () => cleanup(args.includes('--dry-run')),
+  blockers: () => blockers(args.includes('--json')),
+  cleanup: () => cleanup(args.includes('--dry-run'), args.includes('--json')),
   withdraw: () => withdraw(args[0], args[1] ?? 'all'),
   'export-state': () => exportCmd(args[0]),
   'import-state': () => importCmd(args[0]),
