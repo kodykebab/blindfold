@@ -49,6 +49,19 @@ abstract contract BatchAuction {
         uint32 settleLength;
     }
 
+    /// @notice The input that failed configuration validation (REVIEW S18).
+    enum ConfigField {
+        Vault,
+        DepositToken,
+        Treasury,
+        DepositAmount,
+        CommitFee,
+        RevealLength,
+        ToleranceBps,
+        PoolKey
+    }
+
+    error InvalidAuctionConfig(ConfigField field);
     error InvalidSettlementWindow(uint256 requested, uint256 maximum);
     error MisalignedSchedule(uint64 start, uint32 batchLength);
     error AdmissionRequired();
@@ -116,6 +129,18 @@ abstract contract BatchAuction {
         if (s.settleLength == 0 || s.settleLength > maximum) {
             revert InvalidSettlementWindow(s.settleLength, maximum);
         }
+        // REVIEW S18: reject a deployment that can never work before it accepts an order
+        if (address(vault_).code.length == 0) revert InvalidAuctionConfig(ConfigField.Vault);
+        if (depositToken_.code.length == 0) revert InvalidAuctionConfig(ConfigField.DepositToken);
+        if (treasury_ == address(0)) revert InvalidAuctionConfig(ConfigField.Treasury);
+        // A zero deposit makes the reveal bounty and slashing meaningless. The uint128 bounds keep
+        // depositAmount * bountyBps and the fee transfers far from overflow (REVIEW S17).
+        if (depositAmount_ == 0 || depositAmount_ > type(uint128).max) {
+            revert InvalidAuctionConfig(ConfigField.DepositAmount);
+        }
+        if (commitFee_ > type(uint128).max) revert InvalidAuctionConfig(ConfigField.CommitFee);
+        // nobody can reveal inside an empty window, so every commitment would end slashed or released
+        if (s.revealLength == 0) revert InvalidAuctionConfig(ConfigField.RevealLength);
         vault = vault_;
         depositToken = depositToken_;
         depositAmount = depositAmount_;
