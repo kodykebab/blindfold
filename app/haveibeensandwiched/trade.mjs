@@ -54,7 +54,7 @@ function showError(message) { const why = explainClientError(message); output.te
 const jobStore = (() => { try { return createJobStore(localStorage) } catch { return createJobStore(null) } })()
 const mobile = matchMedia('(max-width: 760px) and (pointer: coarse)')
 const desktopOnly = new Set(['prepare-admission', 'preflight', 'commit', 'deposit', 'cleanup', 'resume-admission', 'backup-import'])
-let busy = false, lastStatus = null, walletState = { wallets: [], selected: null }
+let hosted = false, busy = false, lastStatus = null, walletState = { wallets: [], selected: null }
 let lastReview = null, confirmAfterReview = false, depositWatch = null, transferBlock = null, queued = null
 let latestTrack = null, latestBlockers = null, countdownTimer = null
 const savedJob = () => jobStore.get()
@@ -132,7 +132,7 @@ async function follow(id) {
   }
 }
 async function run(input) {
-  if (busy) return
+  if (busy || hosted) return
   if (savedJob()) { await follow(savedJob()); return }
   const guarded = new Set(['prepare-admission', 'preflight', 'commit', 'deposit', 'withdraw', 'cleanup', 'resume-admission', 'backup-export', 'backup-import'])
   const mismatch = walletMismatch(walletState.selected, lastStatus)
@@ -594,7 +594,19 @@ document.querySelector('#wallet-connect').addEventListener('click', async () => 
 document.querySelector('#wallet-disconnect').addEventListener('click', () => walletView.disconnect())
 mobile.addEventListener('change', () => setBusy(busy))
 setBusy(false)
-if (savedJob()) follow(savedJob())
+// The trading API is the local server's; a hosted copy of this page (e.g. on Vercel) has none, and must never get one:
+// it would mean running a signing CLI on a server. The local server answers unknown job ids with JSON; anything else
+// means no local service, so the page becomes a read-only preview with instructions.
+const localService = fetch('/api/trade/probe', { cache: 'no-store' })
+  .then((r) => (r.headers.get('content-type') ?? '').includes('application/json'), () => false)
+localService.then((local) => {
+  if (local) { if (savedJob()) follow(savedJob()); return }
+  hosted = true
+  document.querySelector('#hosted-notice').hidden = false
+  document.querySelector('.nav .live').textContent = 'PREVIEW'
+  setBusy(true); document.querySelector('#job-progress').hidden = true
+  state.textContent = 'PREVIEW'; output.textContent = 'This hosted page is a preview. Trading runs on your machine: see the panel at the top.'
+})
 
 document.querySelector('#restore-file').addEventListener('change', async (event) => {
   const file = event.currentTarget.files[0]
@@ -607,6 +619,7 @@ document.querySelector('#restore-file').addEventListener('change', async (event)
 })
 
 async function loadHistory() {
+  if (!await localService) return
   const message = document.querySelector('#history-message')
   const list = document.querySelector('#history-list')
   try {
@@ -629,6 +642,7 @@ async function loadHistory() {
   }
 }
 async function loadCourt() {
+  if (!await localService) return
   const section = document.querySelector('#court-view')
   try {
     const response = await fetch('/api/court', { cache: 'no-store' })

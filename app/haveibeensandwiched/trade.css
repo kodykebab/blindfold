@@ -23,3 +23,5 @@
 .prover-steps .step.done { opacity: .7; }
 .prover-steps .step.current { font-weight: 600; }
 .prover-steps .step.failed { color: #b42318; font-weight: 600; }
+.hosted-notice { border-color: var(--seal, #4f5bd5); margin-bottom: 18px; }
+.hosted-notice pre { overflow-x: auto; white-space: pre; padding: 10px; background: rgba(0,0,0,.25); font-size: 12px; }

@@ -4,6 +4,9 @@
 <header class="nav"><a class="brand" href="/"><span></span>Blindfold</a><div class="nav-right"><span class="live"><i></i> LOCAL MODE</span><a href="/">← Sandwich checker</a></div></header>
 <main>
   <div class="intro"><div><p class="label">BLINDFOLD / PRIVATE TRADING</p><h1>Trade beyond<br><em>the mempool.</em></h1><p class="sub">Seal your order. Let the batch find its price.</p></div><div class="intro-note"><span class="label">01 / YOUR WORKSPACE</span><p>Your orders are encrypted locally and settled together.</p></div></div>
+  <section id="hosted-notice" class="panel hosted-notice" role="note" hidden><p class="label">PREVIEW / RUNS ON YOUR MACHINE</p><h2>Trading runs locally, by design</h2><p>Your key, your sealed orders and your zero-knowledge proofs never touch a server, so this hosted page is a read-only preview. To trade, run Blindfold on your machine and open the page it prints:</p><pre>git clone https://github.com/kodykebab/blindfold &amp;&amp; cd blindfold
+source env.sh
+WEB_PORT=4400 scripts/dev.sh      # then open http://127.0.0.1:4400/trade</pre><p class="fine">Setup steps: <a href="https://github.com/kodykebab/blindfold/blob/main/docs/getting-started.md">Getting started</a>.</p></section>
   <div id="backup-reminder" class="backup-reminder" role="status" hidden><strong>Export a backup now.</strong> Without it, your order can’t be revealed or recovered if this machine is lost. <a href="#backup">Export a private backup</a>, then confirm. <span id="backup-reminder-note"></span> <button id="backup-confirm" type="button" class="link">I’ve saved my backup somewhere private</button></div>
   <p class="mobile-note">Mobile mode: view status and withdraw available funds. Use a desktop to prepare, fund, submit or recover an order.</p>
   <div class="layout"><div class="left">

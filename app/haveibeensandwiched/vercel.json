@@ -2,6 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "npm ci --prefix ../../packages/court-watcher",
   "functions": {
-    "api/check.js": { "maxDuration": 30, "includeFiles": "fixtures.json" }
-  }
+    "api/check.js": {
+      "maxDuration": 30,
+      "includeFiles": "fixtures.json"
+    }
+  },
+  "cleanUrls": true
 }
