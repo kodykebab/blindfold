@@ -192,7 +192,7 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
 - [ ] **court-watcher configurable** · Needs: nothing.
   - **What:** `ETH_RPC` and `V4_POOL_MANAGER` env vars (today `lib.mjs` hardcodes Ethereum mainnet's), so it can scan the local chain.
   - **Check:** `N=300 node find.mjs` still finds mainnet sandwiches with the defaults.
-- [ ] **`scripts/check.sh`** · Needs: nothing.
+- [x] **`scripts/check.sh`** · Needs: nothing.
   - **What it runs:**
     - `forge test`;
     - `npm test` in every `packages/*` that has a `package.json` (auto-discovered, so nobody else edits the script);
