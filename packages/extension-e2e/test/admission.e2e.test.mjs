@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseEther } from 'viem'
-import { startChain, user, Q96 } from '../lib/chain.mjs'
+import { startChain, user } from '../lib/chain.mjs'
 import { launch, stopBridge, EXTENSION_DIST } from '../lib/browser.mjs'
 import { onboard, run } from '../lib/extension.mjs'
 import { hasGo, installHelper, realProverReady, sha256File, REAL } from '../lib/helper.mjs'
@@ -58,7 +58,8 @@ test('E3: two orders admitted with real proofs from the helper, revealed, settle
   let r = await run(app, 'cleanup', { dryRun: false })
   assert.equal(r.state, 'done', r.error)
   await c.warp(await read('revealCloses', [batch]))
-  await c.write(S, 'AdmittedSettlement', 'settle', [batch, Q96], user(1))
+  // no pool liquidity since the main merge (19b2303): peers cross at the reference price, as in E2
+  await c.write(S, 'AdmittedSettlement', 'settlePeer', [batch, 0n, parseEther('1')], user(1))
   for (const token of ['token0', 'token1']) {
     r = await run(app, 'withdraw', { token, amount: 'all' })
     assert.equal(r.state, 'done', r.error)
