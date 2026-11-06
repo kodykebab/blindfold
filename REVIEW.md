@@ -39,12 +39,13 @@ No price is consistent with both, every `settle` reverts, and the batch expires.
 - **Control:** Bob's order alone settles at 1.0041.
 - **Cost:** after `expire`, Mallory's balances are exactly what they were before.
 
-**Fix:** allow a partial fill for the one marginal order, as standard batch auctions do.
-- **New signature:** `settle(b, p, marginalId, marginalAmountIn)`.
-- **Fills:** every other order fills iff its limit holds at `p`. The marginal order fills `marginalAmountIn ≤ amountIn`, and only if its limit price is within `toleranceBps` of `p`.
-- **Remainder:** the unfilled part is unlocked.
-- **Compatibility:** keep `settle(b, p)` as the case with no marginal order, so the change is additive.
-- **Acceptance:** the R1 test settles.
+**Fix:** proportional partial fills for the marginal limit group (selected in the design discussion).
+- **Additive signature:** `settle(b, p, marginalId, marginalAmountIn)`; `settle(b, p)` remains the all-or-none path.
+- **Representative:** `marginalId` identifies a funded order from this batch, not a privileged recipient. Its strictly positive partial input divided by its original input defines the common fraction.
+- **Allocation:** every same-side order with the same exact `minAmountOut / amountIn` ratio receives its input multiplied by that fraction, rounded down. Eligible better same-side limits fill fully, worse limits do not fill; opposing orders keep the existing quote rule.
+- **Limits:** output rounds down at the uniform price; the proportional minimum rounds up. An invalid nonzero partial fill reverts the whole settlement. The representative's limit price must be within the configured tolerance on the executable side of the clearing price.
+- **Remainder:** unfilled input stays in the owner's vault balance and unlocks. Events report actual input and output.
+- **Verification:** see the S1 implementation notes below. This resolves the reproduced case without claiming universal feasibility or a unique solver price.
 
 ## R2. The commit-reveal free option is still open
 **Where:** `BatchAuction.reveal` funding check ([`:183`](contracts/src/BatchAuction.sol#L183)), `BlindfoldVault.deposit` ([`:55`](contracts/src/BlindfoldVault.sol#L55)), `BatchAuction.commit` ([`:153`](contracts/src/BatchAuction.sol#L153)), which never checks the ciphertext.
@@ -478,3 +479,25 @@ Reconcile architecture and plan documents after decisions are accepted, without 
 First settle partial-fill allocation and build an executable reference model. Then address execution-window ordering, admission economics, keeper responsibility, and cleanup UX. Court and optional integrations can progress independently within their existing team lanes.
 
 These recommendations are not implemented by this document. Earlier isolated tests reproduced six existing behaviors: an executable limit order with no admissible clearing price, reversible batch execution order, padding capacity with no protocol fee, a valid price outside the test solver search range, withdrawal blocking until unrevealed cleanup, and shared-router rejection by the Court predicate. Those reproductions are not validation of the proposed solutions, and this documentation update does not claim a fresh full-suite run or production readiness.
+
+
+### S1 implementation notes: proportional clearing branch
+
+Implemented in `kritarth/proportional-clearing`, pending shared-seam review and merge. The user selected proportional allocation across equal-limit orders. The planned four-argument ABI is retained, but the representative now defines the whole group's fraction; consumers must not assume it is the only partial order. PLAN.md records that semantic change.
+
+The implementation reuses the existing settlement lifecycle, vault accounting, residual route, marginal-price check, and expiry. Fill amounts are calculated once and held in memory through collection and payout, preventing those phases from disagreeing. It adds no persisted allocation records, background worker, or recovery lifecycle.
+
+Regression tests in `contracts/test/ProportionalClearing.t.sol` cover the previously infeasible sell, buys, multiple equal-limit orders, representative and reveal-order independence, better/worse price priority, opposing flow, invalid representatives and fractions, strict proportional minimums, atomic rollback and expiration, small-minimum price-band validation, the 64-order limit, crossing into a second liquidity range, and liquidity removal followed by rollback and expiration. `ProportionalClearingFork.t.sol` runs the same suite against the deployed Unichain PoolManager.
+
+The independent exact-rational oracle in `contracts/test/clearing_model` has 13 tests, including 2,000 seeded allocation cases and 1,000 seeded feasibility/accounting cases. Run it with `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s contracts/test/clearing_model -v`. It assumes constant active liquidity and no tick crossings; it is not a bit-exact v4 simulator or production solver.
+
+Remaining S1 gates: a production solver must construct group fractions and handle discrete minimum-output failures. No universal-feasibility or maximum-volume theorem is established. The existing tolerance still permits solver price/quantity discretion; equal-limit allocation removes recipient selection within the chosen group, not all economic discretion. Tiny orders can have no admissible nonzero partial amount because their minimum rounds up. Existing expiry remains the recovery path. Tests cover one liquidity-range crossing and total liquidity removal; arbitrary multi-range capacity is not exhaustively covered.
+
+Validation on 2026-11-06:
+- `forge test --fuzz-runs 1024 -vv`: 153 passing tests across seven suites, including both Unichain fork suites. Inherited mechanism tests run in multiple suites; this is an execution count, not 153 distinct scenarios. The new accounting fuzz test runs 1,024 cases locally and 1,024 on the fork.
+- Independent Python model: 13 passing tests, including the seeded cases described above.
+- `forge build --sizes --skip test --skip script`: settlement runtime 16,963 bytes with the selected compiler, below the 24,576-byte limit.
+- The 64-order partial-settlement call used 1,765,996 gas in the local warm-state test. This excludes setup and is not a cold transaction gas estimate or a network fee quote.
+- Touched Solidity files pass `forge fmt --check`; the patch passes `git diff --check`.
+
+ Other S-items remain proposals and are not fixed by this patch.

@@ -16,7 +16,7 @@ import {BlindfoldVault, IERC20Like} from "./BlindfoldVault.sol";
 
 /// @title BlindfoldSettlement
 /// @notice Anyone proposes the uniform clearing price p* of a batch; the contract verifies it:
-///         1. fills follow from p*: an order fills iff its limit holds at p* (the solver picks no orders);
+///         1. fills follow from p*, or price priority with a common fraction at one marginal limit;
 ///         2. the net imbalance is ONE exact-input residual swap on the sealed v4 pool, whose output
 ///            must cover what the batch owes;
 ///         3. the pool's marginal price after that swap must equal p* within `toleranceBps` (FM-AMM).
@@ -40,8 +40,12 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     error PartialResidual(uint256 wanted, uint256 used);
     error ResidualShort(uint256 out, uint256 owed);
     error Imbalanced();
+    error InvalidMarginalOrder();
+    error PartialLimit(uint256 id);
 
-    event Filled(uint64 indexed batchId, uint256 indexed id, address indexed owner, uint256 amountIn, uint256 amountOut);
+    event Filled(
+        uint64 indexed batchId, uint256 indexed id, address indexed owner, uint256 amountIn, uint256 amountOut
+    );
     event Unfilled(uint64 indexed batchId, uint256 indexed id, address indexed owner);
     event Settled(
         uint64 indexed batchId,
@@ -72,6 +76,16 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         uint256 out0; // token0 owed to filled buys
         uint256 out1; // token1 owed to filled sells
         uint256 fills;
+    }
+
+    struct Fill {
+        uint256 amountIn;
+        uint256 amountOut;
+    }
+
+    struct PartialGroup {
+        Order referenceOrder;
+        uint128 numerator;
     }
 
     struct Residual {
@@ -137,9 +151,42 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     // ---- settle
 
     function settle(uint64 batchId, uint256 priceX96) external {
+        PartialGroup memory group;
+        _settle(batchId, priceX96, group);
+    }
+
+    /// @notice Share a partial fill across every same-side order with the representative's limit.
+    /// @dev marginalAmountIn / representative.amountIn is the common input fraction.
+    ///      Eligible better same-side limits fill fully; worse limits do not fill. Opposing orders use quote().
+    function settle(uint64 batchId, uint256 priceX96, uint256 marginalId, uint128 marginalAmountIn) external {
+        Order memory referenceOrder = orders[marginalId];
+        if (
+            commitments[marginalId].batchId != batchId || referenceOrder.amountIn == 0
+                || referenceOrder.minAmountOut == 0 || marginalAmountIn == 0
+                || marginalAmountIn >= referenceOrder.amountIn
+        ) revert InvalidMarginalOrder();
+        // Bound the price itself; comparing rounded outputs would allow a wide
+        // band for orders whose minimum is only one raw token unit.
+        uint256 limitPrice = referenceOrder.zeroForOne
+            ? FullMath.mulDivRoundingUp(referenceOrder.minAmountOut, Q96, referenceOrder.amountIn)
+            : FullMath.mulDiv(referenceOrder.amountIn, Q96, referenceOrder.minAmountOut);
+        if (priceX96 == 0) revert ZeroPrice();
+        if (referenceOrder.zeroForOne) {
+            if (priceX96 < limitPrice || priceX96 - limitPrice > FullMath.mulDiv(limitPrice, toleranceBps, BPS)) {
+                revert InvalidMarginalOrder();
+            }
+        } else if (priceX96 > limitPrice || limitPrice - priceX96 > FullMath.mulDiv(priceX96, toleranceBps, BPS)) {
+            revert InvalidMarginalOrder();
+        }
+        _settle(batchId, priceX96, PartialGroup(referenceOrder, marginalAmountIn));
+    }
+
+    function _settle(uint64 batchId, uint256 priceX96, PartialGroup memory group) internal {
         uint256 opens = revealCloses(batchId);
         uint256 closes = opens + settleLength;
-        if (block.timestamp < opens || block.timestamp >= closes) revert OutsideSettleWindow(block.timestamp, opens, closes);
+        if (block.timestamp < opens || block.timestamp >= closes) {
+            revert OutsideSettleWindow(block.timestamp, opens, closes);
+        }
         if (finalized[batchId]) revert Finalized(batchId);
         if (priceX96 == 0) revert ZeroPrice();
         finalized[batchId] = true;
@@ -147,10 +194,10 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         _setActivePrice(priceX96);
 
         uint256[] storage ids = batchOrderIds[batchId];
-        Totals memory t = _collect(ids, priceX96);
+        (Totals memory t, Fill[] memory fills) = _collect(ids, priceX96, group);
         Residual memory r = _route(t);
         _checkMarginal(priceX96);
-        _pay(batchId, ids, priceX96);
+        _pay(batchId, ids, fills);
 
         _setActivePrice(0);
         emit Settled(batchId, priceX96, t.fills, r.zeroForOne, r.amountIn, r.amountOut, r.donated, msg.sender);
@@ -171,21 +218,52 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         emit Expired(batchId, ids.length);
     }
 
-    function _collect(uint256[] storage ids, uint256 priceX96) internal returns (Totals memory t) {
+    function _fill(Order memory o, uint256 id, uint256 priceX96, PartialGroup memory group)
+        internal
+        pure
+        returns (Fill memory f)
+    {
+        if (group.numerator != 0 && o.zeroForOne == group.referenceOrder.zeroForOne) {
+            Order memory ref = group.referenceOrder;
+            // Both products fit uint256: each factor is uint128.
+            uint256 limit = uint256(o.minAmountOut) * ref.amountIn;
+            uint256 boundary = uint256(ref.minAmountOut) * o.amountIn;
+            if (limit > boundary) return f;
+            if (limit == boundary) {
+                f.amountIn = uint256(o.amountIn) * group.numerator / ref.amountIn;
+                if (f.amountIn == 0) return f;
+                f.amountOut = o.zeroForOne
+                    ? FullMath.mulDiv(f.amountIn, priceX96, Q96)
+                    : FullMath.mulDiv(f.amountIn, Q96, priceX96);
+                uint256 minimum = FullMath.mulDivRoundingUp(o.minAmountOut, f.amountIn, o.amountIn);
+                if (f.amountOut == 0 || f.amountOut < minimum) revert PartialLimit(id);
+                return f;
+            }
+        }
+        (uint256 out, bool fills) = quote(o, priceX96);
+        if (fills) f = Fill(o.amountIn, out);
+    }
+
+    function _collect(uint256[] storage ids, uint256 priceX96, PartialGroup memory group)
+        internal
+        returns (Totals memory t, Fill[] memory fills)
+    {
+        fills = new Fill[](ids.length);
         for (uint256 i; i < ids.length; i++) {
             Order memory o = orders[ids[i]];
-            (uint256 out, bool fills) = quote(o, priceX96);
+            Fill memory f = _fill(o, ids[i], priceX96, group);
+            fills[i] = f;
             address tokenIn = _inputToken(o.zeroForOne);
             vault.unlock(o.owner, tokenIn, o.amountIn);
-            if (!fills) continue;
-            vault.transferInternal(o.owner, address(this), tokenIn, o.amountIn);
+            if (f.amountIn == 0) continue;
+            vault.transferInternal(o.owner, address(this), tokenIn, f.amountIn);
             t.fills++;
             if (o.zeroForOne) {
-                t.in0 += o.amountIn;
-                t.out1 += out;
+                t.in0 += f.amountIn;
+                t.out1 += f.amountOut;
             } else {
-                t.in1 += o.amountIn;
-                t.out0 += out;
+                t.in1 += f.amountIn;
+                t.out0 += f.amountOut;
             }
         }
     }
@@ -209,14 +287,14 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         if (diff * BPS > toleranceBps * priceX96) revert NotMarginalPrice(priceX96, poolP);
     }
 
-    function _pay(uint64 batchId, uint256[] storage ids, uint256 priceX96) internal {
+    function _pay(uint64 batchId, uint256[] storage ids, Fill[] memory fills) internal {
         for (uint256 i; i < ids.length; i++) {
             uint256 id = ids[i];
             Order memory o = orders[id];
-            (uint256 out, bool fills) = quote(o, priceX96);
-            if (fills) {
-                vault.transferInternal(address(this), o.owner, _inputToken(!o.zeroForOne), out);
-                emit Filled(batchId, id, o.owner, o.amountIn, out);
+            Fill memory f = fills[i];
+            if (f.amountIn != 0) {
+                vault.transferInternal(address(this), o.owner, _inputToken(!o.zeroForOne), f.amountOut);
+                emit Filled(batchId, id, o.owner, f.amountIn, f.amountOut);
             } else {
                 emit Unfilled(batchId, id, o.owner);
             }
@@ -226,7 +304,10 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
 
     // ---- residual swap on the sealed pool
 
-    function _residualSwap(bool zeroForOne, uint256 amountIn, uint256 owed) internal returns (uint256 out, uint256 donated) {
+    function _residualSwap(bool zeroForOne, uint256 amountIn, uint256 owed)
+        internal
+        returns (uint256 out, uint256 donated)
+    {
         vault.operatorPull(zeroForOne ? token0 : token1, amountIn, address(this));
         (out, donated) = abi.decode(manager.unlock(abi.encode(zeroForOne, amountIn, owed)), (uint256, uint256));
         vault.operatorPush(zeroForOne ? token1 : token0, owed);
