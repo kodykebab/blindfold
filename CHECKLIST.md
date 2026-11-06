@@ -1,7 +1,7 @@
 # Release checklist
 
-Status: `[x]` done · `[~]` partly done · `[ ]` open. Owner: **Claude** (this branch stack), **Cursor** (sections 3 and 8, see `CURSOR_PROMPT.md`), **Team** (needs a decision or another lane).
-Updated after every 3 completed tasks. Last update: 2026-11-07, 21 done, 7 partly done, 65 open of 93.
+Status: `[x]` done · `[~]` partly done · `[ ]` open. Owner: **Claude** (this branch stack), **Cursor** (sections 3 and 8, see `CURSOR_PROMPT.md`), **Antigravity** (section 5 on branch `bhoumik/orders-ui`, see `ANTIGRAVITY_PROMPT.md`), **Team** (needs a decision or another lane).
+Updated after every 3 completed tasks. Last update: 2026-11-07, 22 done, 7 partly done, 64 open of 93.
 
 ## 1. Local setup and operation (Claude)
 - [~] Repeatable clean-clone setup: install, build, deploy. `scripts/dev.sh` works; the clean-clone rehearsal remains.
@@ -51,7 +51,7 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 21 done, 7 partl
 - [x] CLI-backed local service chosen as the initial helper.
 - [ ] Witness/privacy review of the browser-to-helper path.
 
-## 5. Order tracking, cleanup and withdrawal (Claude)
+## 5. Order tracking, cleanup and withdrawal (Antigravity)
 - [ ] Each order's batch and lifecycle.
 - [ ] Admission, reveal, full/partial/unfilled/released/expired outcomes in the UI.
 - [ ] Filled amounts, received amounts and unused input.
@@ -70,7 +70,7 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 21 done, 7 partl
 - [x] Dropped, replaced, reverted and confirmed transactions told apart.
 - [x] Nonce, hash and onchain state reconciled before retries. Explicit nonces; a dropped admission is resent, a replaced one keeps pending state.
 - [ ] Every interruption and batch-deadline boundary tested.
-- [ ] Guided recovery for stale state locks.
+- [x] Guided recovery for stale state locks. A live owner means wait; an exited owner's lock is cleared with a next step (`packages/client/test/state-lock.test.mjs`).
 - [ ] Decide at-rest protection for private state and backups. *(Team decision)*
 - [ ] Strong backup prompt, kept until acknowledged.
 - [x] A reopened page reconnects to its retained local job.
