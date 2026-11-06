@@ -45,3 +45,56 @@ The paired application-boundary harness imports the generated verifiers and chec
 ```
 
 It also reads `../../results/canonical-interop.json`, the public interop fixture for `canonical-fixture.json`. To run the existing independent JavaScript check against a direct export, pass its `proof.json` as the export argument to `prepared-interop.mjs`. The `.journal` encoding is shared. After changes to the generated test template, `direct-circuit --export-tests <artifact-directory>` regenerates only that directory's Foundry tests from its exported input count.
+
+## Global multi-token admission
+
+`GlobalFundingCircuit` and `GlobalOnlineCircuit` implement the separate `blindfold.global.*.v1` domains. The public online statement is 16 static ABI words: domain, preparation digest, eight-token registry hash, step, previous root, next root, eight current budgets, order hash and ciphertext hash. The preparation digest is the same canonical preparation statement used by the pair relation. The global online verifier has two public digest limbs; the original pair online verifier has four and is not interchangeable.
+
+The private relation checks token indices in `[0,7]`, nonempty registry slots, different input/output tokens, positive uint128 input, uint128 minimum, step below 64, the exact global order hash, cumulative funding for every token, and the exact canonical AGE ciphertext. Both versions share the encryption implementation. The global plaintext is `abi.encode(owner, uint8 tokenIn, uint8 tokenOut, uint128 amountIn, uint128 minAmountOut, bytes32 salt)`.
+
+Generate a fresh preparation witness with OS entropy:
+
+```sh
+cargo run --manifest-path ../Cargo.toml --locked --release --bin global-prepare -- context.json private-preparation.json
+```
+
+`context.json` uses `{chain_id, settlement, owner, batch, round}`, with addresses as 20-element byte arrays. The output is private, created with mode 0600 on Unix, and never overwrites an existing file. It contains a fresh AGE key, encryption randomness and hiding blinding. Do not use the checked-in synthetic fixtures for user orders.
+
+Global online input:
+
+```json
+{
+  "preparation": "private-preparation.json",
+  "tokens": ["0x...sorted token0...", "0x...token1..."],
+  "input": 0,
+  "output": 1,
+  "amount": "100",
+  "minimum": "90",
+  "step": 0,
+  "totals": ["0","0","0","0","0","0","0","0"],
+  "budgets": ["1000","1000","0","0","0","0","0","0"],
+  "oldBlind": "0x...32 bytes..."
+}
+```
+
+Read budgets from `GlobalAuction.budgets(owner)`: they already subtract the next admission's deposit and fee. Use the previous accepted state's totals/blinding/step for subsequent orders. Omitted salt receives cryptographic randomness in the CLI. Slots beyond the registry are zero. Preparation paths resolve from the process working directory. An account cannot enter another batch while it has open global commitments.
+
+```sh
+# Explicit local development setup; retain keys for subsequent proofs.
+CIRCUIT_KEYS=../results/global-keys CIRCUIT_SETUP=1 CIRCUIT_OUTPUT=../results/global-first go run . --global-online global-input.json
+# Same circuit identity and verifier, new ciphertext and proof; no setup.
+CIRCUIT_KEYS=../results/global-keys CIRCUIT_OUTPUT=../results/global-next go run . --global-online global-input.json
+# Preparation uses its own keys and output directory.
+CIRCUIT_KEYS=../results/preparation-keys CIRCUIT_SETUP=1 CIRCUIT_OUTPUT=../results/global-preparation go run . --preparation private-preparation.json
+```
+
+Key loading checks the serialized compiled circuit's SHA-256 and mode. Local setup is explicit and refuses a nonempty key directory. `global-state.json` contains the private next reservation state, plaintext/salt and ciphertext; `proof.json` contains the proof/public statement. Use a distinct output directory for each run and consume it only after successful exit. Without `CIRCUIT_KEYS`, the command remains an ephemeral benchmark that creates fresh verifier parameters.
+
+Real-proof integration uses the fixed synthetic preparation context at chain 130, batch 7, round 1000, token addresses `0x1001`–`0x1003`, input 1, output 2, amount 100, minimum 90, explicit zero salt, budgets `[1000,1000,1000,0,0,0,0,0]`. Generate matching preparation and online exports into `results/global-preparation` and `results/global-online`, then run:
+
+```sh
+(cd ../global-evm && forge test --match-contract GlobalAdmissionIntegrationTest -vv)
+node global-interop.mjs ../results/global-online/global-state.json
+```
+
+The integration locates actual auction code at the fixture's bound address, copies constructor state, and exercises actual vault custody. The independent JS check verifies the recorded drand signature, decrypts AGE using tlock-js, and recomputes Solidity order/registry/funding hashes. Production setup and circuit-review gates are recorded in REVIEW.md.
