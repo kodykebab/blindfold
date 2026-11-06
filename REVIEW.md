@@ -672,6 +672,62 @@ The fix adds no persisted cursor or predecessor walk. Empty and expired predeces
 
 Validation: 198 passing test executions across ten suites with `forge test --fuzz-runs 4096 -vv`, including local and Unichain ordering regressions, 4,096 schedule fuzz cases, every drand alignment/cadence remainder, invalid and zero windows, and unfinalized/empty predecessors. Inherited mechanism tests are repeated across suites; this count is not 198 distinct scenarios. The case that previously allowed a later batch to change the pool before an earlier settlement now rejects the earlier settlement once the later window opens.
 
+
+### Peer-only matching follow-up to S12 (issue #18)
+
+The user selected peer-only matching first, without mandatory LP lockups. Implemented on `kritarth/peer-clearing`, with consumer integration on `kritarth/peer-solver`, pending shared-seam review. This permits an uneven opposing batch (for example, 100 selling against 50 buying at p=1) to cross 50/50 even when the AMM has no active liquidity.
+
+The initial peer implementation used the stored pool price. The external-market follow-up below replaces it with a validated historical v3 reference; user limits still apply. The mode requires zero active liquidity and conserved budgets for both tokens, and never routes an AMM residual. Zero active liquidity does not establish that all other tick ranges are empty. A one-sided batch still needs an external counterparty; expiration remains available. This implements a liquidity-independent crossing option, not a universal execution guarantee or a committed-capital backstop.
+
+The shared settlement lifecycle and allocation machinery are reused. No persistent queue, liquidity lock, extra collateral, oracle service, or proof input was added. An additive liquidity view and settlement entry point are the only new calls. Rounding is accounted for entirely: surplus goes to output recipients proportionally, with a commitment-ID tie-break for indivisible remainder, and no batch-created balance remains in settlement. Solver selection still has the previously tracked price/quantity-policy limitations; this feature does not claim maximum-volume completeness for all integer cases.
+
+
+Peer-only validation (2026-11-06):
+- `forge test --fuzz-runs 4096 -vv`: 260 passing test executions across twelve suites, including Unichain forks. Inherited suites repeat baseline scenarios; the count is not 260 distinct behaviors.
+- `npm test` in the peer solver: 23 offline tests pass; the opt-in integration test is skipped there and was run separately successfully.
+- The actual CLI runs normal AMM sells/buys, zero-active-liquidity peer crossings in both directions, and one-sided expiry/recovery on a fresh local anvil. Peer executions emit no pool Swap event and leave no new token balances in settlement.
+- Both token rounding-surplus paths, commitment-ID tie-breaking independent of reveal order, bad representatives, both budget deficits, user minimums, active-liquidity rejection, finalization, and window checks pass. Peer accounting fuzz tests run 4,096 cases locally and again on the fork. A 64-order peer batch is included.
+- Local peer candidate search: one simulation, approximately 2 ms in each direction. This excludes setup, state reads, the CLI's fresh pre-send check, submission, and confirmation, and is not a live-network latency claim.
+- The local 64-order settlement call consumed 1,577,677 gas in warm test state. This excludes setup and is not a cold transaction gas estimate. The size check reported 18,513 runtime bytes for the selected build.
+- Touched Solidity files pass formatting checks; both patches pass `git diff --check`.
+
+
+#### External market review gate (S12/S13/S18)
+The Ethereum WETH/USDC implementation adds a fixed-window v3 reference and a
+public-pool residual route; peer execution no longer uses the stored sealed price.
+Production window, liquidity and deviation thresholds still need calibration
+across volatile and quiet periods. Latest observation age is an activity check,
+not proof of an economically fresh or manipulation-resistant price. A single
+pool TWAP can be manipulated; user limits and liquidity checks bound some effects
+but do not establish oracle security.
+
+Public liquidity remains withdrawable and changes before inclusion. Full fills
+are conditional on executable liquidity and user limits, not guaranteed. The
+solver now tries full fills, exact limit-price edges and proportional external
+boundary groups, with simulation and deadline bounds. Its halving/bisection search
+is a heuristic, not an infeasibility or maximum-volume proof. It must be
+benchmarked against a production RPC and the chosen batch deadline. Aqua routing is still a separate integration.
+These changes are unmerged seams pending teammate review and do not integrate
+the parallel admission-proof work.
+
+
+External-market follow-up validation: the solver's capacity-limited Anvil cases
+filled the equal-limit group at 540/270 inputs in both directions. Full-fill
+search took 20/23 simulations (82/62 ms); partial search took 341/411 simulations
+(838/977 ms). These are local timings, not production latency.
+
+The read-only sampler collected 13 Ethereum observations across blocks
+26,353,849–26,353,945: latest observation age 0–84 s, harmonic liquidity
+1.663–1.687 × 10^18, approximate spot/TWAP deviation 4.34–12.52 bps and aggregate
+read latency 545–760 ms. The public endpoint rejected older archive requests with
+HTTP 403 requiring a personal token. Production calibration therefore remains
+open: collect quiet/volatile historical regimes using an archive endpoint and
+measure solver simulations against the actual deployed contract. A 120 s activity
+limit and 100 bps band passed the sampled regime, but this does not justify them
+as production settings. A consistent manipulation of spot and TWAP can pass
+these checks; economic attack cost has not been established. No production
+launch should be inferred from passing these implementation tests.
+
 Executable-lot fallback for the PR #6 dust-companion review: ordinary proportional
 input flooring stays when its output covers the ceil-rounded minimum. Otherwise
 input rounds down to amountIn/gcd(amountIn,minAmountOut); if that is zero the order
@@ -682,3 +738,14 @@ this refinement after strict lot rounding reduced the fixed model corpus's
 rescued count from 49 to 38. Allocation is consequently price-dependent at these
 integer boundaries; solver discretion is not eliminated. The solver and model
 must use the same fallback, and complete clearing remains conditional.
+
+
+
+
+
+Fork reproducibility: the public Ethereum RPC prunes historical state, including
+previously untouched deployment addresses needed by Foundry. The external-market
+fork now defaults to the latest block, with ETH_FORK_BLOCK selecting a fixed
+block on an archive endpoint or complete cache. Its historical 26,353,874 results
+remain recorded above; a cached successful run is not proof a fresh machine can
+retrieve that old state from the public endpoint.

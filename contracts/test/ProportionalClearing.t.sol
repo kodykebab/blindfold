@@ -278,7 +278,7 @@ contract ProportionalClearingTest is BlindfoldTest {
         os[0] = _o(alice, true, 1000e18, 900e18);
         (uint64 b, uint256[] memory ids) = _ready(os);
         lp.modifyLiquidity(key, IPoolManager.ModifyLiquidityParams(-60_000, 60_000, -1e22, 0), "");
-        vm.expectPartialRevert(BlindfoldSettlement.PartialResidual.selector);
+        vm.expectPartialRevert(BlindfoldSettlement.MissingLiquidity.selector);
         s.settle(b, _sellPrice(), ids[0], 540e18);
         assertFalse(s.finalized(b));
         assertEq(vault.lockedOf(alice, address(t0)), 1000e18);
