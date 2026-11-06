@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Q96, limitFromQuote, nextPreparation, parseSlippage, quoteOut, retryable, routeFeePpm, settlesIn, waitNote } from '../quote.mjs'
+import { Q96, limitFromQuote, nextPreparation, parseSlippage, preparationStatus, quoteOut, replacements, retryable, routeFeePpm, settlesIn, waitNote } from '../quote.mjs'
 
 const e18 = 10n ** 18n
 
@@ -68,4 +68,28 @@ test('the order shows when it settles and what waiting typically costs, with its
   assert.match(cost, /3-6 bps on deep pools and 8-18 bps on thin ones/)
   assert.match(cost, /order-flow replay, 2026-11-06/)
   assert.match(cost, /larger orders, or pairs that get sandwiched/)
+})
+
+test('track links a resubmitted order and its replacement, or a replacement still pending', () => {
+  const tracked = new Map([
+    [0n, { id: 0n, hash: '0xAA' }], [1n, { id: 1n, hash: '0xbb' }], [2n, { id: 2n, hash: '0xcc' }],
+  ])
+  const links = replacements(tracked, [
+    { hash: '0xaa', resubmittedAs: '0xBB' }, { hash: '0xbb' }, { hash: '0xcc', resubmittedAs: '0xdd' }, { hash: '0xee', resubmittedAs: '0xcc' },
+  ])
+  assert.deepEqual(links.get(0n), { replacedBy: 1n })
+  assert.deepEqual(links.get(1n), { replaces: 0n })
+  assert.deepEqual(links.get(2n), { replacedBy: 'pending' }) // 0xee was never committed, so it links nothing
+  assert.equal(links.size, 3)
+})
+
+test('status tells generating, ready, expired, consumed and missing preparations apart', () => {
+  const preparation = { batch: '5', round: '100' }
+  const alive = () => true, dead = () => false
+  const s = (x) => preparationStatus({ current: 5n, running: alive, ...x })
+  assert.match(s({ preparing: { batch: '6', round: '102', pid: 42 }, preparation }), /^generating for batch 6 \(round 102\) in process 42/)
+  assert.match(s({ preparing: { batch: '6', round: '102', pid: 42 }, preparation, running: dead }), /^ready for batch 5 \(round 100\)/)
+  assert.match(s({ preparation, current: 6n }), /^expired: batch 5 has closed/)
+  assert.match(s({ consumed: { batch: '4' } }), /consumed by an order for batch 4/)
+  assert.match(s({}), /^none ready; run prepare-admission/)
 })

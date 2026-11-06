@@ -511,7 +511,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         vault.operatorPush(zeroForOne ? token1 : token0, owed);
     }
 
-    function unlockCallback(bytes calldata data) external returns (bytes memory) {
+    function unlockCallback(bytes calldata data) public virtual returns (bytes memory) {
         if (msg.sender != address(manager)) revert Unauthorized();
         (bool zeroForOne, uint256 amountIn, uint256 owed) = abi.decode(data, (bool, uint256, uint256));
         PoolKey memory k = key;

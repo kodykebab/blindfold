@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { account, decrypt, drandClient, encrypt, orderHash, encodePayload, decodePayload } from '../lib.mjs'
 import { validateState } from '../state.mjs'
-import { balances, deadlines, exitPlan, preflight, track, isOpen } from '../flow.mjs'
+import { balances, deadlines, depositOutcome, exitPlan, gasLine, preflight, track, isOpen } from '../flow.mjs'
 
 const fixture = fileURLToPath(new URL('./fixtures/drand.json', import.meta.url))
 const owner = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
@@ -98,6 +98,49 @@ test('track: follows each commitment to its outcome', () => {
   assert.deepEqual([...mine.values()].map((c) => [c.id, c.state]),
     [[0n, 'filled'], [1n, 'padding'], [3n, 'slashed'], [4n, 'expired'], [5n, 'unfunded'], [6n, 'committed']])
   assert.deepEqual([...mine.values()].filter(isOpen).map((c) => c.id), [6n])
+})
+
+test('track: partial fills, the clearing price, the settlement transaction and who took the bounty', () => {
+  const ev = (eventName, args, transactionHash) => ({ eventName, args, transactionHash })
+  const keeper = '0x0000000000000000000000000000000000000009'
+  const o = (amountIn) => ({ ...order, amountIn })
+  const mine = track([
+    ev('Committed', { commitId: 0n, batchId: 1n, committer: owner, round: 9n }),
+    ev('Committed', { commitId: 1n, batchId: 1n, committer: owner, round: 9n }),
+    ev('Committed', { commitId: 2n, batchId: 1n, committer: owner, round: 9n }),
+    ev('Committed', { commitId: 3n, batchId: 2n, committer: owner, round: 12n }),
+    ev('Revealed', { commitId: 0n, batchId: 1n, revealer: keeper, order: o(10n) }),
+    ev('Revealed', { commitId: 1n, batchId: 1n, revealer: owner, order: o(10n) }),
+    ev('Revealed', { commitId: 2n, batchId: 1n, revealer: keeper, order: o(10n) }),
+    ev('Slashed', { commitId: 3n, batchId: 2n, caller: keeper }),
+    ev('Filled', { batchId: 1n, id: 0n, owner, amountIn: 10n, amountOut: 9n }, '0xsettle'),
+    ev('Filled', { batchId: 1n, id: 1n, owner, amountIn: 6n, amountOut: 5n }, '0xsettle'),
+    ev('Unfilled', { batchId: 1n, id: 2n, owner }, '0xsettle'),
+    ev('Settled', { batchId: 1n, priceX96: 7n }, '0xsettle'),
+  ], owner.toLowerCase())
+  assert.deepEqual([...mine.values()].map((c) => [c.id, c.state, c.priceX96, c.settleTx]),
+    [[0n, 'filled', 7n, '0xsettle'], [1n, 'partial', 7n, '0xsettle'], [2n, 'unfilled', 7n, '0xsettle'], [3n, 'slashed', undefined, undefined]])
+  assert.equal(mine.get(1n).amountIn, 6n)
+  assert.equal(mine.get(3n).by, keeper)
+  assert.deepEqual([...mine.values()].filter(isOpen), [])
+})
+
+test('depositOutcome: where the deposit went, by outcome and by who revealed or slashed', () => {
+  const p = { depositAmount: 100n, bountyBps: 2000n, owner }
+  const keeper = '0x0000000000000000000000000000000000000009'
+  const d = (state, by) => depositOutcome({ state, by }, p)
+  assert.deepEqual(d('committed'), { held: 100n, returned: 0n, bounty: 0n, lost: 0n })
+  assert.deepEqual(d('filled', keeper), { held: 0n, returned: 80n, bounty: 20n, lost: 0n })
+  assert.deepEqual(d('partial', owner.toLowerCase()), { held: 0n, returned: 100n, bounty: 0n, lost: 0n }) // revealed it themselves
+  assert.deepEqual(d('released'), { held: 0n, returned: 100n, bounty: 0n, lost: 0n })
+  assert.deepEqual(d('slashed', keeper), { held: 0n, returned: 0n, bounty: 20n, lost: 80n })
+  assert.deepEqual(d('unfunded', owner), { held: 0n, returned: 20n, bounty: 0n, lost: 80n })
+})
+
+test('gasLine: an estimate carries its unit and cost; a missing one is unavailable, never zero', () => {
+  assert.equal(gasLine({ what: 'approve TKA', gas: 46_000n, gasPrice: 2_000_000_000n }), 'approve TKA: ~46000 gas ≈ 0.000092 ETH')
+  assert.equal(gasLine({ what: 'commit', gasPrice: 1n, why: 'until the deposits land' }), 'commit: unavailable until the deposits land')
+  assert.doesNotMatch(gasLine({ what: 'commit', gasPrice: 1n }), /\b0\b/)
 })
 
 test('S4 exitPlan: the step that clears each open commitment', () => {

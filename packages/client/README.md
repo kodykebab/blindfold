@@ -5,14 +5,14 @@ One CLI workflow for a Blindfold trader: check funding, commit an encrypted orde
 ```bash
 npm ci --ignore-scripts
 npm test                                   # offline unit tests
-npm start -- status                        # wallet / available / reserved / withdrawable, and the open batch's deadlines
+npm start -- status                        # network, deployment and pair; wallet / available / reserved / withdrawable; preparation; the open batch's deadlines
 npm start -- deposit token1 50
-npm start -- commit sell 10 --dry-run      # preflight only: quote, limit, funding of every asset, approvals, fee, eligibility, deadlines
+npm start -- commit sell 10 --dry-run      # preflight only: quote, limit, funding of every asset, approvals, fee, gas, eligibility, deadlines
 npm start -- commit sell 10                # limit = fresh market quote less 50 bps; deposits any shortfall, encrypts, commits
 npm start -- commit sell 10 --slippage 30  # a tighter limit
 npm start -- commit sell 10 9              # an explicit minimum output instead of a quote
 npm start -- resubmit                      # place the last unfilled or expired order again, re-quoted
-npm start -- track                         # each commitment: committed, revealed, padding, unfunded, slashed, filled, unfilled, expired
+npm start -- track                         # each commitment: committed, revealed, padding, unfunded, slashed, released, filled, partially filled, unfilled, expired
 npm start -- blockers                      # each commitment blocking withdrawal and the step that clears it
 npm start -- cleanup [--dry-run]           # reveal own saved orders, slash unrevealed ones, expire unsettled batches
 npm start -- withdraw token0 all           # lists the blockers instead if any remain
@@ -22,6 +22,12 @@ npm start -- restore-backup                # decrypt the automatic backup with t
 ```
 
 `sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units.
+
+Every command except `export-state` and `backup` first checks that the RPC's chain is the deployment's and that the settlement has code there, and names the setting to fix if not.
+
+**Gas.** The commit review estimates each transaction it will send (approvals, deposits, the commit) in gas units and in ETH at the current gas price. A transaction that needs an earlier one to land first, or a proof-backed `admit` before its proofs exist, is shown as unavailable rather than free. The keeper's reveal is paid from the deposit's bounty.
+
+**Results.** `track` shows, for a fill, the input spent and output received (a partial fill is labelled as such, and its unspent input is free again), the batch's clearing price and the settlement transaction. For every commitment it shows the non-refundable fee and where the deposit went: returned, paid as a bounty to whoever revealed or slashed it, forfeited, or still held. A resubmitted order shows which commitment replaced it, and the replacement which one it replaces.
 
 ## Automatic encrypted backup (FIXES.md fix 6)
 Orders, salts and funding openings exist only on this device. Without them you can't reveal your own order (a keeper must, or the commitment is released or slashed), and you can't append to your funding root. After every command that changes them, the client writes an encrypted backup to `CLIENT_BACKUP_DIR` (default `~/.blindfold/backups`). Point it at a synced or external folder so it survives the device. `npm start -- backup` writes one immediately.
@@ -107,6 +113,8 @@ npm start -- prepare-admission             # the earliest batch this device can 
 npm start -- commit sell 10 9 --dry-run    # shows which batch the order goes into
 npm start -- commit sell 10 9
 ```
+
+`status` shows whether a preparation is being generated (and by which process), ready for a batch, expired with its batch, or consumed by an order. Preparation markers stay on this device, like the key.
 
 `prepare-admission` creates and proves a fresh quicknet key wrapper without an order or funding witness. Without a batch number it picks the current batch if this device can still prepare and prove an order in it, otherwise the next one. It keeps one ready preparation in the existing private state file; another successful preparation replaces it. Account, chain, settlement, batch, round and parameter manifest must match at submission. The RPC chain ID is checked as well. A preparation for a batch that has closed is discarded at the next commit.
 

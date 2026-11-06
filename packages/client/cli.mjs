@@ -15,15 +15,15 @@
 //   npm start -- backup                          write the encrypted backup now (otherwise automatic after every change)
 //   npm start -- restore-backup [file]           decrypt a backup with this wallet (or passphrase) and import it
 // sell = token0 in, token1 out; buy = token1 in, token0 out. Amounts are decimal token units.
-import { formatUnits, parseEventLogs, parseUnits } from 'viem'
+import { formatGwei, formatUnits, parseEventLogs, parseUnits } from 'viem'
 import { connect, encrypt, loadAbi, newSalt, orderHash } from './lib.mjs'
-import { balances, deadlines, exitPlan, isOpen, preflight, track } from './flow.mjs'
+import { balances, deadlines, depositOutcome, exitPlan, gasLine, isOpen, preflight, track } from './flow.mjs'
 import { exportState, importState, loadState, parseState, saveCommitment, validateState, writeState, withStateLock } from './state.mjs'
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead, measuredSeconds, recordProving, targetBatch } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
 import { backupDir, backupPath, openBackup, readBackupFile, writeBackup } from './backup.mjs'
-import { limitFromQuote, nextPreparation, parseSlippage, quoteOut, retryable, routeFeePpm, waitNote } from './quote.mjs'
+import { Q96, limitFromQuote, nextPreparation, parseSlippage, preparationStatus, quoteOut, replacements, retryable, routeFeePpm, waitNote } from './quote.mjs'
 
 const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
@@ -79,12 +79,19 @@ async function schedule(b) {
 async function status() {
   const t = await tokens()
   const { open, rows } = await vaultView(t)
+  const enforced = await admissionRequired()
+  console.log(`network chain ${dep.chainId}; deployment ${dep.mode ?? 'unnamed'}, settlement ${S}, vault ${dep.vault}, ${enforced ? 'proof-enforced admission' : 'unchecked commitments'}`)
+  console.log(`pair ${t.token0.symbol} (${t.token0.address}) / ${t.token1.symbol} (${t.token1.address}): sell = ${t.token0.symbol} in, ${t.token1.symbol} out; buy = ${t.token1.symbol} in, ${t.token0.symbol} out; deposit and fee in ${t.byAddress[t.depositToken].symbol}`)
   console.log(`account ${me}`)
   for (const r of rows) {
     console.log(`  ${r.tok.symbol.padEnd(6)} wallet ${fmt(r.tok, r.wallet)} | available ${fmt(r.tok, r.available)} | reserved ${fmt(r.tok, r.reserved)} | withdrawable ${fmt(r.tok, r.withdrawable)}`)
   }
   console.log(`  open commitments: ${open}${open ? ' (withdrawals blocked until each is revealed and settled, slashed, released or expired)' : ''}`)
   const [b, now] = await Promise.all([read(S, 'currentBatch'), pub.getBlock().then((x) => x.timestamp)])
+  if (enforced) {
+    const { preparation, preparing, consumedPreparation: consumed } = loadState(dep, me)
+    console.log(`preparation: ${preparationStatus({ preparation, preparing, consumed, current: b, running })}`)
+  }
   console.log(`batch ${b} (chain time ${now})`)
   for (const d of await schedule(b)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
 }
@@ -99,13 +106,21 @@ async function deposit(name, amount) {
   console.log(`deposited ${fmt(tok, value)}`)
 }
 
-async function checkAdmissionNetwork() {
-  if (await pub.getChainId() !== Number(dep.chainId)) fail('RPC network differs from the deployment; select the correct RPC_URL and deployment')
+/** Why this RPC and deployment file can't be used together, with the correction; null when they match (T01). */
+async function networkProblem() {
+  const [chainId, code] = await Promise.all([pub.getChainId(), pub.getCode({ address: S })])
+  if (chainId !== Number(dep.chainId)) return `the RPC is on chain ${chainId} but the deployment is on chain ${dep.chainId}; select the matching RPC_URL or DEPLOYMENTS`
+  if (!code || code === '0x') return `no settlement contract at ${S} on chain ${chainId}; the deployment file is stale: redeploy or select the right DEPLOYMENTS`
+  return null
+}
+
+async function checkNetwork() {
+  const problem = await networkProblem()
+  if (problem) fail(problem)
 }
 
 async function prepare(batchText) {
   if (batchText !== undefined && !/^\d+$/.test(batchText)) fail('usage: prepare-admission [batch-id]')
-  await checkAdmissionNetwork()
   if (!await admissionRequired()) fail('this deployment does not use proof-enforced admission')
   const current = await read(S, 'currentBatch')
   let batch
@@ -119,9 +134,17 @@ async function prepare(batchText) {
   if (batch < current || batch >= 1n << 64n) fail('select an explicit current or future batch')
   const round = await read(S, 'targetRound', [batch])
   console.log(`preparing locally for batch ${batch}, round ${round}…`)
-  const preparation = await prepareAdmission({ dep, owner: me, batch, round })
+  const marked = loadState(dep, me)
+  writeState(dep, me, { ...marked, preparing: { batch: String(batch), round: String(round), pid: process.pid } }) // for status (T06)
+  let preparation
+  try {
+    preparation = await prepareAdmission({ dep, owner: me, batch, round })
+  } finally {
+    const { preparing, ...rest } = loadState(dep, me)
+    writeState(dep, me, rest)
+  }
   if ((await pub.getBlock()).timestamp >= await read(S, 'commitsClose', [batch])) fail('preparation completed after the batch closed; select a later batch')
-  await checkAdmissionNetwork()
+  await checkNetwork() // again after a minute of proving: the endpoint behind RPC_URL may have changed meanwhile
   const state = loadState(dep, me)
   state.preparation = preparation
   recordProving(state, 'preparation', preparation.elapsedSeconds)
@@ -130,6 +153,11 @@ async function prepare(batchText) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/** Whether a process is alive; EPERM means it runs under another user. */
+function running(pid) {
+  try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' }
+}
 
 const hasMarket = async () => abi.settlement.some((f) => f.type === 'function' && f.name === 'externalMarket')
   && BigInt(await read(S, 'externalMarket')) !== 0n
@@ -188,7 +216,6 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
   const enforced = await admissionRequired()
   let funding, minLead = 3n, target = { batch: current, prepared: false, close: commitsClose }
   if (enforced) {
-    await checkAdmissionNetwork()
     if (!dep.admission?.manifestSha256) fail('this deployment requires admission; its deployment file must include the parameter manifest')
     const state = loadState(dep, me)
     funding = reconcileFunding(dep, me, state.admission, await fundingOnchain(), now)
@@ -227,7 +254,7 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
   })
   const dt = t.byAddress[t.depositToken]
   console.log(`order: ${side} ${fmt(tin, order.amountIn)} for at least ${fmt(tout, order.minAmountOut)} in batch ${target.batch}, or you keep your funds`)
-  console.log(`costs: deposit ${fmt(dt, depositAmount)} (returned minus the revealer's bounty when revealed), fee ${fmt(dt, fee)}`)
+  console.log(`costs: deposit ${fmt(dt, depositAmount)} (returned minus the revealer's bounty when revealed), fee ${fmt(dt, fee)} (non-refundable)`)
   for (const f of check.funding) {
     const tok = t.byAddress[f.token]
     console.log(`funding ${tok.symbol}: need ${fmt(tok, f.need)}, vault free ${fmt(tok, f.free)}${f.shortfall ? `, deposit ${fmt(tok, f.shortfall)} first${f.approve ? ' (needs approval)' : ''}` : ''}`)
@@ -236,15 +263,23 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
   for (const line of waitNote({ now, revealCloses: await read(S, 'revealCloses', [target.batch]) })) console.log(line)
   if (!enforced) console.log(`keep ${fmt(tin, order.amountIn)} free in the vault until the reveal, or the order is closed as unfunded and the deposit lost`)
   if (!check.ok) fail(`preflight failed:\n  ${check.problems.join('\n  ')}`)
+  const salt = newSalt()
+  const hash = orderHash(dep.chainId, S, target.batch, order, salt)
+  const round = await read(S, 'targetRound', [target.batch])
+  // An unchecked commit is encrypted before the review, so its gas can be estimated. Without the drand beacon a dry run
+  // still reviews everything else; a real commit stops here, before any deposit is sent.
+  let ciphertext, beacon
+  if (!enforced) {
+    try { ciphertext = await encrypt(round, order, salt) } catch (e) { beacon = e.shortMessage ?? e.message }
+  }
+  await gasReview(t, check.funding, enforced ? undefined : ciphertext ? [current, hash, ciphertext] : { why: `(can't reach the drand beacon to encrypt the order: ${beacon})` })
   if (dryRun) return console.log('dry run: nothing sent')
+  if (beacon) fail(`can't reach the drand beacon to encrypt the order (${beacon}); nothing was sent. Check the network, or set DRAND to a recorded fixture for local chains`)
   for (const f of check.funding) {
     if (!f.shortfall) continue
     if (f.approve) await send(f.token, abi.erc20, 'approve', [dep.vault, f.shortfall])
     await send(dep.vault, abi.vault, 'deposit', [f.token, f.shortfall])
   }
-  const salt = newSalt()
-  const hash = orderHash(dep.chainId, S, target.batch, order, salt)
-  const round = await read(S, 'targetRound', [target.batch])
   if (enforced) {
     const budgets = await Promise.all([t.token0, t.token1].map(async (tok) => {
       const free = await read(dep.vault, 'freeBalance', [me, tok.address])
@@ -262,7 +297,7 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
       recordProving(state, prepared ? 'online' : 'inline', result.timings.elapsedSeconds)
       writeState(dep, me, state)
     }
-    await checkAdmissionNetwork()
+    await checkNetwork() // again after proving, before anything is sent
     const latest = (await pub.getBlock()).timestamp
     if (latest >= target.close) fail(`proof completed after batch ${target.batch} closed; nothing submitted. This device's margin now reflects the slower proof; commit again`)
     reconcileFunding(dep, me, funding, await fundingOnchain(), latest)
@@ -273,7 +308,6 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
     if (target.batch !== current) await untilOpen(target.batch, target.close)
     return resumeAdmission()
   }
-  const ciphertext = await encrypt(round, order, salt)
   saveCommitment(dep, me, { id: null, batchId: current, round, hash, order, salt }) // before sending: never lose the salt
   const receipt = await send(S, abi.settlement, 'commit', [current, hash, ciphertext])
   const [ev] = parseEventLogs({ abi: abi.settlement, logs: receipt.logs, eventName: 'Committed' })
@@ -281,6 +315,35 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
   console.log(`committed #${ev.args.commitId} to round ${round} in ${receipt.transactionHash}`)
 }
 
+
+/**
+ * Gas for each transaction the order sends (T04). A step that needs an earlier one to land, or that reverts now, is shown
+ * as unavailable, never as free. commitArgs: the unchecked commit's arguments, { why } when they can't be built, or
+ * undefined for proof-enforced admission.
+ */
+async function gasReview(t, funding, commitArgs) {
+  const steps = []
+  for (const f of funding) {
+    if (!f.shortfall) continue
+    const tok = t.byAddress[f.token]
+    if (f.approve) steps.push({ what: `approve ${tok.symbol}`, address: f.token, abi: abi.erc20, functionName: 'approve', args: [dep.vault, f.shortfall] })
+    steps.push({ what: `deposit ${fmt(tok, f.shortfall)}`, address: dep.vault, abi: abi.vault, functionName: 'deposit', args: [f.token, f.shortfall], after: f.approve ? 'the approval lands' : undefined })
+  }
+  const deposits = steps.length > 0
+  steps.push(Array.isArray(commitArgs)
+    ? { what: 'commit', address: S, abi: abi.settlement, functionName: 'commit', args: commitArgs, after: deposits ? 'the deposits land' : undefined }
+    : commitArgs?.why ? { what: 'commit', unavailable: commitArgs.why }
+      : { what: 'admit (proof-backed commit)', after: 'both proofs exist' })
+  const gasPrice = await pub.getGasPrice()
+  console.log(`gas: estimated units, priced at the current ${formatGwei(gasPrice)} gwei and paid in ETH by this wallet; the keeper's reveal is paid from the deposit's bounty`)
+  for (const { what, after, unavailable, ...call } of steps) {
+    let gas, why = unavailable ?? (after && `until ${after}`)
+    if (!why) {
+      try { gas = await pub.estimateContractGas({ account, ...call }) } catch (e) { why = `(reverts now: ${e.shortMessage ?? e.message})` }
+    }
+    console.log(`  ${gasLine({ what, gas, gasPrice, why })}`)
+  }
+}
 
 /**
  * Wait for `batch` to become current. Chain time moves only when a block is mined, so wall-clock time since the latest
@@ -306,7 +369,6 @@ async function fundingOnchain() {
 }
 
 async function resumeAdmission() {
-  await checkAdmissionNetwork()
   if (!dep.admission?.manifestSha256 || !await admissionRequired()) fail('this deployment does not use proof-enforced admission')
   const state = loadState(dep, me)
   const chain = await fundingOnchain(), now = (await pub.getBlock()).timestamp
@@ -342,17 +404,40 @@ async function resumeAdmission() {
 const myCommitments = async () =>
   track(await pub.getContractEvents({ address: S, abi: abi.settlement, fromBlock: BigInt(dep.deployBlock ?? 0) }), me)
 
+/** Every commitment and its outcome (T11): what was spent and received at which price, and where the fee and deposit went. */
 async function trackAll() {
   const t = await tokens()
   const mine = await myCommitments()
   if (!mine.size) return console.log('no commitments')
+  const has = (n) => abi.settlement.some((f) => f.type === 'function' && f.name === n)
+  const [depositAmount, bountyBps, fee] = await Promise.all([read(S, 'depositAmount'), read(S, 'bountyBps'), has('commitFee') ? read(S, 'commitFee') : 0n])
+  const dt = t.byAddress[t.depositToken]
+  const links = replacements(mine, loadState(dep, me).commitments)
+  const label = { partial: 'partially filled' }
   for (const c of mine.values()) {
     const o = c.order
-    const what = o ? `${o.zeroForOne ? 'sell' : 'buy'} ${o.amountIn}` : 'sealed'
-    const fill = c.state === 'filled' ? ` → got ${fmt(o.zeroForOne ? t.token1 : t.token0, c.amountOut)}` : ''
-    console.log(`#${c.id} batch ${c.batchId}: ${c.state} (${what})${fill}`)
+    const [tin, tout] = o?.zeroForOne ? [t.token0, t.token1] : [t.token1, t.token0]
+    const what = o ? `${o.zeroForOne ? 'sell' : 'buy'} ${fmt(tin, o.amountIn)} for at least ${fmt(tout, o.minAmountOut)}` : 'sealed'
+    const link = links.get(c.id) ?? {}
+    const notes = [
+      link.replaces !== undefined && `replaces #${link.replaces}`,
+      link.replacedBy !== undefined && `replaced by ${link.replacedBy === 'pending' ? 'a pending commitment' : `#${link.replacedBy}`}`,
+    ].filter(Boolean)
+    console.log(`#${c.id} batch ${c.batchId}: ${label[c.state] ?? c.state} (${what})${notes.length ? `, ${notes.join(', ')}` : ''}`)
+    if (c.state === 'filled' || c.state === 'partial') {
+      const unspent = o.amountIn - c.amountIn
+      console.log(`  spent ${fmt(tin, c.amountIn)}, received ${fmt(tout, c.amountOut)} into the vault${unspent ? `; ${fmt(tin, unspent)} unspent, free again` : ''}`)
+    }
+    if (c.settleTx) console.log(`  settled at ${c.priceX96 === undefined ? 'an unknown price' : price(t, c.priceX96)} in ${c.settleTx}`)
+    const d = depositOutcome(c, { depositAmount, bountyBps, owner: me })
+    const deposit = d.held ? `${fmt(dt, d.held)} held until it is revealed or released`
+      : [d.returned && `${fmt(dt, d.returned)} returned`, d.bounty && `${fmt(dt, d.bounty)} bounty to ${c.by}`, d.lost && `${fmt(dt, d.lost)} forfeited`].filter(Boolean).join(', ') || 'none'
+    console.log(`  fee ${fmt(dt, fee)} (non-refundable); deposit ${deposit}`)
   }
 }
+
+/** A clearing price (raw token1 per token0 × 2^96) in whole tokens: token1 per one token0. */
+const price = (t, priceX96) => `${formatUnits((priceX96 * 10n ** BigInt(t.token0.decimals)) / Q96, t.token1.decimals)} ${t.token1.symbol} per ${t.token0.symbol}`
 
 async function exitSteps() {
   const open = [...(await myCommitments()).values()].filter(isOpen)
@@ -480,7 +565,6 @@ async function resubmit(dryRun, slippageText) {
 
 /** Keep one preparation ready for the earliest batch this device can still make; --once does one check and exits. */
 async function keepReady(once) {
-  await checkAdmissionNetwork()
   if (!await admissionRequired()) fail('this deployment does not use proof-enforced admission')
   if (!once) console.log('keeping a prepared key ready: about one preparation of CPU each time a key is used or its batch passes')
   for (;;) {
@@ -522,6 +606,9 @@ try {
   // keep-ready takes the lock only while it prepares, so the same account can commit while it runs
   const mutates = ['prepare-admission', 'commit', 'resubmit', 'resume-admission', 'import-state', 'restore-backup', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
   const before = mutates ? exportState(dep, me) : null
+  // Every command but the purely local ones needs this RPC and deployment file to agree (T01). Commands check once here;
+  // only steps that follow a long local proof check again.
+  if (cmd !== 'export-state' && cmd !== 'backup') await checkNetwork()
   try {
     await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())
   } finally {
