@@ -21,7 +21,10 @@ let c, b, installed, profile
 before(async () => {
   if (skip) return
   const manifestSha256 = sha256File(join(REAL.params, 'manifest.json'))
-  c = await startChain({ timestamp: 1692803367n + (1000000n - 3n) * 3n - 900n, admission: { params: REAL.params, manifestSha256 }, schedule: { batchLength: 900, settleLength: 30 } })
+  const timestamp = 1692803367n + (1000000n - 3n) * 3n - 900n
+  // Proofs take real minutes. This recorded-round fixture advances one second per mined block, independent of
+  // prover latency; warp() explicitly moves it to reveal/settle. No live keeper or live drand uses this chain.
+  c = await startChain({ timestamp, timestampInterval: 1, admission: { params: REAL.params, manifestSha256 }, schedule: { start: Number(timestamp), batchLength: 900, settleLength: 30 } })
   for (const t of [c.dep.token0, c.dep.token1]) await c.mint(me.address, t, parseEther('100'))
   profile = mkdtempSync(join(tmpdir(), 'blindfold-e3-'))
   installed = installHelper(profile, REAL)
@@ -32,16 +35,19 @@ after(async () => {
   await b?.close()
   await stopBridge()
   await c?.stop()
-  rmSync(installed, { recursive: true, force: true })
+  if (installed) rmSync(installed, { recursive: true, force: true })
 })
 
 test('E3: two orders admitted with real proofs from the helper, revealed, settled at price 1 and withdrawn', { skip, timeout: 1_800_000 }, async () => {
   const { app } = await onboard(b, c.dep)
   const S = c.dep.settlement, read = (fn, args = []) => c.read(S, 'AdmittedSettlement', fn, args)
   const batch = await read('currentBatch')
+  assert.equal(await read('targetRound', [batch]), 1000000n) // fail before proving if the fixture drifts
   for (const [side, step] of [['sell', 1n], ['buy', 2n]]) {
+    const began = Date.now()
     const r = await run(app, 'commit', { side, amountIn: '1', minOut: '0.000000000000000001' })
     assert.equal(r.state, 'done', `${r.error}\n${r.log?.join('\n')}`)
+    console.log(`E3: ${side} admission ${step} verified onchain in ${((Date.now() - began) / 1000).toFixed(1)}s`)
     assert.equal(typeof r.result.admitted, 'string')
     assert.equal((await read('admissionState', [me.address]))[2], step) // {batch, root, step}: funding advanced
   }

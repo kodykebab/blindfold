@@ -1,6 +1,7 @@
 // Local anvil for the e2e harness: fixed port 8563, the auction contracts from contracts/out, a deployments file.
 // Same deployment as packages/client/test/chain.mjs, plus a real v4 PoolManager and pool at price 1, so a batch of
 // crossing orders can settle with no residual swap (E2). Admission mode (E3) adds the verifiers and the hook.
+import { createServer } from 'node:net'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -32,7 +33,11 @@ export const abi = (name) => artifact(name).abi
 
 /** forge build, unless the artifacts are there; the team lock keeps two agents from building at once. */
 export async function ensureBuilt(names = ['MockERC20', 'BlindfoldVault', 'BlindfoldSettlement', 'PoolManager']) {
-  if (names.every((n) => existsSync(join(OUT, `${n}.sol`)))) return
+  // forge test can overwrite helper artifacts with Foundry-only dynamic linking bytecode. These cannot be
+  // deployed on anvil even when the artifact exists (AdmissionPoolFactory.deployHook calls the Vm address).
+  const deployable = () => names.every((n) => existsSync(join(OUT, `${n}.sol`))
+    && !artifact(n).bytecode.object.toLowerCase().includes('7109709ecfa91a80626ff3989d68f67f5b1dd12d'))
+  if (deployable()) return
   const lock = join(ROOT, 'extension-team/.forge.lock')
   for (let i = 0; existsSync(lock); i++) {
     if (i > 600) throw new Error(`${lock} held for 20 minutes`)
@@ -41,6 +46,7 @@ export async function ensureBuilt(names = ['MockERC20', 'BlindfoldVault', 'Blind
   writeFileSync(lock, `agent 3 extension-e2e pid ${process.pid}\n`, { flag: 'wx' })
   try {
     execFileSync('forge', ['build', '--no-dynamic-test-linking'], { cwd: join(ROOT, 'contracts'), stdio: 'inherit' })
+    if (!deployable()) throw new Error('Foundry artifacts still contain test-only bytecode after forge build')
   } finally {
     rmSync(lock, { force: true })
   }
@@ -50,8 +56,14 @@ export async function ensureBuilt(names = ['MockERC20', 'BlindfoldVault', 'Blind
  * Start anvil on 8563 and deploy. admission: {params, manifestSha256} for AdmittedSettlement (E3); timestamp: anvil's start time.
  * Returns the deployment plus helpers; dep is what the extension imports (D5 shape, client chain.mjs).
  */
-export async function startChain({ admission, schedule = {}, timestamp, dir = join(fileURLToPath(new URL('..', import.meta.url)), '.chain') } = {}) {
+export async function startChain({ admission, schedule = {}, timestamp, timestampInterval, dir = join(fileURLToPath(new URL('..', import.meta.url)), '.chain') } = {}) {
   await ensureBuilt(admission ? ['MockERC20', 'AdmissionVault', 'AdmittedSettlement', 'PoolManager', 'AdmissionPoolFactory'] : undefined)
+  // Refuse an occupied port before sending any deployment transaction to an unrelated chain.
+  await new Promise((resolve, reject) => {
+    const probe = createServer()
+    probe.once('error', () => reject(new Error(`port ${PORT} already in use; stop the other local test stack first`)))
+    probe.listen(PORT, '127.0.0.1', () => probe.close(resolve))
+  })
   const args = ['--silent', '--port', String(PORT), '--accounts', '20', '--gas-limit', '300000000']
   if (timestamp) args.push('--timestamp', String(timestamp)) // E3: a past start whose drand round is recorded
   const anvil = spawn('anvil', args, { stdio: ['ignore', 'ignore', 'pipe'] })
@@ -65,6 +77,7 @@ export async function startChain({ admission, schedule = {}, timestamp, dir = jo
       if (anvil.exitCode !== null) throw new Error(`anvil exited: ${stderr.trim() || `is port ${PORT} taken?`}`)
       try { await pub.getChainId(); break } catch { if (i > 200) throw new Error('anvil did not start'); await sleep(50) }
     }
+    if (timestampInterval != null) await pub.request({ method: 'anvil_setBlockTimestampInterval', params: [timestampInterval] })
     const deployer = user(0)
     const walletOf = (account) => createWalletClient({ account, chain, transport: http(RPC) })
     const wait = async (hash) => {
@@ -92,10 +105,10 @@ export async function startChain({ admission, schedule = {}, timestamp, dir = jo
         verifiers.push(await deployRaw(JSON.parse(readFileSync(join(admission.params, 'out', `${mode}.sol`, 'Verifier.json'), 'utf8'))))
       }
     }
-    const contract = admission ? 'AdmittedSettlement' : 'BlindfoldSettlement'
+    const contract = admission ? 'AdmittedSettlement' : 'BlindfoldSettlement' // admission also needs a nonzero commit fee
     const settlement = await deploy(contract, [{
       manager, vault, depositToken: token1, depositAmount: DEPOSIT,
-      commitFee: 0n, bountyBps: 2000n, treasury: user(9).address, schedule: s, toleranceBps: 100n,
+      commitFee: admission ? 1n : 0n, bountyBps: 2000n, treasury: user(9).address, schedule: s, toleranceBps: 100n,
     }, ...verifiers])
     await write(vault, 'BlindfoldVault', 'setOperator', [settlement])
     let hooks = '0x0000000000000000000000000000000000000000'

@@ -37,3 +37,12 @@ PIN=$(shasum -a 256 packages/proof-bench/results/admission-params/manifest.json 
   packages/proof-bench/results/admission-params "$PIN" preparation /absolute/private/fixture.json >/dev/null
 # Repeat with online in place of preparation.
 ```
+
+## Completed extension flow
+
+E3 passed through the installed native host in Chromium on 2026-11-06: two orders proved and admitted onchain,
+cumulative private funding advanced to step 2, both orders revealed, settled at price 1, then both balances withdrawn.
+The sell admission job took 210.9 seconds; the buy admission job took 199.1 seconds. Each job includes any funding,
+helper calls, proof generation, ciphertext checks and wallet submission. `node:test` reported 414.33 seconds for the
+completed E3 test. These timings use the same prover and manifest identities above; fixtures use recorded drand
+round 1000000 and an isolated anvil with explicit chain time.

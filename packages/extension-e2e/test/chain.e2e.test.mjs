@@ -7,6 +7,9 @@ import { startChain, user, DEPOSIT, Q96 } from '../lib/chain.mjs'
 test('harness: deploy, commit, reveal, settle at price 1 and withdraw without the extension', { skip: process.env.EXT_E2E !== '1', timeout: 120_000 }, async () => {
   const c = await startChain()
   try {
+    const block = await c.pub.getBlockNumber({ cacheTime: 0 })
+    await assert.rejects(startChain(), /port 8563 already in use/)
+    assert.equal(await c.pub.getBlockNumber({ cacheTime: 0 }), block, 'a second harness must not deploy to the first chain')
     const { dep } = c
     const S = dep.settlement
     const b = await c.read(S, 'BlindfoldSettlement', 'currentBatch')
@@ -38,4 +41,24 @@ test('harness: deploy, commit, reveal, settle at price 1 and withdraw without th
   } finally {
     await c.stop()
   }
+})
+
+test('harness: recorded drand round and explicit block interval stay fixed while proofs wait', { skip: process.env.EXT_E2E !== '1' }, async () => {
+  const timestamp = 1692803367n + (1000000n - 3n) * 3n - 900n
+  const c = await startChain({ timestamp, timestampInterval: 1, schedule: { start: Number(timestamp), batchLength: 900, settleLength: 30 } })
+  try {
+    const S = c.dep.settlement
+    const b = await c.read(S, c.contract, 'currentBatch')
+    assert.equal(await c.read(S, c.contract, 'targetRound', [b]), 1000000n)
+    const latest = () => c.pub.getBlock({ blockTag: 'latest', cacheTime: 0 })
+    const before = (await latest()).timestamp
+    await new Promise((resolve) => setTimeout(resolve, 2100))
+    await c.mine()
+    assert.equal((await latest()).timestamp, before + 1n)
+    const opens = await c.read(S, c.contract, 'revealOpens', [b])
+    await c.warp(opens)
+    assert.equal((await latest()).timestamp, opens)
+    await c.mine()
+    assert.equal((await latest()).timestamp, opens + 1n)
+  } finally { await c.stop() }
 })

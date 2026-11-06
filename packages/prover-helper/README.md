@@ -13,7 +13,7 @@ bash packages/prover-helper/install.sh            # extension ID eaoidifkamkmkbc
 bash packages/prover-helper/install.sh <extension-id> [chromium-user-data-dir ...]
 bash packages/prover-helper/uninstall.sh [chromium-user-data-dir ...]
 ```
-`npm start --silent -- chrome-extension://eaoidifkamkmkbcomcbpldjlhipogdgo/` starts the installed native host
+`npm start --silent --prefix packages/prover-helper -- chrome-extension://eaoidifkamkmkbcomcbpldjlhipogdgo/` starts the installed native host
 with framed stdin/stdout for manual protocol checks. Chrome normally launches it directly.
 
 `install.sh` builds `blindfold-prover-helper` and writes `config.json` in

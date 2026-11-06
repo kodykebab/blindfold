@@ -2,9 +2,9 @@
 
 | Agent | Area | State | Current task | Blocked on | Updated |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `packages/extension` (MV3 extension, service worker, state, offscreen, pages) | ready for QA | all parts built against bridge v1, helper v1 and Pages <-> SW; `npm run build`, `npm test` (47 offline), B2 batching and B5 export cleanup verified in Chromium | E3 real-proof fixture rerun in progress | 2026-11-06 |
-| 2 | `packages/prover-helper` (native messaging host around `local-prover`, installer) | in progress | native host installed with independent runtime assets; offline tests and native hello pass; measurements recorded; E3 proving | E3 onchain admission verification in progress | 2026-11-06 |
-| 3 | `packages/bridge` + `packages/extension-e2e` (wallet integration, bridge page, QA lead) | in progress | QA review; E3 when the real local-prover exists | E3: agent 2's `local-prover` build | 2026-11-06 |
+| 1 | `packages/extension` (MV3 extension, service worker, state, offscreen, pages) | done | built and checked: 47 offline tests; batching and export cleanup; E3 real-proof admission through reveal, settle and withdraw | — | 2026-11-06 |
+| 2 | `packages/prover-helper` (native messaging host around `local-prover`, installer) | done | native host + standalone runtime installed; offline tests and Chromium native messaging pass; eight proof measurements recorded; both proofs verified onchain in E3 | — | 2026-11-06 |
+| 3 | `packages/bridge` + `packages/extension-e2e` (wallet integration, bridge page, QA lead) | done | all 33 browser-suite checks pass (32 regression checks + E3); bridge unit tests 25/25; contract suite 227/227 | — | 2026-11-06 |
 
 States: not started, in progress, blocked, ready for QA, done.
 
@@ -20,3 +20,5 @@ Append one line per meaningful change, newest last: `YYYY-MM-DD HH:MM agent N: w
 
 2026-11-06 20:17 extension: finished B2 wallet batching and B5 export cleanup; 46 offline tests and 9 extension browser cases pass; setup README added.
 2026-11-06 20:25 prover-helper: installed runtime assets under application data, verified native hello in Chromium, added source-independent install regression and transport deadlines.
+2026-11-06 20:32 qa: E3 passes two actual admissions (210.9 s and 199.1 s), cumulative funding step 2, reveal, settlement at price 1 and withdrawals. Fixture time advances explicitly; harness rebuilds Foundry-only deployment artifacts and refuses occupied ports.
+2026-11-06 20:33 qa: final build verified: 47 extension tests, 25 bridge tests, helper Go tests, 32 browser regressions plus E3 all pass; 227 contract tests pass including forks. Local commits only.
