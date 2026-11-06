@@ -116,8 +116,14 @@ CONTEXT.md's claim that "the solver chooses nothing else" does not hold.
 - **Throughput:** an account can't admit into a new batch until all its earlier commitments close. Batch b's orders close at the earliest when its settle window opens (`revealCloses(b)`), which is the moment batch b+1's commit window ends. So an account trades every other batch at best, and every fourth if settlement is late or the batch expires. The pricing design relies on arbitrageurs, who would need many accounts.
 - **Proving time:** the [proof-bench README](packages/proof-bench/README.md) has no completed end-to-end proving time yet. If proving takes longer than the 30-second commit window, users must fix their order before the batch opens, which ages it.
 
+**In progress:** `main` @ `6b58167` splits the proof in two:
+- a **preparation** proof of the tlock key wrapper, which needs only the round and context, so it can run before the order is chosen;
+- an **online** proof of the payload and funding, per order.
+
+Both are bound together (see the [proof-bench README](packages/proof-bench/README.md#prepared-keys-and-online-admission)), so only the online proof has to fit the commit window. Its end-to-end time is still unmeasured.
+
 **Fix:**
-- **Measure first:** execute, prove, wrap with Groth16, and verify onchain, end to end on a laptop, for both guest variants.
+- **Measure first:** execute, prove, wrap with Groth16, and verify onchain, end to end on a laptop, for both guest variants, timing the preparation and online proofs separately.
 - **Then pick a mode and write it in ARCHITECTURE.MD:**
   - prove inside the window, if fast enough;
   - precompute for batch b+2, accepting an older order;

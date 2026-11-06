@@ -105,7 +105,7 @@ contracts/            Foundry
   test/               Blindfold.t.sol, BlindfoldUnichainFork.t.sol, ReservationModel.t.sol, swapvm/, court/ (+ fixtures/), utils/
   lib/                forge-std v1.11.0, v4-core v4.0.0, swap-vm v1.0.2 (submodules, pinned)
 packages/court-watcher/  find.mjs (scan), prove.mjs (claim + anchor fixtures), signed.mjs, lib.mjs
-packages/proof-bench/    admission-proof prototype: Rust checker (src/), RISC Zero guest + host (vm/), verifier tests (evm/), interop.mjs
+packages/proof-bench/    admission-proof prototype: Rust checker (src/), RISC Zero guests + hosts (vm/; `prepared` splits key preparation from the online proof), verifier tests (evm/), interop scripts
 ```
 Planned, with owners in [PLAN.md](PLAN.md#team-and-lanes): `contracts/script/` (`DeployBlindfold`, `SeedBatch`, `DeployCourt`), `contracts/src/admission/`, `contracts/src/court/BondRegistry.sol`, `deployments/` (local addresses, gitignored), `packages/{arkiv,client,keeper,solver,demo-bots}`, `scripts/` (`check.sh`, `e2e.sh`), `app/` (Next.js), `arkiv/*.md`, `FEEDBACK.md`, `DEMO.md`.
 

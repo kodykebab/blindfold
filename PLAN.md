@@ -62,7 +62,7 @@ Additive changes only (new key, event, overload, optional attribute, CLI flag). 
 | Existing ABIs and events | Kritarth | everyone | As in [HANDOFF.md](HANDOFF.md#interfaces-to-build-against). Read ABIs from `contracts/out/` after `forge build`; never hand-copy |
 | R1 settle overload | Kritarth | solver | `settle(uint64 batchId, uint256 priceX96, uint256 marginalId, uint128 marginalAmountIn)`. `settle(b, p)` stays. `Filled.amountIn` = the filled amount |
 | R3 fee | Kritarth | client, UI | `commitFee() view returns (uint256)`, charged in `depositToken` on every commit and admit, never refunded |
-| R2 admission | Kritarth | client, keeper | `admit(uint64 batchId, bytes32 hash, bytes ciphertext, bytes seal, bytes journal) returns (uint256 id)`; `admissionRequired() view returns (bool)`. `admit` emits the same `Committed` event, so the keeper doesn't change. When `admissionRequired`, `commit` reverts |
+| R2 admission | Kritarth | client, keeper | `admit(uint64 batchId, bytes32 hash, bytes ciphertext, bytes proof) returns (uint256 id)`; `admissionRequired() view returns (bool)`. `proof` is opaque bytes whose encoding Kritarth defines: one seal and journal, or the preparation and online seals and journals ABI-encoded together, after the two-proof split on `main` (`725ab8e`). The client passes it through untouched. `admit` emits the same `Committed` event, so the keeper doesn't change. When `admissionRequired`, `commit` reverts |
 | R4 reward | Kritarth | solver | `settleRewardBps() view returns (uint256)`: share of the residual surplus paid to `msg.sender` of `settle` (0 until shipped) |
 | Bonds | Bhoumik | demo-bots, watcher, UI (via Arkiv) | `bond()`, `requestUnbond()`, `unbond()` (delayed); `claim(SandwichCourtVerifier.Claim c, Protected r, bytes sig) returns (uint256 paid)`. EIP-712 `Protected{bytes32 txHash, uint256 chainId, uint64 acceptedAt, uint64 maxBlock, uint256 maxPayout}`; `maxPayout` comes from the tx's own slippage at acceptance |
 
@@ -71,7 +71,7 @@ Additive changes only (new key, event, overload, optional attribute, CLI flag). 
 |---|---|---|---|
 | `deployments/blindfold.local.json` | Kritarth | Khush, Bhoumik | `{chainId, deployBlock, mode: "local"\|"fork", vault, settlement, hook, poolManager, token0, token1, depositToken, admission: "off"\|"mock"\|"real", admissionVerifier, admissionImageId, aquaRouter}`. Keys not shipped yet are `null` |
 | `deployments/court.local.json` | Bhoumik | Khush | `{chainId, deployBlock, verifier, bondRegistry, rpcSigner}` |
-| Prover CLI | Kritarth | client | `proof-bench-host --admission <in.json> <out.json>`. In: `{chainId, settlement, owner, batch, round, step, order: {owner, zeroForOne, amountIn, minAmountOut}, salt, prev: {total0, total1, blinding}, budget0, budget1}`. Out: `{ciphertext, hash, seal, journal, next: {total0, total1, blinding}, root}`. It encrypts too, because the proof needs the tlock randomness. `--mock` returns a seal that RISC Zero's `RiscZeroMockVerifier` accepts. The client keeps its own fake until the CLI ships |
+| Prover CLI | Kritarth | client | `admission-prover prepare <prep.json> <state.json>`, then `admission-prover admit <in.json> <state.json> <out.json>`.<br>**Prepare** needs only `{chainId, settlement, owner, batch, round}`, so it can run before the order is chosen. It covers the key-wrapper proof (the `prepared` host on `main` splits this out).<br>**Admit** in: `{order: {owner, zeroForOne, amountIn, minAmountOut}, salt, step, prev: {total0, total1, blinding}, budget0, budget1}`. Out: `{ciphertext, hash, proof, next: {total0, total1, blinding}, root}`, where `proof` is the hex of the opaque `admit` bytes. It encrypts too, because the proofs need the tlock randomness.<br>`--mock` on either step returns seals that RISC Zero's `RiscZeroMockVerifier` accepts. The binary name is Kritarth's call; the subcommands and JSON are the seam. The client keeps its own fake until the CLI ships |
 | Arkiv entities | Khush (`arkiv/schema.md`) | solver: `blindfold.batch`; watcher: `court.verdict`, `court.rpc`, `court.suspect`; client: `blindfold.commitment`; UI reads all | The table in [CONTEXT.md](CONTEXT.md#arkiv-entities), plus `court.suspect` `{victimTx, block, pool, reason}`. Attribute names exactly as written |
 | `packages/arkiv` | Khush | every package | `put(type, attrs, {expiresIn})`, `query(type, where)`. `ARKIV=off` stores to `.arkiv-local/<type>.jsonl`. Until it ships, consumers append to that same file themselves |
 | Package CLIs (used by `scripts/e2e.sh`) | each owner | Bhoumik (e2e), everyone | `npm test` = offline unit tests. `npm start` = long-running service. `npm start -- --once` = do all work that is due now, then exit 0. Plus `client`: `npm start -- commit-many --users 10-19 [--bad]`; `demo-bots`: `npm start -- leak-and-sandwich` |
@@ -156,11 +156,12 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
     - updates the root;
     - emits `Committed`.
   - **Verifier:** an `IRiscZeroVerifier` set at deploy; `RiscZeroMockVerifier` when `ADMISSION=mock`.
+  - **Two proofs:** if the preparation/online split stays, `admit` decodes both from `proof`, verifies each against its own image ID, and checks their shared binding.
   - **Tests:** port the `ReservationModel` tests to it.
   - **Check:** a mock seal for a valid journal admits. A tampered journal, a stale root, the wrong round and an insufficient budget all revert. With `admissionRequired`, `commit` reverts.
 - [ ] **Prover CLI `--mock`** · Needs: nothing.
-  - **What:** `proof-bench-host --admission --mock` takes the frozen JSON, encrypts with real tlock, and emits a mock seal plus the real journal.
-  - **Check:** its output admits on a local deploy with `ADMISSION=mock`.
+  - **What:** `prepare --mock` and `admit --mock` take the frozen JSON, encrypt with real tlock, and emit mock seals plus the real journals inside `proof`.
+  - **Check:** the output admits on a local deploy with `ADMISSION=mock`.
 
 ### Bhoumik
 - [ ] **`BondRegistry.sol` + tests (R8)** · Needs: nothing (the verifier exists).
@@ -210,7 +211,7 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
 - [ ] **`packages/client` order building + fake prover** · Needs: nothing.
   - **Hashes and salts:** `orderHash` computed locally (`keccak256(abi.encode(chainId, settlement, batchId, order, salt))`), with fresh random salts.
   - **Budgets:** set to the full free balances (R2 privacy).
-  - **Prover:** a built-in fake prover that matches the frozen CLI JSON.
+  - **Prover:** a built-in fake prover that matches the frozen CLI JSON. The client calls `prepare` as soon as the batch is known, then `admit` once the order is set, and passes `proof` through untouched.
   - **Modes:** `ADMISSION=off|mock|real` selects `commit` or `admit`.
   - **Check:** `npm test` reproduces a hash vector made with `cast abi-encode` + `cast keccak`.
 - [ ] **`packages/keeper` offline** · Needs: nothing.
@@ -245,12 +246,12 @@ Swap the fakes for the real pieces. Every `Needs:` below is either Phase 1 work 
 
 ### Kritarth
 - [ ] **Real prover (R2)** · Needs: own `admit` and `--mock`.
-  - **What:** `proof-bench-host --admission` without `--mock` proves and wraps to Groth16, with the same JSON.
+  - **What:** `prepare` and `admit` without `--mock` prove and wrap to Groth16, with the same JSON.
   - **Deploy:** `ADMISSION=real` points at the RISC Zero verifier and the admission image ID.
   - **Check:** a real seal admits on the fork; the client needs no code change.
 - [ ] **R6 measurement** · Needs: own real prover.
-  - **What:** time execute, prove, Groth16 wrap and onchain verify, end to end on a laptop, for both guest variants.
-  - **Then:** pick the proving mode (inside the window, or precompute for b+2), write it in ARCHITECTURE.MD, and update REVIEW R6.
+  - **What:** time execute, prove, Groth16 wrap and onchain verify, end to end on a laptop, for both guest variants. Time the preparation and online proofs separately.
+  - **Then:** pick the proving mode and write it in ARCHITECTURE.MD and REVIEW R6. For example: prepare before the batch opens, and prove the online part inside the commit window.
 - [ ] **Aqua strategy (1inch hard requirement)** · Needs: own deploy script.
   - **What:** a ship script plus a fork test where `BlindfoldAquaRouter` fills at `activeClearingPriceX96` with real token transfers (taker = settlement).
   - **Deploy:** live mode ships and funds the strategy, and writes `aquaRouter`.
