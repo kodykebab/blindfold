@@ -56,6 +56,7 @@ contract BlindfoldTest is Test {
                 depositAmount: DEPOSIT,
                 bountyBps: BOUNTY_BPS,
                 treasury: treasury,
+                commitFee: 0, // fee-free here so the mechanism tests isolate settlement; FeesAndTiming.t.sol covers it
                 schedule: BatchAuction.Schedule({start: T0, batchLength: 30, revealLength: 24, settleLength: 60}),
                 toleranceBps: TOL_BPS
             })

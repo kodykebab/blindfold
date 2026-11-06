@@ -62,6 +62,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         uint256 depositAmount;
         uint256 bountyBps;
         address treasury;
+        uint256 commitFee; // REVIEW R3/S3: non-refundable, per commitment
         Schedule schedule;
         uint256 toleranceBps;
     }
@@ -92,7 +93,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     mapping(uint64 => uint256) public clearingPriceX96;
 
     constructor(Config memory c)
-        BatchAuction(c.vault, c.depositToken, c.depositAmount, c.bountyBps, c.treasury, c.schedule)
+        BatchAuction(c.vault, c.depositToken, c.depositAmount, c.bountyBps, c.treasury, c.commitFee, c.schedule)
     {
         manager = c.manager;
         toleranceBps = c.toleranceBps;

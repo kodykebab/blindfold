@@ -7,7 +7,9 @@ import {BlindfoldVault} from "./BlindfoldVault.sol";
 /// @notice Sealed batches. Orders are timelock-encrypted (tlock) to a future drand quicknet round:
 ///         - commit: a hash, the ciphertext (event only) and a fixed deposit; direction and size stay hidden;
 ///         - reveal: ANYONE may reveal after the round is published, for a bounty, so nobody can withhold a reveal;
-///         - slashUnrevealed: a commitment nobody revealed in time forfeits its deposit.
+///         - slashUnrevealed: a commitment nobody revealed in time forfeits its deposit, or gets it back when admission
+///           proved it valid and funded;
+///         - every commitment, padding included, pays a non-refundable commitFee to the treasury.
 ///         Settlement is implemented by BlindfoldSettlement, which inherits this contract.
 abstract contract BatchAuction {
     /// drand quicknet: unchained BLS on G1, one round every 3 s
@@ -29,7 +31,8 @@ abstract contract BatchAuction {
         None,
         Committed,
         Revealed,
-        Slashed
+        Slashed,
+        Released
     }
 
     struct Commitment {
@@ -46,6 +49,7 @@ abstract contract BatchAuction {
         uint32 settleLength;
     }
 
+    error MisalignedSchedule(uint64 start, uint32 batchLength);
     error NotCurrentBatch(uint64 batchId, uint64 current);
     error BatchFull();
     error BadStatus(uint256 commitId);
@@ -60,10 +64,14 @@ abstract contract BatchAuction {
     event Revealed(uint256 indexed commitId, uint64 indexed batchId, address indexed revealer, Order order);
     event RevealedUnfunded(uint256 indexed commitId, uint64 indexed batchId, address indexed revealer, Order order);
     event Slashed(uint256 indexed commitId, uint64 indexed batchId, address indexed caller);
+    /// @notice An unrevealed commitment closed without penalty: admission already proved it valid and funded (REVIEW S9).
+    event Released(uint256 indexed commitId, uint64 indexed batchId, address indexed caller);
 
     BlindfoldVault public immutable vault;
     address public immutable depositToken;
     uint256 public immutable depositAmount;
+    /// @notice Charged in depositToken on every commit, padding included, and never refunded (REVIEW R3/S3).
+    uint256 public immutable commitFee;
     uint256 public immutable bountyBps;
     address public immutable treasury;
     uint64 public immutable start;
@@ -83,12 +91,19 @@ abstract contract BatchAuction {
         uint256 depositAmount_,
         uint256 bountyBps_,
         address treasury_,
+        uint256 commitFee_,
         Schedule memory s
     ) {
         require(bountyBps_ <= BPS && s.batchLength != 0 && s.start >= DRAND_GENESIS, "config");
+        // REVIEW R7: with commitsClose on a drand round boundary, every batch's key is published exactly
+        // DRAND_MARGIN * DRAND_PERIOD = 6 s after commits close, not 4-6 s depending on the offset.
+        if ((s.start - DRAND_GENESIS) % DRAND_PERIOD != 0 || s.batchLength % DRAND_PERIOD != 0) {
+            revert MisalignedSchedule(s.start, s.batchLength);
+        }
         vault = vault_;
         depositToken = depositToken_;
         depositAmount = depositAmount_;
+        commitFee = commitFee_;
         bountyBps = bountyBps_;
         treasury = treasury_;
         start = s.start;
@@ -148,6 +163,12 @@ abstract contract BatchAuction {
         return orders[commitId];
     }
 
+    /// @notice Whether commitments must come through an admission proof (valid ciphertext to the right round, funded).
+    ///         False until the admission entry point lands (REVIEW R2); it selects the unrevealed-commitment policy.
+    function admissionRequired() public view virtual returns (bool) {
+        return false;
+    }
+
     // ---- actions
 
     function commit(uint64 batchId, bytes32 hash, bytes calldata ciphertext) external returns (uint256 id) {
@@ -155,6 +176,8 @@ abstract contract BatchAuction {
         if (batchId != cur) revert NotCurrentBatch(batchId, cur);
         if (batchCommitIds[batchId].length >= MAX_COMMITS) revert BatchFull();
 
+        // REVIEW R3/S3: filling a batch costs MAX_COMMITS * commitFee, whoever reveals and whatever the order says
+        if (commitFee != 0) vault.transferInternal(msg.sender, treasury, depositToken, commitFee);
         vault.transferInternal(msg.sender, address(this), depositToken, depositAmount);
         vault.openCommitment(msg.sender);
 
@@ -198,12 +221,25 @@ abstract contract BatchAuction {
         emit Revealed(id, b, msg.sender, order);
     }
 
+    /// @notice Close a commitment nobody revealed in its window. Anyone may call it; the commitFee is never returned.
+    ///         Unchecked ciphertext (admission off): slashed. The caller gets the bounty and the treasury the rest, so
+    ///         committing garbage or withholding a reveal never pays.
+    ///         Admission-proved ciphertext (REVIEW S9): the order was valid, funded and encrypted to the right round, so a
+    ///         missed reveal means a late drand round, a late transaction or no keeper, not the owner. The deposit goes
+    ///         back in full and no bounty is paid, because the bounty pays for a successful reveal.
     function slashUnrevealed(uint256 id) external {
         Commitment storage c = commitments[id];
         if (c.status != Status.Committed) revert BadStatus(id);
         uint256 closes = revealCloses(c.batchId);
         if (block.timestamp < closes) revert RevealWindowOpen(closes);
 
+        if (admissionRequired()) {
+            c.status = Status.Released;
+            vault.transferInternal(address(this), c.committer, depositToken, depositAmount);
+            vault.closeCommitment(c.committer);
+            emit Released(id, c.batchId, msg.sender);
+            return;
+        }
         c.status = Status.Slashed;
         uint256 bounty = depositAmount * bountyBps / BPS;
         vault.transferInternal(address(this), msg.sender, depositToken, bounty);
