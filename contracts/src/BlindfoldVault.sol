@@ -20,6 +20,15 @@ contract BlindfoldVault {
     error Insufficient(address account, address token, uint256 free, uint256 needed);
     error OpenCommitments(address account, uint256 open);
     error TokenTransferFailed();
+    error Reentrant();
+    uint256 private entered;
+
+    modifier nonReentrant() {
+        if (entered != 0) revert Reentrant();
+        entered = 1;
+        _;
+        entered = 0;
+    }
 
     event Deposit(address indexed account, address indexed token, uint256 amount);
     event Withdraw(address indexed account, address indexed token, uint256 amount);
@@ -52,13 +61,13 @@ contract BlindfoldVault {
 
     // ---- users
 
-    function deposit(address token, uint256 amount) external {
+    function deposit(address token, uint256 amount) external nonReentrant {
         _receive(token, msg.sender, amount);
         balanceOf[msg.sender][token] += amount;
         emit Deposit(msg.sender, token, amount);
     }
 
-    function withdraw(address token, uint256 amount) external {
+    function withdraw(address token, uint256 amount) external nonReentrant {
         uint256 open = openCommitments[msg.sender];
         if (open != 0) revert OpenCommitments(msg.sender, open);
         _debit(msg.sender, token, amount);
@@ -93,13 +102,13 @@ contract BlindfoldVault {
     }
 
     /// @notice Real tokens out of the operator's own account (to route a residual swap).
-    function operatorPull(address token, uint256 amount, address to) external onlyOperator {
+    function operatorPull(address token, uint256 amount, address to) external onlyOperator nonReentrant {
         _debit(msg.sender, token, amount);
         _send(token, to, amount);
     }
 
     /// @notice Real tokens into the operator's own account.
-    function operatorPush(address token, uint256 amount) external onlyOperator {
+    function operatorPush(address token, uint256 amount) external onlyOperator nonReentrant {
         _receive(token, msg.sender, amount);
         balanceOf[msg.sender][token] += amount;
     }
@@ -113,12 +122,26 @@ contract BlindfoldVault {
     }
 
     function _receive(address token, address from, uint256 amount) internal {
+        uint256 beforeBalance = _balance(token, address(this));
         (bool ok, bytes memory r) = token.call(abi.encodeCall(IERC20Like.transferFrom, (from, address(this), amount)));
-        if (!ok || (r.length != 0 && !abi.decode(r, (bool)))) revert TokenTransferFailed();
+        if (
+            !ok || (r.length != 0 && !abi.decode(r, (bool))) || _balance(token, address(this)) - beforeBalance != amount
+        ) revert TokenTransferFailed();
     }
 
     function _send(address token, address to, uint256 amount) internal {
+        uint256 beforeBalance = _balance(token, address(this));
+        uint256 beforeRecipient = _balance(token, to);
         (bool ok, bytes memory r) = token.call(abi.encodeCall(IERC20Like.transfer, (to, amount)));
-        if (!ok || (r.length != 0 && !abi.decode(r, (bool)))) revert TokenTransferFailed();
+        if (
+            !ok || (r.length != 0 && !abi.decode(r, (bool))) || beforeBalance - _balance(token, address(this)) != amount
+                || _balance(token, to) - beforeRecipient != amount
+        ) revert TokenTransferFailed();
+    }
+
+    function _balance(address token, address account) private view returns (uint256) {
+        (bool ok, bytes memory data) = token.staticcall(abi.encodeWithSignature("balanceOf(address)", account));
+        if (!ok || data.length != 32) revert TokenTransferFailed();
+        return abi.decode(data, (uint256));
     }
 }

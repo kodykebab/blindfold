@@ -87,7 +87,12 @@ func main() {
 	}
 	var c, shape frontend.Circuit
 	mode := "local_funding_component_groth16"
-	if len(os.Args) == 3 && os.Args[1] == "--online" {
+	if len(os.Args) == 3 && os.Args[1] == "--global-online" {
+		assignment := globalFixture(os.Args[2])
+		c = &assignment
+		shape = &GlobalOnlineCircuit{}
+		mode = "global_online_groth16"
+	} else if len(os.Args) == 3 && os.Args[1] == "--online" {
 		assignment := onlineFixture(os.Args[2])
 		c = &assignment
 		shape = &OnlineCircuit{}
@@ -111,7 +116,7 @@ func main() {
 	w, e := frontend.NewWitness(c, ecc.BN254.ScalarField())
 	must(e)
 	start = time.Now()
-	pk, vk, e := groth16.Setup(cs)
+	pk, vk, e := provingKeys(cs, mode)
 	must(e)
 	setup := time.Since(start).Seconds()
 	start = time.Now()
@@ -127,6 +132,9 @@ func main() {
 		exportArtifacts(dir, vk, proof, public, c)
 	}
 	switch assignment := c.(type) {
+	case *GlobalOnlineCircuit:
+		assignment.CiphertextHash[0] = uints.NewU8(byte(number(fmt.Sprint(assignment.CiphertextHash[0].Val)).Uint64()) ^ 1)
+		assignment.Digest = nativeStatementDigest(globalStatement(*assignment))
 	case *FundingCircuit:
 		assignment.NewRoot[0] = uints.NewU8(byte(number(fmt.Sprint(assignment.NewRoot[0].Val)).Uint64()) ^ 1)
 		assignment.Digest = nativeStatementDigest(fundingStatement(*assignment))
@@ -147,6 +155,13 @@ func main() {
 	result := map[string]any{"mode": mode, "constraints": cs.GetNbConstraints(), "compile_s": compile, "setup_s": setup, "prove_s": prove, "verify_s": verify, "mutated_public_commitment_rejected": true, "setup": "ephemeral benchmark only"}
 	if mode == "local_funding_component_groth16" {
 		result["mutated_public_root_rejected"] = true
+	}
+	if os.Getenv("CIRCUIT_KEYS") != "" {
+		result["setup"] = "reusable circuit-bound keys; local setup requires ceremony review"
+		if os.Getenv("CIRCUIT_SETUP") != "1" {
+			result["key_load_s"] = setup
+			delete(result, "setup_s")
+		}
 	}
 	out, e := json.Marshal(result)
 	must(e)

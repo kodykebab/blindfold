@@ -29,6 +29,8 @@ func exportArtifacts(dir string, vk groth16.VerifyingKey, proof groth16.Proof, p
 	}
 	var journal, funding []byte
 	switch c := assignment.(type) {
+	case *GlobalOnlineCircuit:
+		journal = globalStatement(*c)
 	case *FundingCircuit:
 		journal = fundingStatement(*c)
 	case *PreparationCircuit:
