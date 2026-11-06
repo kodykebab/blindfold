@@ -54,6 +54,8 @@ The trading page can run `prepare-admission` for an explicit current or future b
 
 The real CLI/Anvil backup test is opt-in: `WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs`. It starts its own Anvil and does not use an existing chain.
 
+Recent batches come from `packages/arkiv` (`GET /api/history`). With `ARKIV=off` the list is the in-memory mirror. If Arkiv is unconfigured or down the page says history unavailable and still trades, tracks and withdraws from the chain. The Court ledger is hidden until a Court deployment file exists. See [arkiv/schema.md](../../arkiv/schema.md).
+
 ## Checks
 
 From the repository root, after preparing submodules, dependencies and the proof-bench upstreams:

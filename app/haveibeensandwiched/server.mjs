@@ -2,6 +2,8 @@ import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { check } from './check.mjs'
 import { createJobs } from './trading-server.mjs'
+import { loadHistory } from './history.mjs'
+import { loadCourt } from './court-view.mjs'
 
 const PORT = Number(process.env.PORT || 3100)
 const pages = new Map(['/index.html', '/trade.html', '/trade.css', '/trade.mjs', '/status.mjs', '/job-store.mjs', '/wallet-view.mjs'].map((p) => [p, readFileSync(new URL(`.${p}`, import.meta.url))]))
@@ -11,6 +13,10 @@ createServer(async (req, res) => {
   const host = req.headers.host
   if (![ `127.0.0.1:${PORT}`, `localhost:${PORT}` ].includes(host)) return json(res, 403, { error: 'Invalid host' })
   const url = new URL(req.url, `http://${host}`)
+  if (url.pathname === '/api/history' && req.method === 'GET') return json(res, 200, await loadHistory())
+  if (url.pathname === '/api/court' && req.method === 'GET') {
+    return json(res, 200, await loadCourt())
+  }
   if (url.pathname === '/api/check' && req.method === 'GET') {
     try { return json(res, 200, await check(url.searchParams.get('q'))) } catch (e) { return json(res, 502, { error: e.message }) }
   }
