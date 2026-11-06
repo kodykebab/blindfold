@@ -17,9 +17,19 @@ The first reviewed batch is merged through `09bc540c9c164c84dbc3cacfa47983520ecd
 
 Validation on the integrated source: 215 Foundry tests including Unichain forks with 4,096 fuzz runs, 21 client tests including real Anvil CLI lifecycles, 14 clearing-model tests, Go constraint tests and 14 native Rust tests. Existing direct proof artifacts passed 22 Solidity tests and independent tlock/ABI interoperability; RISC Zero verifier plumbing passed 3 tests. Proof generation timings are the earlier recorded samples, not new measurements.
 
+### Admission and private-state integration
+
+The enforced deployment uses `AdmissionVault` and `AdmittedSettlement`, with immutable preparation and online verifier addresses. It reuses the existing commitment, reveal, settlement, expiry and withdrawal lifecycle. The fixed token pair checks actual transfer receipts; acceptance binds both proofs to the caller, deployment, current round, root and post-fee funding capacity. The original unchecked settlement remains the explicit off-mode deployment.
+
+The client generates proofs locally, maintains cumulative totals and blinding, saves pending transitions before sending, and checks the chain root before another append. `resume-admission` reconciles uncertain inclusion; exports include the private opening. The reproducible local gate is `bash packages/proof-bench/check-admission.sh` after normal dependency setup. It uses generated development parameters, recorded quicknet data, an isolated Anvil chain and 900-second batches.
+
+The admission gate has passed with freshly generated proof pairs, independent recorded-drand decryption, interrupted submission/resume, export/restore, reveal, settlement, withdrawal and release. Full Foundry validation passed 227 tests with configured forks and 4,096 fuzz runs; the Go circuit suite and affected client regressions passed.
+
+The remaining review queue includes the newly opened multi-token PR #58 after its routing prerequisites. It does not change the one-pair admission integration boundary. Review #4 and the full Court stack as previously agreed.
+
 ### Next review and implementation order
 
-1. Complete admission integration (#29) using the selected local two-proof architecture, with the supported-token/arithmetic (#23) and deployment/configuration (#24) prerequisites. Keep the existing vault lifecycle and one-active-batch invariant. Prototype or mock proof verification does not satisfy this release gate.
+1. Complete R6 advance-preparation/device-latency validation for the intended batch duration and continue the broader supported-token/arithmetic (#23) and deployment/configuration (#24) reviews after the enforced admission/private-state integration (#29/#17). Keep the existing vault lifecycle and one-active-batch invariant. Prototype or mock proof verification does not satisfy this release gate.
 2. Review the remaining auction/solver stacks together: #4 → #33 → #36 → #41 → #52 for solver code; #35 → #40 → #51 for contract execution paths. Test each solver against the corresponding generated artifacts and preserve the merged fees/schedule checks while integrating.
 3. Integrate keeper #45 against the merged client and contracts, including operator budget, duplicate reveals, outage recovery and Released behavior.
 4. Review Court independently: #4 → #37 → #38 → #39 → #44 → #46 → #47 → #48 → #49. Assess the final coverage/payout behavior, then validate its independent release gates.
@@ -95,6 +105,10 @@ Shared (small PR, tell the others): `foundry.toml`, `.gitmodules`, `.gitignore`,
 
 ## Seams
 Additive changes only (new key, event, overload, optional attribute, CLI flag). A breaking change needs the consumers' OK and an update to this table in the same PR.
+
+Admission deployment metadata: the optional `admission` object contains `manifestSha256`, `preparationVerifier` and `onlineVerifier`. Existing `admission: "off"` manifests remain readable. `admissionState(owner)` returns `(uint64 batch, bytes32 root, uint256 step)`; a fully closed account returns zero. `FundingAdvanced(owner,batchId,step,root)` accompanies accepted commitments. The opaque proof is `abi.encode(bytes preparationSeal, bytes preparationJournal, bytes onlineSeal, bytes onlineJournal)`.
+
+Local proving configuration: `ADMISSION_PROVER` defaults to `packages/proof-bench/results/local-prover`; `ADMISSION_PARAMS` defaults to `packages/proof-bench/results/admission-params`. `ADMISSION_MANIFEST_SHA256` pins generated parameters for the integration test; ordinary CLI calls read that pin from deployment metadata. `setup-local`, `fixture-local` and `prove-local` are additive commands on the circuit tool. Fixture integers may be decimal strings; historical numeric fixtures remain accepted.
 
 Client account selection: `CLIENT_ACCOUNT_INDEX` selects the local Anvil account (default 10). Existing numeric `USER` values remain supported; ordinary OS usernames do not override the default. `PRIVATE_KEY` continues to take precedence.
 
@@ -201,8 +215,8 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
     - charges both;
     - updates the root;
     - emits `Committed`.
-  - **Verifier:** an `IRiscZeroVerifier` set at deploy; `RiscZeroMockVerifier` when `ADMISSION=mock`.
-  - **Two proofs:** if the preparation/online split stays, `admit` decodes both from `proof`, verifies each against its own image ID, and checks their shared binding.
+  - **Verifier:** immutable preparation and online direct Groth16 verifiers for the selected architecture. RISC Zero remains an isolated benchmark path.
+  - **Two proofs:** `admit` decodes both from `proof`, derives their public inputs and checks their shared preparation prefix before verifying against their deployment keys.
   - **Tests:** port the `ReservationModel` tests to it.
   - **Check:** a mock seal for a valid journal admits. A tampered journal, a stale root, the wrong round and an insufficient budget all revert. With `admissionRequired`, `commit` reverts.
 - [ ] **Prover CLI `--mock`** · Needs: nothing.
@@ -293,7 +307,7 @@ Swap the fakes for the real pieces. Every `Needs:` below is either Phase 1 work 
 ### Kritarth
 - [ ] **Real prover (R2)** · Needs: own `admit` and `--mock`.
   - **What:** `prepare` and `admit` without `--mock` prove and wrap to Groth16, with the same JSON.
-  - **Deploy:** `ADMISSION=real` points at the RISC Zero verifier and the admission image ID.
+  - **Deploy:** the enforced settlement pins the direct preparation and online verifier contracts; the client pins their parameter manifest.
   - **Check:** a real seal admits on the fork; the client needs no code change.
 - [ ] **R6 measurement** · Needs: own real prover.
   - **What:** time execute, prove, Groth16 wrap and onchain verify, end to end on a laptop, for both guest variants. Time the preparation and online proofs separately.

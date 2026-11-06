@@ -24,7 +24,7 @@ Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each
 
 The tables and reproduction snippets below retain their historical baselines. On main through `09bc540`, R1's reproduced marginal-order case and dust companion have regression coverage through proportional allocation (#6); R3 now charges a nonrefundable fee on every commit (#50/#53); settlement windows cannot overlap (#34); R7's schedule alignment is enforced. The fee/configuration integration passes 215 contract tests with 4,096 fuzz runs and Unichain forks. Alignment does not remove sequencer timing assumptions; #31 remains open. Clearing feasibility and solver integration remain tracked in #7/#12.
 
-The client (#42/#54) now handles Released as terminal and reports cleanup policy accurately. Isolated local circuits (#5) and their real-proof harness are merged; production commit still accepts unchecked ciphertext, so #29 remains open. The release-policy subclass in FeesAndTiming tests is not an admission verifier. Broader private-state acceptance remains #17.
+The client (#42/#54) now handles Released as terminal and reports cleanup policy accurately. Isolated local circuits (#5) and their real-proof harness are merged; the original off-mode settlement accepts unchecked ciphertext; the enforced integration is described under R2. The release-policy subclass in FeesAndTiming tests is not an admission verifier. Cumulative private-state implementation and its remaining release decisions are described under S11.
 
 ## R1. One poison order can make a batch impossible to settle
 **Where:** `BlindfoldSettlement.quote` ([`:132`](contracts/src/BlindfoldSettlement.sol#L132)), `settle` ([`:139`](contracts/src/BlindfoldSettlement.sol#L139)), `_checkMarginal` ([`:206`](contracts/src/BlindfoldSettlement.sol#L206)).
@@ -56,6 +56,9 @@ No price is consistent with both, every `settle` reverts, and the batch expires.
 - **Verification:** see the S1 implementation notes below. This resolves the reproduced case without claiming universal feasibility or a unique solver price.
 
 ## R2. The commit-reveal free option is still open
+
+**Enforced integration:** `AdmittedSettlement` requires both direct Groth16 proofs and disables the inherited unchecked `commit`. It binds canonical journals to caller/deployment/batch/round/ciphertext and cumulative funding after fees and deposits; `AdmissionVault` restricts the pair and checks exact transfer receipts. The original `BlindfoldSettlement` remains unchecked off mode. The integration tests cover real generated proofs and private-state resume/restore. Production use still requires reviewed ceremony parameters and authenticated distribution; single-party local setup is restricted to test deployment.
+
 **Where:** `BatchAuction.reveal` funding check ([`:183`](contracts/src/BatchAuction.sol#L183)), `BlindfoldVault.deposit` ([`:55`](contracts/src/BlindfoldVault.sol#L55)), `BatchAuction.commit` ([`:153`](contracts/src/BatchAuction.sol#L153)), which never checks the ciphertext.
 
 **Problem:** CONTEXT.md says the design kills the free option, but in today's contract there are three ways to decide after commits close:
@@ -119,6 +122,9 @@ CONTEXT.md's claim that "the solver chooses nothing else" does not hold.
 **Fix:** add `beforeAddLiquidity` and `beforeRemoveLiquidity` to the hook, and refuse `settle` in any block that saw a liquidity change. That stops same-block JIT; the hook address has to be re-mined with the new flag bits. Removal griefing stays bounded by `expire`, plus keepers re-solving. Acceptance: a contract that adds liquidity, settles and removes it in one transaction reverts.
 
 ## R6. Admission proofs limit an account to every other batch; proving time is unmeasured
+
+**Local integration measurement:** the first two-order admission/resume/export/release test completed in about 217 seconds, including fresh preparation and online proofs for both orders, parameter loading and transactions. This is not a per-proof timing sample. The current CLI generates both proofs sequentially during submission, using a 900-second batch in the integration fixture. Advance preparation, realistic latency budgets and validation against the intended production batch duration remain part of R6; passing this gate does not demonstrate a 30-second user flow.
+
 **Where:** [`ReservationModel.t.sol`](contracts/test/ReservationModel.t.sol): `activeBatch` and `step == openCommitments`; [ARCHITECTURE.MD §5](ARCHITECTURE.MD).
 
 **Problem:**
@@ -553,6 +559,9 @@ Provide one coherent CLI workflow: check balances, approvals, fees, and eligibil
 Display available, reserved, and withdrawable balances separately, and include every required asset in funding preflight. Keep proceeds in the vault by default for repeat traders with an explicit withdrawal option. Automatic withdrawal on every fill adds cost and settlement failure dependencies.
 
 ### S11. Account cadence and private state
+
+**Integration:** one active batch is enforced onchain and checked before client proving. The client persists cumulative totals/blinding, validates openings during import, serializes mutations, and reconciles a saved pending transition before appending. Unknown inclusion is retained, not silently reset. Forced termination may leave a local lock requiring explicit removal after verifying its process has exited. Chain reorganization/finality policy and replacement of dropped transactions remain release decisions; this local gate does not establish production recovery guarantees.
+
 
 Initially expose the one-active-batch restriction and reject incompatible submissions before proving or paying gas. Supporting overlapping private reservations needs a rule preventing the same balance from backing multiple batches; do not add it without settling that invariant.
 

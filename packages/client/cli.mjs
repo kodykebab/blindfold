@@ -12,8 +12,10 @@
 import { formatUnits, parseEventLogs, parseUnits } from 'viem'
 import { connect, encrypt, newSalt, orderHash } from './lib.mjs'
 import { balances, deadlines, exitPlan, isOpen, preflight, track } from './flow.mjs'
-import { exportState, importState, loadState, parseState, saveCommitment, validateState } from './state.mjs'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { exportState, importState, loadState, parseState, saveCommitment, validateState, writeState, withStateLock } from './state.mjs'
+import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
+import { proveAdmission } from './admission.mjs'
+import { reconcileFunding, restoreFunding } from './admission-state.mjs'
 
 const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
@@ -34,8 +36,7 @@ const pick = (t, name) => t[name] ?? Object.values(t.byAddress).find((x) => x.ad
 const fmt = (token, v) => `${formatUnits(v, token.decimals)} ${token.symbol}`
 
 function fail(msg) {
-  console.error(`client: ${msg}`)
-  process.exit(1)
+  throw new Error(msg)
 }
 
 async function send(address, which, functionName, args) {
@@ -101,7 +102,18 @@ async function commit(side, amountIn, minOut, dryRun) {
   const fee = has('commitFee') ? await read(S, 'commitFee') : 0n // REVIEW R3: not every deployment charges one yet
   const [commitsClose, commits] = await Promise.all([read(S, 'commitsClose', [current]), read(S, 'commitIdsOf', [current])])
   const per = async (f) => Object.fromEntries(await Promise.all(Object.keys(t.byAddress).map(async (a) => [a, await f(a)])))
+  const enforced = await admissionRequired()
+  let funding
+  if (enforced) {
+    if (!dep.admission?.manifestSha256) fail('this deployment requires admission; its deployment file must include the parameter manifest')
+    const state = loadState(dep, me)
+    funding = reconcileFunding(dep, me, state.admission, await fundingOnchain(), now)
+    state.admission = funding
+    if (!dryRun) writeState(dep, me, state)
+  }
   const check = preflight({
+    cumulative: enforced ? { [t.token0.address]: funding.totals[0], [t.token1.address]: funding.totals[1] } : {},
+    minLead: enforced ? 60n : 3n,
     order, tokenIn: tin.address, depositToken: t.depositToken, depositAmount, fee,
     free: await per((a) => read(dep.vault, 'freeBalance', [me, a])),
     wallet: await per((a) => read(a, 'balanceOf', [me], abi.erc20)),
@@ -117,7 +129,7 @@ async function commit(side, amountIn, minOut, dryRun) {
     console.log(`funding ${tok.symbol}: need ${fmt(tok, f.need)}, vault free ${fmt(tok, f.free)}${f.shortfall ? `, deposit ${fmt(tok, f.shortfall)} first${f.approve ? ' (needs approval)' : ''}` : ''}`)
   }
   for (const d of await schedule(current)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
-  console.log(`keep ${fmt(tin, order.amountIn)} free in the vault until the reveal, or the order is closed as unfunded and the deposit lost`)
+  if (!enforced) console.log(`keep ${fmt(tin, order.amountIn)} free in the vault until the reveal, or the order is closed as unfunded and the deposit lost`)
   if (!check.ok) fail(`preflight failed:\n  ${check.problems.join('\n  ')}`)
   if (dryRun) return console.log('dry run: nothing sent')
   for (const f of check.funding) {
@@ -128,12 +140,67 @@ async function commit(side, amountIn, minOut, dryRun) {
   const salt = newSalt()
   const hash = orderHash(dep.chainId, S, current, order, salt)
   const round = await read(S, 'targetRound', [current])
+  if (enforced) {
+    const budgets = await Promise.all([t.token0, t.token1].map(async (tok) => {
+      const free = await read(dep.vault, 'freeBalance', [me, tok.address])
+      return free - (tok.address.toLowerCase() === t.depositToken.toLowerCase() ? depositAmount + fee : 0n)
+    }))
+    console.log('generating admission proofs locally…')
+    const result = await proveAdmission({ dep, owner: me, batch: current, round, funding, budgets, order, salt })
+    const latest = (await pub.getBlock()).timestamp
+    if (latest >= commitsClose) fail('proof completed after this batch closed; nothing submitted, start a new order in the current batch')
+    reconcileFunding(dep, me, funding, await fundingOnchain(), latest)
+    const state = loadState(dep, me)
+    state.commitments.push({ id: null, batchId: current, round, hash, order, salt })
+    state.admission = { ...funding, pending: { ...result, batch: current, closes: commitsClose } }
+    writeState(dep, me, state)
+    return resumeAdmission()
+  }
   const ciphertext = await encrypt(round, order, salt)
   saveCommitment(dep, me, { id: null, batchId: current, round, hash, order, salt }) // before sending: never lose the salt
   const receipt = await send(S, abi.settlement, 'commit', [current, hash, ciphertext])
   const [ev] = parseEventLogs({ abi: abi.settlement, logs: receipt.logs, eventName: 'Committed' })
   saveCommitment(dep, me, { id: ev.args.commitId, hash, tx: receipt.transactionHash })
   console.log(`committed #${ev.args.commitId} to round ${round} in ${receipt.transactionHash}`)
+}
+
+
+async function fundingOnchain() {
+  const [batch, root, step] = await read(S, 'admissionState', [me])
+  return { batch, root, step }
+}
+
+async function resumeAdmission() {
+  if (!dep.admission?.manifestSha256 || !await admissionRequired()) fail('this deployment does not use proof-enforced admission')
+  const state = loadState(dep, me)
+  const chain = await fundingOnchain(), now = (await pub.getBlock()).timestamp
+  const pending = state.admission?.pending
+  if (!pending) {
+    state.admission = reconcileFunding(dep, me, state.admission, chain, now)
+    writeState(dep, me, state)
+    return console.log('private funding state matches the chain')
+  }
+  try {
+    state.admission = reconcileFunding(dep, me, state.admission, chain, now)
+    writeState(dep, me, state)
+    return console.log('pending admission reconciled with chain state')
+  } catch (e) { if (!e.message.includes('run resume-admission')) throw e }
+  let tx = pending.tx
+  if (!tx) {
+    const { request } = await pub.simulateContract({ account, address: S, abi: abi.settlement, functionName: 'admit', args: [pending.batch, pending.hash, pending.ciphertext, pending.proof] })
+    tx = await wallet.writeContract(request)
+    state.admission.pending.tx = tx
+    writeState(dep, me, state)
+  }
+  const receipt = await pub.waitForTransactionReceipt({ hash: tx })
+  if (receipt.status !== 'success') fail(`admission reverted in ${tx}; pending state retained until its batch closes`)
+  const [ev] = parseEventLogs({ abi: abi.settlement, logs: receipt.logs, eventName: 'Committed' })
+  if (!ev || ev.args.hash !== pending.hash) fail('admission receipt did not contain the expected commitment; pending state retained')
+  const c = state.commitments.find((c) => c.hash === pending.hash)
+  if (c) Object.assign(c, { id: ev.args.commitId, tx })
+  state.admission = reconcileFunding(dep, me, state.admission, await fundingOnchain(), (await pub.getBlock()).timestamp)
+  writeState(dep, me, state)
+  console.log(`admitted #${ev.args.commitId} in ${tx}`)
 }
 
 const myCommitments = async () =>
@@ -210,7 +277,8 @@ async function withdraw(name, amount) {
 
 function exportCmd(file) {
   if (!file) fail('usage: export-state <file>')
-  writeFileSync(file, exportState(dep, me))
+  writeFileSync(file, exportState(dep, me), { mode: 0o600 })
+  chmodSync(file, 0o600)
   console.log(`exported ${loadState(dep, me).commitments.length} commitment(s) to ${file}`)
 }
 
@@ -223,6 +291,11 @@ async function importCmd(file) {
   }
   const problems = validateState(state, { dep, owner: me, orderHash, chainHashes })
   if (problems.length) fail(`refusing to import ${file}:\n  ${problems.join('\n  ')}`)
+  if (await admissionRequired()) {
+    state.admission = restoreFunding(dep, me, state.admission, await fundingOnchain(), (await pub.getBlock()).timestamp)
+    const local = loadState(dep, me)
+    if (local.admission?.pending) fail('resolve the local pending admission before importing another state')
+  }
   console.log(`imported; ${importState(dep, me, state)} commitment(s) saved`)
 }
 
@@ -232,6 +305,7 @@ const commands = {
   deposit: () => deposit(args[0], args[1]),
   commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run')),
   track: () => trackAll(),
+  'resume-admission': () => resumeAdmission(),
   blockers: () => blockers(),
   cleanup: () => cleanup(args.includes('--dry-run')),
   withdraw: () => withdraw(args[0], args[1] ?? 'all'),
@@ -239,4 +313,8 @@ const commands = {
   'import-state': () => importCmd(args[0]),
 }
 if (!commands[cmd]) fail(`usage: npm start -- <${Object.keys(commands).join('|')}> ...`)
-await commands[cmd]().catch((e) => fail(e.shortMessage ?? e.message))
+try {
+  const mutates = ['commit', 'resume-admission', 'import-state', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
+  await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())
+}
+catch (e) { console.error(`client: ${e.shortMessage ?? e.message}`); process.exitCode = 1 }

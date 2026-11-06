@@ -45,3 +45,10 @@ The paired application-boundary harness imports the generated verifiers and chec
 ```
 
 It also reads `../../results/canonical-interop.json`, the public interop fixture for `canonical-fixture.json`. To run the existing independent JavaScript check against a direct export, pass its `proof.json` as the export argument to `prepared-interop.mjs`. The `.journal` encoding is shared. After changes to the generated test template, `direct-circuit --export-tests <artifact-directory>` regenerates only that directory's Foundry tests from its exported input count.
+
+
+## Reusable local admission parameters
+
+`go build -o ../results/local-prover .` builds the local tool. `setup-local <new-directory>` compiles both unchanged circuit relations, creates development Groth16 parameters, exports their Solidity verifiers, and writes a versioned SHA-256 manifest. It refuses to overwrite a directory. `prove-local <directory> <manifest-sha256> preparation|online <fixture.json>` validates the pinned files, proves the witness and verifies the result before returning `{seal,journal}` as JSON. `fixture-local` reads a request on stdin and returns the preparation/online fixture with fresh CSPRNG keys, blinding and nonce. New fixture integers are decimal strings to preserve uint128/uint64 values through JavaScript; the reader also accepts historical numeric fixtures.
+
+Run `bash packages/proof-bench/check-admission.sh` from the repository root for the real-proof client/contract integration gate. The script rebuilds the tool, reuses the local development parameters, compiles the generated verifier artifacts and runs the isolated Anvil test. The deployment manifest pins the parameter manifest hash. See the client README for private-state export and interrupted-submission commands.

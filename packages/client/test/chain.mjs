@@ -6,24 +6,24 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createPublicClient, createWalletClient, defineChain, http } from 'viem'
+import { createPublicClient, createWalletClient, defineChain, http, getCreate2Address, toHex } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
 import { ROOT, TEST_MNEMONIC, artifactPath } from '../lib.mjs'
 import { readFileSync } from 'node:fs'
 
 const out = process.env.CONTRACTS_OUT || join(ROOT, 'contracts/out')
-const art = (name) => JSON.parse(readFileSync(name === 'AdmittedSettlement'
-  ? join(out, 'FeesAndTiming.t.sol', 'AdmittedSettlement.json') : artifactPath(out, name), 'utf8'))
+const art = (name) => JSON.parse(readFileSync(name === 'ReleasePolicySettlement'
+  ? join(out, 'FeesAndTiming.t.sol', 'ReleasePolicySettlement.json') : artifactPath(out, name), 'utf8'))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 export const CLI = fileURLToPath(new URL('../cli.mjs', import.meta.url))
 export const DRAND = fileURLToPath(new URL('./fixtures/drand.json', import.meta.url))
 export const DEPOSIT = 5n * 10n ** 18n
 export const user = (i) => mnemonicToAccount(TEST_MNEMONIC, { addressIndex: i })
 
-export async function localChain({ timestamp, schedule = {}, settlementContract = 'BlindfoldSettlement', fee = 0n } = {}) {
+export async function localChain({ timestamp, schedule = {}, settlementContract = 'BlindfoldSettlement', fee = 0n, admission } = {}) {
   const port = await new Promise((r) => { const s = createServer().listen(0, () => { const p = s.address().port; s.close(() => r(p)) }) })
   const rpc = `http://127.0.0.1:${port}`
-  const args = ['--silent', '--port', String(port), '--accounts', '20']
+  const args = ['--silent', '--port', String(port), '--accounts', '20', '--gas-limit', '300000000']
   if (timestamp) args.push('--timestamp', String(timestamp))
   const anvil = spawn('anvil', args, { stdio: 'ignore' })
   const chain = defineChain({ id: 31337, name: 'anvil', nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [rpc] } } })
@@ -43,22 +43,46 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
     wait(await createWalletClient({ account, chain, transport: http(rpc) }).writeContract({ address, abi: art(name).abi, functionName, args: a }))
   const read = (address, name, functionName, a = []) => pub.readContract({ address, abi: art(name).abi, functionName, args: a })
 
+  try {
   const [ta, tb] = [await deploy('MockERC20', ['Token A', 'TKA', 18]), await deploy('MockERC20', ['Token B', 'TKB', 18])]
   const [token0, token1] = [ta, tb].sort((x, y) => (BigInt(x) < BigInt(y) ? -1 : 1))
-  const vault = await deploy('BlindfoldVault')
+  const vault = await deploy(admission ? 'AdmissionVault' : 'BlindfoldVault', admission ? [token0, token1] : [])
   const deployBlock = await pub.getBlockNumber()
   const now = (await pub.getBlock()).timestamp
   const s = { start: Number(now - (now - 1692803367n) % 3n), batchLength: 30, revealLength: 24, settleLength: 30, ...schedule }
+  const manager = admission ? await deploy('PoolManager', [deployer.address]) : '0x000000000000000000000000000000000000dEaD'
+  const verifiers = []
+  if (admission) {
+    settlementContract = 'AdmittedSettlement'
+    for (const mode of ['preparation', 'online']) {
+      const artifact = JSON.parse(readFileSync(join(admission.params, 'out', `${mode}.sol`, 'Verifier.json'), 'utf8'))
+      verifiers.push((await wait(await wallet.deployContract({ abi: artifact.abi, bytecode: artifact.bytecode.object }))).contractAddress)
+    }
+  }
   const settlement = await deploy(settlementContract, [{
-    manager: '0x000000000000000000000000000000000000dEaD', vault, depositToken: token1, depositAmount: DEPOSIT,
+    manager, vault, depositToken: token1, depositAmount: DEPOSIT,
     commitFee: fee, bountyBps: 2000n, treasury: user(9).address, schedule: s, toleranceBps: 100n,
-  }])
+  }, ...verifiers])
   await write(vault, 'BlindfoldVault', 'setOperator', [settlement])
-  await write(settlement, 'BlindfoldSettlement', 'initialize', [{ currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks: '0x0000000000000000000000000000000000000000' }])
+  let hooks = '0x0000000000000000000000000000000000000000'
+  if (admission) {
+    const factory = await deploy('AdmissionPoolFactory')
+    const bytecodeHash = await read(factory, 'AdmissionPoolFactory', 'initCodeHash', [manager, settlement])
+    let salt
+    for (let i = 0n; i < 500000n; i++) {
+      const candidate = getCreate2Address({ from: factory, salt: toHex(i, { size: 32 }), bytecodeHash })
+      if ((BigInt(candidate) & 16383n) === 128n) { hooks = candidate; salt = toHex(i, { size: 32 }); break }
+    }
+    if (!salt) throw new Error('could not mine local hook salt')
+    await write(factory, 'AdmissionPoolFactory', 'deployHook', [manager, settlement, salt])
+  }
+  const pool = { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks }
+  if (admission) await write(manager, 'PoolManager', 'initialize', [pool, 1n << 96n])
+  await write(settlement, settlementContract, 'initialize', [pool])
 
   const dir = mkdtempSync(join(tmpdir(), 'blindfold-client-'))
   const deployments = join(dir, 'blindfold.local.json')
-  writeFileSync(deployments, JSON.stringify({ chainId: 31337, deployBlock: Number(deployBlock), mode: 'local', vault, settlement, token0, token1, depositToken: token1, admission: 'off' }))
+  writeFileSync(deployments, JSON.stringify({ chainId: 31337, deployBlock: Number(deployBlock), mode: 'local', vault, settlement, token0, token1, depositToken: token1, admission: admission ? { manifestSha256: admission.manifestSha256, preparationVerifier: verifiers[0], onlineVerifier: verifiers[1] } : 'off' }))
 
   return {
     rpc, pub, dir, deployments, vault, settlement, token0, token1, read, write,
@@ -75,4 +99,5 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
     }),
     stop: () => anvil.kill(),
   }
+  } catch (e) { anvil.kill(); throw e }
 }
