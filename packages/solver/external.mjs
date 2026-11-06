@@ -1,4 +1,4 @@
-import { allocationsAt, limitPriceX96, marginalPriceX96, sameLimit } from './price.mjs'
+import { allocationsAt, limitPriceX96, marginalPriceX96, sameLimit, limitGroups } from './price.mjs'
 import { peerTotals } from './peer.mjs'
 
 /** Bounded candidate search, not an infeasibility or maximum-volume proof.
@@ -52,7 +52,7 @@ export async function solveExternal({ referenceX96, deviationBps, simulate, orde
   }
   if (!orders) return null
   const groups = []
-  for (const o of [...orders].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
+  for (const o of limitGroups(orders)) {
     if (o.amountIn > 0n && !groups.some((g) => sameLimit(g, o))) groups.push(o)
   }
   for (const ref of groups) {
