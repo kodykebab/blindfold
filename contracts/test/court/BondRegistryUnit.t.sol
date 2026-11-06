@@ -24,24 +24,23 @@ contract Reverter {
     }
 }
 
-/// @dev Re-enters claim from its receive hook with the call it was paid by.
+/// @dev Collects a claim and tries to collect it again from its receive hook.
 contract Reenterer {
     BondRegistry reg;
-    bytes call_;
+    bytes32 txHash;
     bool public reentryFailed;
 
-    function arm(BondRegistry r, bytes memory c) external {
+    function arm(BondRegistry r, bytes32 h) external {
         reg = r;
-        call_ = c;
+        txHash = h;
     }
 
-    function claim() external {
-        (bool ok,) = address(reg).call(call_);
-        require(ok, "claim failed");
+    function collect() external {
+        reg.collect(txHash);
     }
 
     receive() external payable {
-        (bool ok,) = address(reg).call(call_);
+        (bool ok,) = address(reg).call(abi.encodeCall(BondRegistry.collect, (txHash)));
         reentryFailed = !ok;
     }
 }
@@ -53,11 +52,13 @@ abstract contract RegistryBase is Test {
     bytes32 constant INIT_HASH = keccak256("pool init code");
     address constant PM = address(0x4444);
     uint256 constant DELAY = 1 days;
+    uint256 constant WINDOW = 1 hours;
     uint256 constant BLOCK_TIME = 1_000;
 
     MockVerifier mock;
     BondRegistry reg;
     address payee; // the beneficiary _receipt names: the victim of the last _setup
+    bytes32 legs; // the attacker legs of the next _setup; 0 = unique per claim (its own incident)
 
     function _deploy() internal {
         mock = new MockVerifier();
@@ -69,7 +70,8 @@ abstract contract RegistryBase is Test {
                 v3Factory: FACTORY,
                 v3InitCodeHash: INIT_HASH,
                 v4PoolManager: PM,
-                unbondDelay: DELAY
+                unbondDelay: DELAY,
+                claimWindow: WINDOW
             })
         );
     }
@@ -86,6 +88,9 @@ abstract contract RegistryBase is Test {
     {
         payee = victim;
         c.header = _header(BLOCK_TIME);
+        bytes32 l = legs == 0 ? txHash : legs;
+        c.front.rawTx = abi.encode("front", l);
+        c.back.rawTx = abi.encode("back", l);
         if (v4) {
             poolKey = abi.encode(t0, t1, uint24(3000), int24(60), address(0));
             c.v4 = true;
@@ -139,6 +144,15 @@ abstract contract RegistryBase is Test {
         (uint8 v, bytes32 rr, bytes32 s) = vm.sign(key, reg.receiptDigest(r));
         return abi.encodePacked(rr, s, v);
     }
+
+    function _claimed(bytes32 txHash) internal view returns (bool) {
+        (, address rpc,,,,) = reg.claims(txHash);
+        return rpc != address(0);
+    }
+
+    function _collected(bytes32 txHash) internal view returns (bool done) {
+        (,,,,, done) = reg.claims(txHash);
+    }
 }
 
 contract BondRegistryUnitTest is RegistryBase {
@@ -157,9 +171,21 @@ contract BondRegistryUnitTest is RegistryBase {
         reg.bond{value: amount}();
     }
 
-    // ---- payout math
+    /// @dev Claim, wait out the window, collect: what the beneficiary received.
+    function _claimAndCollect(
+        SandwichCourtVerifier.Claim memory c,
+        BondRegistry.Protected memory r,
+        bytes memory sig,
+        bytes memory key
+    ) internal returns (uint256) {
+        reg.claim(c, r, sig, key);
+        vm.warp(block.timestamp + WINDOW);
+        return reg.collect(r.txHash);
+    }
 
-    /// @dev payout = min(profit, maxPayout, bond); refund fits in what's left; ETH in the registry = bonds.
+    // ---- payout math, one claim per incident
+
+    /// @dev payout = min(profit, maxPayout, bond); the refund fits in what's left; ETH in the registry = bonds.
     function testFuzz_payoutIsMinOfProfitCapAndBond(uint96 profit, uint96 cap, uint96 bond, uint32 basefee) public {
         vm.assume(bond > 0);
         vm.deal(rpc, bond);
@@ -171,20 +197,23 @@ contract BondRegistryUnitTest is RegistryBase {
         bytes memory sig = _sign(KEY, r);
         address prover = makeAddr("prover");
         vm.prank(prover);
-        uint256 paid = reg.claim(c, r, sig, key);
+        reg.claim(c, r, sig, key);
+        vm.warp(block.timestamp + WINDOW);
+        uint256 paid = reg.collect("tx");
 
         uint256 expected = profit < cap ? profit : cap;
         if (expected > bond) expected = bond;
         assertEq(paid, expected, "payout");
-        assertEq(victim.balance, expected, "victim");
+        assertEq(victim.balance, expected, "beneficiary");
         assertLe(prover.balance, uint256(bond) - expected, "refund fits the bond");
         assertEq(reg.bondOf(rpc), uint256(bond) - expected - prover.balance, "bond accounting");
+        assertEq(reg.reservedOf(rpc), 0, "reservation released");
         assertEq(address(reg).balance, reg.bondOf(rpc), "ETH held = bonds");
     }
 
     function test_refundCappedByWhatIsLeft() public {
         _bond(1 ether);
-        vm.fee(1_000 gwei); // a refund far above what's left after the payout
+        vm.fee(1_000 gwei); // a refund far above what's left after the reservation
         (SandwichCourtVerifier.Claim memory c, bytes memory key) =
             _setup("tx", victim, 1 ether - 1, false, true, WETH, OTHER);
         BondRegistry.Protected memory r = _receipt("tx", 10 ether);
@@ -192,8 +221,10 @@ contract BondRegistryUnitTest is RegistryBase {
         address prover = makeAddr("prover");
         vm.prank(prover);
         reg.claim(c, r, sig, key);
-        assertEq(victim.balance, 1 ether - 1, "victim paid first");
-        assertEq(prover.balance, 1, "prover gets only the remainder");
+        assertEq(prover.balance, 1, "prover gets only the unreserved remainder");
+        vm.warp(block.timestamp + WINDOW);
+        reg.collect("tx");
+        assertEq(victim.balance, 1 ether - 1, "the reservation still pays in full");
         assertEq(reg.bondOf(rpc), 0);
     }
 
@@ -201,8 +232,150 @@ contract BondRegistryUnitTest is RegistryBase {
         _bond(1 ether);
         (SandwichCourtVerifier.Claim memory c, bytes memory key) = _setup("tx", victim, 5, false, true, WETH, OTHER);
         BondRegistry.Protected memory r = _receipt("tx", 0);
-        assertEq(reg.claim(c, r, _sign(KEY, r), key), 0);
-        assertTrue(reg.paid("tx"));
+        assertEq(_claimAndCollect(c, r, _sign(KEY, r), key), 0);
+        assertTrue(_claimed("tx") && _collected("tx"));
+    }
+
+    // ---- incidents (S14)
+
+    function test_incident_twoVictimsShareOneProfit() public {
+        _bond(10 ether);
+        legs = "same front and back";
+        (SandwichCourtVerifier.Claim memory c1, bytes memory key) =
+            _setup("v1", makeAddr("v1"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r1 = _receipt("v1", 1 ether);
+        bytes32 incident = reg.claim(c1, r1, _sign(KEY, r1), key);
+        (SandwichCourtVerifier.Claim memory c2,) = _setup("v2", makeAddr("v2"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r2 = _receipt("v2", 1 ether);
+        assertEq(reg.claim(c2, r2, _sign(KEY, r2), key), incident, "same attacker legs, same incident");
+        vm.warp(block.timestamp + WINDOW);
+        uint256 total = reg.collect("v1") + reg.collect("v2");
+        assertEq(total, 1 ether, "one attacker profit pays once in total");
+        assertEq(makeAddr("v1").balance, 0.5 ether);
+        assertEq(makeAddr("v2").balance, 0.5 ether);
+        assertEq(reg.bondOf(rpc), 9 ether);
+        assertEq(reg.reservedOf(rpc), 0);
+    }
+
+    function test_incident_capsThatFitTheBudgetPayInFull() public {
+        _bond(10 ether);
+        legs = "legs";
+        (SandwichCourtVerifier.Claim memory c1, bytes memory key) =
+            _setup("v1", makeAddr("v1"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r1 = _receipt("v1", 0.3 ether);
+        reg.claim(c1, r1, _sign(KEY, r1), key);
+        (SandwichCourtVerifier.Claim memory c2,) = _setup("v2", makeAddr("v2"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r2 = _receipt("v2", 0.2 ether);
+        reg.claim(c2, r2, _sign(KEY, r2), key);
+        vm.warp(block.timestamp + WINDOW);
+        assertEq(reg.collect("v1"), 0.3 ether);
+        assertEq(reg.collect("v2"), 0.2 ether);
+        assertEq(reg.bondOf(rpc), 9.5 ether, "the unclaimed half of the profit stays in the bond");
+    }
+
+    function test_incident_sharesFollowTheCaps() public {
+        _bond(10 ether);
+        legs = "legs";
+        (SandwichCourtVerifier.Claim memory c1, bytes memory key) =
+            _setup("big", makeAddr("big"), 2 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r1 = _receipt("big", 3 ether); // weight capped at the 2 ether budget
+        reg.claim(c1, r1, _sign(KEY, r1), key);
+        (SandwichCourtVerifier.Claim memory c2,) = _setup("small", makeAddr("small"), 2 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r2 = _receipt("small", 1 ether);
+        reg.claim(c2, r2, _sign(KEY, r2), key);
+        vm.warp(block.timestamp + WINDOW);
+        assertEq(reg.shareOf("big"), uint256(4 ether) / 3, "shareOf previews what collect pays");
+        assertEq(reg.collect("big"), uint256(4 ether) / 3); // 2 * 2/3
+        assertEq(reg.collect("small"), uint256(2 ether) / 3); // 2 * 1/3
+    }
+
+    function test_incident_eachRpcPaysFromItsOwnBond() public {
+        uint256 key2 = 0xB0B;
+        address rpc2 = vm.addr(key2);
+        vm.deal(rpc2, 10 ether);
+        _bond(10 ether);
+        vm.prank(rpc2);
+        reg.bond{value: 10 ether}();
+        legs = "legs";
+        (SandwichCourtVerifier.Claim memory c1, bytes memory pk) =
+            _setup("v1", makeAddr("v1"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r1 = _receipt("v1", 1 ether);
+        reg.claim(c1, r1, _sign(KEY, r1), pk);
+        (SandwichCourtVerifier.Claim memory c2,) = _setup("v2", makeAddr("v2"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r2 = _receipt("v2", 1 ether);
+        reg.claim(c2, r2, _sign(key2, r2), pk);
+        assertEq(reg.reservedOf(rpc), 1 ether);
+        assertEq(reg.reservedOf(rpc2), 1 ether);
+        vm.warp(block.timestamp + WINDOW);
+        reg.collect("v1");
+        reg.collect("v2");
+        assertEq(reg.bondOf(rpc), 9.5 ether);
+        assertEq(reg.bondOf(rpc2), 9.5 ether);
+    }
+
+    function test_incident_windowRules() public {
+        _bond(10 ether);
+        legs = "legs";
+        (SandwichCourtVerifier.Claim memory c1, bytes memory key) =
+            _setup("v1", victim, 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r1 = _receipt("v1", 1 ether);
+        bytes32 incident = reg.claim(c1, r1, _sign(KEY, r1), key);
+        (,, uint64 closesAt) = reg.incidents(incident);
+        assertEq(closesAt, block.timestamp + WINDOW);
+
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.ClaimWindowOpen.selector, closesAt));
+        reg.collect("v1");
+
+        vm.warp(closesAt); // the window is closed from closesAt on
+        (SandwichCourtVerifier.Claim memory c2,) = _setup("v2", victim, 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r2 = _receipt("v2", 1 ether);
+        bytes memory sig2 = _sign(KEY, r2);
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.ClaimWindowClosed.selector, incident, closesAt));
+        reg.claim(c2, r2, sig2, key);
+
+        reg.collect("v1");
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.AlreadyCollected.selector, bytes32("v1")));
+        reg.collect("v1");
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.UnknownClaim.selector, bytes32("nope")));
+        reg.collect("nope");
+        (c1,) = _setup("v1", victim, 1 ether, false, true, WETH, OTHER);
+        bytes memory sig1 = _sign(KEY, r1);
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.AlreadyClaimed.selector, bytes32("v1")));
+        reg.claim(c1, r1, sig1, key);
+    }
+
+    /// @dev Up to three claims on one incident: totals never exceed the profit, no claim exceeds its cap or reserve.
+    function testFuzz_incidentConservation(uint96 profit, uint96[3] calldata caps, uint96 bond) public {
+        vm.assume(bond > 0);
+        vm.deal(rpc, bond);
+        _bond(bond);
+        legs = "legs";
+        bytes32[3] memory ids = [bytes32("a"), "b", "c"];
+        for (uint256 i; i < 3; i++) {
+            (SandwichCourtVerifier.Claim memory c, bytes memory key) =
+                _setup(ids[i], address(uint160(0xBEEF + i)), profit, false, true, WETH, OTHER);
+            BondRegistry.Protected memory r = _receipt(ids[i], caps[i]);
+            bytes memory sig = _sign(KEY, r);
+            if (reg.bondOf(rpc) == reg.reservedOf(rpc)) {
+                vm.expectRevert(abi.encodeWithSelector(BondRegistry.NoBond.selector, rpc));
+                reg.claim(c, r, sig, key);
+                ids[i] = 0;
+                continue;
+            }
+            reg.claim(c, r, sig, key);
+        }
+        vm.warp(block.timestamp + WINDOW);
+        uint256 total;
+        for (uint256 i; i < 3; i++) {
+            if (ids[i] == 0) continue;
+            uint256 paid = reg.collect(ids[i]);
+            assertLe(paid, caps[i], "within its cap");
+            total += paid;
+        }
+        assertLe(total, profit, "within the attacker's profit");
+        assertLe(total, bond, "within the bond");
+        assertEq(address(reg).balance, reg.bondOf(rpc), "ETH held = bonds");
+        assertEq(reg.reservedOf(rpc), 0);
     }
 
     // ---- which token the profit is in
@@ -212,19 +385,19 @@ contract BondRegistryUnitTest is RegistryBase {
         // v3, profit in token0 = WETH
         (SandwichCourtVerifier.Claim memory c, bytes memory key) = _setup("a", victim, 1, false, true, WETH, OTHER);
         BondRegistry.Protected memory r = _receipt("a", 1 ether);
-        assertEq(reg.claim(c, r, _sign(KEY, r), key), 1);
+        reg.claim(c, r, _sign(KEY, r), key);
         // v3, profit in token1 = WETH
         (c, key) = _setup("b", victim, 2, false, false, OTHER, WETH);
         r = _receipt("b", 1 ether);
-        assertEq(reg.claim(c, r, _sign(KEY, r), key), 2);
+        reg.claim(c, r, _sign(KEY, r), key);
         // v4, profit in currency1 = WETH
         (c, key) = _setup("c", victim, 3, true, false, OTHER, WETH);
         r = _receipt("c", 1 ether);
-        assertEq(reg.claim(c, r, _sign(KEY, r), key), 3);
+        reg.claim(c, r, _sign(KEY, r), key);
         // v4, profit in currency0 = native ETH
         (c, key) = _setup("d", victim, 4, true, true, address(0), OTHER);
         r = _receipt("d", 1 ether);
-        assertEq(reg.claim(c, r, _sign(KEY, r), key), 4);
+        reg.claim(c, r, _sign(KEY, r), key);
         // profit in the non-ETH side of each kind of pool
         (c, key) = _setup("e", victim, 5, false, false, WETH, OTHER);
         r = _receipt("e", 1 ether);
@@ -237,6 +410,12 @@ contract BondRegistryUnitTest is RegistryBase {
         sig = _sign(KEY, r);
         vm.expectRevert(abi.encodeWithSelector(BondRegistry.UnvaluedProfit.selector, OTHER));
         reg.claim(c, r, sig, key);
+
+        vm.warp(block.timestamp + WINDOW);
+        reg.collect("a");
+        reg.collect("b");
+        reg.collect("c");
+        reg.collect("d");
         assertEq(victim.balance, 1 + 2 + 3 + 4);
     }
 
@@ -258,14 +437,14 @@ contract BondRegistryUnitTest is RegistryBase {
         reg.claim(c, r, sig, abi.encodePacked(key, uint256(0))); // trailing word: a different hash
     }
 
-    // ---- signatures
+    // ---- receipts and signatures
 
     function test_signature_vAsZeroOrOne() public {
         _bond(1 ether);
         (SandwichCourtVerifier.Claim memory c, bytes memory key) = _setup("tx", victim, 7, false, true, WETH, OTHER);
         BondRegistry.Protected memory r = _receipt("tx", 1 ether);
         (uint8 v, bytes32 rr, bytes32 s) = vm.sign(KEY, reg.receiptDigest(r));
-        assertEq(reg.claim(c, r, abi.encodePacked(rr, s, v - 27), key), 7);
+        assertEq(_claimAndCollect(c, r, abi.encodePacked(rr, s, v - 27), key), 7);
     }
 
     function test_signature_rejects() public {
@@ -277,7 +456,29 @@ contract BondRegistryUnitTest is RegistryBase {
         reg.claim(c, r, abi.encodePacked(bytes32(0), bytes32(0)), key); // 64 bytes
         vm.expectRevert(BondRegistry.BadSignature.selector);
         reg.claim(c, r, abi.encodePacked(bytes32(0), bytes32(0), uint8(27)), key); // recovers nobody
-        assertEq(reg.claim(c, r, sig, key), 7);
+        assertEq(_claimAndCollect(c, r, sig, key), 7);
+    }
+
+    function test_acceptedAt_boundary() public {
+        _bond(1 ether);
+        (SandwichCourtVerifier.Claim memory c, bytes memory key) = _setup("tx", victim, 7, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r = _receipt("tx", 1 ether);
+        r.acceptedAt = uint64(BLOCK_TIME + 1);
+        bytes memory sig = _sign(KEY, r);
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.IssuedAfterIncident.selector, BLOCK_TIME + 1, BLOCK_TIME));
+        reg.claim(c, r, sig, key);
+        r.acceptedAt = uint64(BLOCK_TIME);
+        assertEq(_claimAndCollect(c, r, _sign(KEY, r), key), 7);
+    }
+
+    function test_rejects_noBeneficiary() public {
+        _bond(1 ether);
+        (SandwichCourtVerifier.Claim memory c, bytes memory key) = _setup("tx", victim, 7, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r = _receipt("tx", 1 ether);
+        r.beneficiary = address(0);
+        bytes memory sig = _sign(KEY, r);
+        vm.expectRevert(BondRegistry.NoBeneficiary.selector);
+        reg.claim(c, r, sig, key);
     }
 
     function test_receiptDigest_isEip712() public view {
@@ -307,41 +508,33 @@ contract BondRegistryUnitTest is RegistryBase {
         assertEq(reg.receiptDigest(r), keccak256(abi.encodePacked("\x19\x01", domain, structHash)));
     }
 
-    function test_acceptedAt_boundary() public {
-        _bond(1 ether);
-        (SandwichCourtVerifier.Claim memory c, bytes memory key) = _setup("tx", victim, 7, false, true, WETH, OTHER);
-        BondRegistry.Protected memory r = _receipt("tx", 1 ether);
-        r.acceptedAt = uint64(BLOCK_TIME + 1);
-        bytes memory sig = _sign(KEY, r);
-        vm.expectRevert(abi.encodeWithSelector(BondRegistry.IssuedAfterIncident.selector, BLOCK_TIME + 1, BLOCK_TIME));
-        reg.claim(c, r, sig, key);
-        r.acceptedAt = uint64(BLOCK_TIME);
-        assertEq(reg.claim(c, r, _sign(KEY, r), key), 7);
-    }
-
     // ---- transfers and reentrancy
 
-    function test_victimThatRejectsEth_revertsTheWholeClaim() public {
+    function test_beneficiaryThatRejectsEth_staysCollectable() public {
         _bond(1 ether);
         address bad = address(new Reverter());
         (SandwichCourtVerifier.Claim memory c, bytes memory key) = _setup("tx", bad, 7, false, true, WETH, OTHER);
         BondRegistry.Protected memory r = _receipt("tx", 1 ether);
-        bytes memory sig = _sign(KEY, r);
+        reg.claim(c, r, _sign(KEY, r), key);
+        vm.warp(block.timestamp + WINDOW);
         vm.expectRevert(BondRegistry.TransferFailed.selector);
-        reg.claim(c, r, sig, key);
-        assertFalse(reg.paid("tx"));
+        reg.collect("tx");
+        assertFalse(_collected("tx"));
         assertEq(reg.bondOf(rpc), 1 ether);
+        assertEq(reg.reservedOf(rpc), 7, "the reservation is kept for a later collect");
     }
 
-    function test_reentrantVictim_cannotClaimTwice() public {
+    function test_reentrantBeneficiary_cannotCollectTwice() public {
         _bond(1 ether);
         Reenterer re = new Reenterer();
         (SandwichCourtVerifier.Claim memory c, bytes memory key) =
             _setup("tx", address(re), 7, false, true, WETH, OTHER);
         BondRegistry.Protected memory r = _receipt("tx", 1 ether);
-        re.arm(reg, abi.encodeCall(BondRegistry.claim, (c, r, _sign(KEY, r), key)));
-        re.claim();
-        assertTrue(re.reentryFailed(), "the nested claim hit AlreadyPaid");
+        reg.claim(c, r, _sign(KEY, r), key);
+        vm.warp(block.timestamp + WINDOW);
+        re.arm(reg, "tx");
+        re.collect();
+        assertTrue(re.reentryFailed(), "the nested collect hit AlreadyCollected");
         assertEq(address(re).balance, 7);
         assertEq(reg.bondOf(rpc), 1 ether - 7);
     }
@@ -376,13 +569,34 @@ contract BondRegistryUnitTest is RegistryBase {
         vm.expectRevert(abi.encodeWithSelector(BondRegistry.NoBond.selector, rpc));
         reg.claim(c, r, sig, key);
     }
+
+    function test_unbond_keepsReservationsForOpenClaims() public {
+        _bond(1 ether);
+        (SandwichCourtVerifier.Claim memory c, bytes memory key) =
+            _setup("tx", victim, 0.4 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r = _receipt("tx", 1 ether);
+        reg.claim(c, r, _sign(KEY, r), key);
+        vm.prank(rpc);
+        reg.requestUnbond();
+        vm.warp(block.timestamp + DELAY);
+        uint256 before = rpc.balance;
+        vm.prank(rpc);
+        reg.unbond();
+        assertEq(rpc.balance - before, 0.6 ether, "only the unreserved part leaves");
+        reg.collect("tx");
+        assertEq(victim.balance, 0.4 ether, "the claim still pays after the unbond");
+        assertEq(reg.bondOf(rpc), 0);
+    }
 }
 
-/// @dev Random bonds, unbond requests, time, unbonds and claims across three RPCs.
+/// @dev Random bonds, unbond requests, time, claims on a few shared incidents, and collections, across three RPCs.
 contract RegistryHandler is RegistryBase {
     uint256[3] keys = [uint256(0xA1), 0xA2, 0xA3];
     uint256 nonce;
-    uint256 public paidOut;
+    bytes32[] public open;
+    mapping(bytes32 incident => uint256) public paidOut;
+    mapping(bytes32 incident => uint256) public budgetOf;
+    bool public overpaid;
 
     constructor(BondRegistry r, MockVerifier m) {
         reg = r;
@@ -403,7 +617,7 @@ contract RegistryHandler is RegistryBase {
     }
 
     function wait(uint32 dt) external {
-        vm.warp(block.timestamp + dt);
+        vm.warp(block.timestamp + (dt % 2 days));
     }
 
     function unbond(uint8 who) external {
@@ -414,21 +628,60 @@ contract RegistryHandler is RegistryBase {
         reg.unbond();
     }
 
-    function claim(uint8 who, uint96 profit, uint96 cap) external {
+    function claim(uint8 who, uint8 leg, uint96 profit, uint96 cap) external {
         uint256 key = keys[who % 3];
-        if (reg.bondOf(vm.addr(key)) == 0) return;
+        address rpc = vm.addr(key);
+        if (reg.bondOf(rpc) == reg.reservedOf(rpc)) return;
+        legs = bytes32(uint256(leg % 4) + 1); // four incidents, shared by many claims
+        bytes32 incident = _incidentOf(legs);
+        (,, uint64 closesAt) = reg.incidents(incident);
+        if (closesAt != 0 && block.timestamp >= closesAt) return;
+        uint256 budget = closesAt == 0 ? profit : budgetOf[incident];
         bytes32 txHash = keccak256(abi.encode(nonce++));
-        address victim = address(uint160(uint256(txHash)));
         (SandwichCourtVerifier.Claim memory c, bytes memory pk) =
-            _setup(txHash, victim, profit, false, true, WETH, OTHER);
+            _setup(txHash, address(uint160(uint256(txHash))), budget, false, true, WETH, OTHER);
         BondRegistry.Protected memory r = _receipt(txHash, cap);
-        paidOut += reg.claim(c, r, _sign(key, r), pk);
+        reg.claim(c, r, _sign(key, r), pk);
+        budgetOf[incident] = budget;
+        open.push(txHash);
+    }
+
+    function collect(uint256 i) external {
+        if (open.length == 0) return;
+        bytes32 txHash = open[i % open.length];
+        (bytes32 incident,,,,, bool done) = reg.claims(txHash);
+        (,, uint64 closesAt) = reg.incidents(incident);
+        if (done || block.timestamp < closesAt) return;
+        paidOut[incident] += reg.collect(txHash);
+        if (paidOut[incident] > budgetOf[incident]) overpaid = true;
     }
 
     function totalBonds() external view returns (uint256 s) {
         for (uint256 i; i < 3; i++) {
             s += reg.bondOf(vm.addr(keys[i]));
         }
+    }
+
+    function reservationsCovered() external view returns (bool) {
+        for (uint256 i; i < 3; i++) {
+            address a = vm.addr(keys[i]);
+            if (reg.reservedOf(a) > reg.bondOf(a)) return false;
+        }
+        return true;
+    }
+
+    /// @dev The id BondRegistry derives for a v3 claim made by `_setup` with these legs.
+    function _incidentOf(bytes32 l) internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                block.chainid,
+                bytes32(0),
+                _v3Pool(WETH, OTHER, 500),
+                bytes32(0),
+                keccak256(abi.encode("front", l)),
+                keccak256(abi.encode("back", l))
+            )
+        );
     }
 }
 
@@ -441,8 +694,18 @@ contract BondRegistryInvariantTest is RegistryBase {
         targetContract(address(handler));
     }
 
-    /// @dev Every wei the registry holds belongs to some RPC's bond: claims and unbonds never over-pay.
+    /// @dev Every wei the registry holds belongs to some RPC's bond: claims, refunds and unbonds never over-pay.
     function invariant_ethHeldEqualsBonds() public view {
         assertEq(address(reg).balance, handler.totalBonds());
+    }
+
+    /// @dev No incident pays out more than the attacker's profit, however many claims share it.
+    function invariant_incidentNeverOverpays() public view {
+        assertFalse(handler.overpaid());
+    }
+
+    /// @dev Reservations never exceed the bond they hold back.
+    function invariant_reservationsCovered() public view {
+        assertTrue(handler.reservationsCovered());
     }
 }

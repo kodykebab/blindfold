@@ -35,7 +35,8 @@ contract DeployCourt is Script {
                 v3Factory: vm.envOr("V3_FACTORY", UNICHAIN_V3_FACTORY),
                 v3InitCodeHash: vm.envOr("V3_INIT_CODE_HASH", V3_INIT_CODE_HASH),
                 v4PoolManager: vm.envOr("V4_POOL_MANAGER", _poolManager()),
-                unbondDelay: vm.envOr("UNBOND_DELAY", uint256(1 days))
+                unbondDelay: vm.envOr("UNBOND_DELAY", uint256(1 days)),
+                claimWindow: vm.envOr("CLAIM_WINDOW", uint256(10 minutes))
             })
         );
         vm.stopBroadcast();

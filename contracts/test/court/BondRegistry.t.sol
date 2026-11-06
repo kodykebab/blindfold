@@ -22,6 +22,7 @@ contract BondRegistryTest is CourtFixtures {
     address constant V4_TOKEN1 = 0x373C863E4C34Db35B58C98Dd15a018E1ab53F6ea;
     address constant V4_HOOKS = 0x15e5E7206C661a1E881F5CD33A94eAF2328FA8cc;
     uint256 constant DELAY = 2 days;
+    uint256 constant WINDOW = 1 hours;
     uint256 constant BOND = 10 ether;
 
     BondRegistry reg;
@@ -59,7 +60,7 @@ contract BondRegistryTest is CourtFixtures {
         bytes memory sig = _sign(RPC_KEY, r);
         vm.expectRevert(abi.encodeWithSelector(BondRegistry.UnvaluedProfit.selector, USDT));
         reg.claim(c, r, sig, abi.encode(WETH, USDT, uint24(100)));
-        assertFalse(reg.paid(r.txHash));
+        assertFalse(_claimed(r.txHash));
     }
 
     function test_v4_anchored_paysVictimInNativeEth() public {
@@ -95,7 +96,11 @@ contract BondRegistryTest is CourtFixtures {
         vm.prank(prover);
         reg.claim(c, r, sig, _v4Key());
         uint256 refund = prover.balance;
-        assertGt(refund, 0);
+        assertGt(refund, 0, "the prover is refunded when the claim registers");
+        assertEq(reg.bondOf(rpc), BOND - refund);
+        assertEq(reg.reservedOf(rpc), v.profit, "the payout is held until the window closes");
+        vm.warp(block.timestamp + WINDOW);
+        reg.collect(r.txHash);
         assertEq(reg.bondOf(rpc), BOND - v.profit - refund);
     }
 
@@ -106,7 +111,7 @@ contract BondRegistryTest is CourtFixtures {
         BondRegistry.Protected memory r = _receipt(v, 100 ether);
         bytes memory sig = _sign(RPC_KEY, r);
         reg.claim(c, r, sig, _v4Key());
-        vm.expectRevert(abi.encodeWithSelector(BondRegistry.AlreadyPaid.selector, r.txHash));
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.AlreadyClaimed.selector, r.txHash));
         reg.claim(c, r, sig, _v4Key());
     }
 
@@ -264,7 +269,8 @@ contract BondRegistryTest is CourtFixtures {
                 v3Factory: V3_FACTORY,
                 v3InitCodeHash: V3_INIT_CODE_HASH,
                 v4PoolManager: pm,
-                unbondDelay: DELAY
+                unbondDelay: DELAY,
+                claimWindow: WINDOW
             })
         );
     }
@@ -290,6 +296,11 @@ contract BondRegistryTest is CourtFixtures {
         (c, j) = _anchoredClaim(V4);
         _checkpoint(j);
         v = court.verify(c);
+    }
+
+    function _claimed(bytes32 txHash) internal view returns (bool) {
+        (, address who,,,,) = reg.claims(txHash);
+        return who != address(0);
     }
 
     function _timestamp(bytes memory header) internal pure returns (uint256 t) {
@@ -339,13 +350,15 @@ contract BondRegistryTest is CourtFixtures {
         bytes memory poolKey,
         uint256 expected
     ) internal returns (uint256 paid) {
-        SandwichCourtVerifier.Verdict memory v = court.verify(c);
         uint256 before = r.beneficiary.balance;
         vm.prank(prover);
-        paid = reg.claim(c, r, sig, poolKey);
+        reg.claim(c, r, sig, poolKey);
+        assertTrue(_claimed(r.txHash));
+        assertEq(r.beneficiary.balance, before, "nothing is paid before the claim window closes");
+        vm.warp(block.timestamp + WINDOW);
+        paid = reg.collect(r.txHash);
         assertEq(paid, expected, "payout");
         assertEq(r.beneficiary.balance - before, expected, "beneficiary received the payout");
-        assertTrue(reg.paid(r.txHash));
     }
 }
 
