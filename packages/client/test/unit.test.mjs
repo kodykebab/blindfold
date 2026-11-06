@@ -164,3 +164,11 @@ test('local account defaults ignore OS usernames and preserve numeric USER compa
     assert.throws(() => account({ CLIENT_ACCOUNT_INDEX: value }), /CLIENT_ACCOUNT_INDEX must be/)
   }
 })
+
+test('admission preflight reserves cumulative inputs on both sides plus the new fee/deposit', () => {
+  const r = preflight({ ...base, cumulative: { [T0]: 100n, [T1]: 50n } })
+  assert.equal(r.funding.find((f) => f.token === T0).need, 100n + order.amountIn)
+  assert.equal(r.funding.find((f) => f.token === T1).need, 50n + base.depositAmount + base.fee)
+  assert.equal(preflight({ ...base, order: { ...order, amountIn: -1n } }).ok, false)
+  assert.equal(preflight({ ...base, order: { ...order, amountIn: 1n << 128n } }).ok, false)
+})

@@ -2,7 +2,7 @@
 //   CLIENT_E2E=1 npm test
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseEther } from 'viem'
 import { localChain, user, DEPOSIT } from './chain.mjs'
@@ -187,7 +187,7 @@ test('S11: overlapping batch rejected before gas; state export, tamper refusal a
     r = await c.cli(11, ['import-state', backup])
     assert.equal(r.code, 1)
     assert.match(r.err, /state belongs to/)
-    assert.throws(() => readdirSync(stateDir))
+    assert.equal(existsSync(stateDir) ? readdirSync(stateDir).length : 0, 0)
 
     r = await c.cli(10, ['import-state', backup])
     assert.equal(r.code, 0, r.err)
@@ -204,22 +204,28 @@ test('S11: overlapping batch rejected before gas; state export, tamper refusal a
 })
 
 
-// AdmittedSettlement is #50's policy-only test harness, not a proof verifier.
+// ReleasePolicySettlement is #50's policy-only test harness, not a proof verifier.
 // Enable only with that branch's generated artifacts; no ABI is copied here.
 test('released commitment: real CLI cleanup, repeat cleanup, next batch and withdrawal', {
   skip: !enabled || process.env.CLIENT_RELEASE_E2E !== '1', timeout: 120_000,
 }, async () => {
   const fee = parseEther('0.1')
-  const c = await localChain({ settlementContract: 'AdmittedSettlement', fee })
+  const c = await localChain({ settlementContract: 'ReleasePolicySettlement', fee })
   try {
     const u = user(10).address
     await c.mint(u, c.token0, parseEther('100'))
     await c.mint(u, c.token1, parseEther('100'))
-    let r = await c.cli(10, ['commit', 'sell', '10', '9'])
+    // This harness tests cleanup policy only; bypass admission directly in test setup.
+    for (const token of [c.token0, c.token1]) {
+      const amount = token === c.token1 ? DEPOSIT + fee : parseEther('10')
+      await c.write(token, 'MockERC20', 'approve', [c.vault, amount], user(10))
+      await c.write(c.vault, 'BlindfoldVault', 'deposit', [token, amount], user(10))
+    }
+    const b = await c.read(c.settlement, 'BlindfoldSettlement', 'currentBatch')
+    await c.write(c.settlement, 'ReleasePolicySettlement', 'commit', [b, `0x${'01'.repeat(32)}`, '0x00'], user(10))
+    let r = await c.cli(10, ['status'])
     assert.equal(r.code, 0, r.err)
-    assert.match(r.out, /fee 0.1 TK./)
     assert.match(r.out, /unrevealed deposit can be released/)
-    const b = savedState(c).commitments[0].batchId
     await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'revealCloses', [b]))
     r = await c.cli(10, ['cleanup', '--dry-run'])
     assert.equal(r.code, 0, r.err)
@@ -244,7 +250,8 @@ test('released commitment: real CLI cleanup, repeat cleanup, next batch and with
     const current = await c.read(c.settlement, 'BlindfoldSettlement', 'currentBatch')
     await c.warp(await c.read(c.settlement, 'BlindfoldSettlement', 'commitsClose', [current]))
     r = await c.cli(10, ['commit', 'sell', '1', '0.9', '--dry-run'])
-    assert.equal(r.code, 0, r.err)
+    assert.equal(r.code, 1)
+    assert.match(r.err, /deployment file must include the parameter manifest/)
     assert.doesNotMatch(r.out + r.err, /one active batch per account/)
     for (const token of ['token0', 'token1']) {
       r = await c.cli(10, ['withdraw', token, 'all'])

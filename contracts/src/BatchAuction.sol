@@ -51,6 +51,8 @@ abstract contract BatchAuction {
 
     error InvalidSettlementWindow(uint256 requested, uint256 maximum);
     error MisalignedSchedule(uint64 start, uint32 batchLength);
+    error AdmissionRequired();
+    error AuctionNotStarted();
     error NotCurrentBatch(uint64 batchId, uint64 current);
     error BatchFull();
     error BadStatus(uint256 commitId);
@@ -185,7 +187,13 @@ abstract contract BatchAuction {
 
     // ---- actions
 
-    function commit(uint64 batchId, bytes32 hash, bytes calldata ciphertext) external returns (uint256 id) {
+    function commit(uint64 batchId, bytes32 hash, bytes calldata ciphertext) external virtual returns (uint256 id) {
+        if (admissionRequired()) revert AdmissionRequired();
+        return _commit(batchId, hash, ciphertext);
+    }
+
+    function _commit(uint64 batchId, bytes32 hash, bytes calldata ciphertext) internal returns (uint256 id) {
+        if (block.timestamp < start) revert AuctionNotStarted();
         uint64 cur = currentBatch();
         if (batchId != cur) revert NotCurrentBatch(batchId, cur);
         if (batchCommitIds[batchId].length >= MAX_COMMITS) revert BatchFull();

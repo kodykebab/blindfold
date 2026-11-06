@@ -115,7 +115,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     }
 
     /// @notice One-shot: the hook address is mined against this contract's address, so the key comes later.
-    function initialize(PoolKey calldata k) external {
+    function initialize(PoolKey calldata k) public virtual {
         if (msg.sender != admin) revert Unauthorized();
         if (token0 != address(0)) revert AlreadyInitialized();
         key = k;

@@ -13,8 +13,13 @@ import {BatchAuction} from "../src/BatchAuction.sol";
 import {BlindfoldSettlement} from "../src/BlindfoldSettlement.sol";
 
 /// Stands in for the admission entry point (REVIEW R2) only to select the unrevealed-commitment policy.
-contract AdmittedSettlement is BlindfoldSettlement {
+contract ReleasePolicySettlement is BlindfoldSettlement {
     constructor(Config memory c) BlindfoldSettlement(c) {}
+
+    // Test-only bypass: this harness selects cleanup policy, never validates admission.
+    function commit(uint64 batch, bytes32 hash, bytes calldata ciphertext) external override returns (uint256) {
+        return _commit(batch, hash, ciphertext);
+    }
 
     function admissionRequired() public pure override returns (bool) {
         return true;
@@ -76,7 +81,7 @@ contract FeesAndTimingTest is Test {
 
     function _settlement(bool admitted) internal returns (BlindfoldSettlement s) {
         BlindfoldSettlement.Config memory c = _config(T0, 30);
-        s = admitted ? new AdmittedSettlement(c) : new BlindfoldSettlement(c);
+        s = admitted ? new ReleasePolicySettlement(c) : new BlindfoldSettlement(c);
         vault.setOperator(address(s));
         s.initialize(PoolKey(Currency.wrap(address(t0)), Currency.wrap(address(t1)), 3000, 60, IHooks(address(0))));
         _fund(alice, 100e18);
