@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { confirmTx, confirmationsFor, describeOutcome } from './tx.mjs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
-import { cleanSymbol, statusPayload } from './quote.mjs'
+import { cleanSymbol, gasQuote, readQuote, statusPayload } from './quote.mjs'
 
 const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
@@ -101,16 +101,50 @@ async function preparationState(b, now) {
   } catch { return 'invalid for this account, network or deployment' }
 }
 
+const hasSettlement = (name) => abi.settlement.some((item) => item.type === 'function' && item.name === name)
+
+async function quoteFor(batchId, t, block = null) {
+  const sample = block ?? await pub.getBlock()
+  const quote = await readQuote({
+    read: (name, args = []) => read(S, name, args),
+    has: hasSettlement,
+    batchId,
+    decimals0: t.token0.decimals,
+    decimals1: t.token1.decimals,
+    block: sample,
+  })
+  return { block: sample, quote }
+}
+
+async function dryRunReport(t, order, current, enforced) {
+  const { block, quote } = await quoteFor(current, t)
+  if (enforced) return { quote, gas: gasQuote({ block, reason: 'preview does not build an admission proof' }) }
+  try {
+    const salt = newSalt()
+    const hash = orderHash(dep.chainId, S, current, order, salt)
+    const round = await read(S, 'targetRound', [current])
+    const ciphertext = await encrypt(round, order, salt)
+    const units = await pub.estimateContractGas({
+      account, address: S, abi: abi.settlement, functionName: 'commit', args: [current, hash, ciphertext],
+    })
+    return { quote, gas: gasQuote({ units, gasPrice: await pub.getGasPrice(), block }) }
+  } catch (error) {
+    return { quote, gas: gasQuote({ block, reason: error.shortMessage || error.message }) }
+  }
+}
+
 async function status(json = false) {
   const t = await tokens()
   const { open, rows } = await vaultView(t)
-  const [b, now] = await Promise.all([read(S, 'currentBatch'), pub.getBlock().then((x) => x.timestamp)])
+  const [b, block] = await Promise.all([read(S, 'currentBatch'), pub.getBlock()])
+  const now = block.timestamp
   const times = await schedule(b)
   const preparation = await preparationState(b, now)
   if (json) {
+    const { quote } = await quoteFor(b, t, block)
     console.log(JSON.stringify(statusPayload({
       account: me, chainId: dep.chainId, token0: t.token0, token1: t.token1, rows,
-      openCommitments: open, batchId: b, now, deadlines: times, preparation, quote: null,
+      openCommitments: open, batchId: b, now, deadlines: times, preparation, quote,
     })))
     return
   }
@@ -158,7 +192,7 @@ async function prepare(batchText) {
   console.log(`prepared batch ${batch} in ${preparation.elapsedSeconds.toFixed(2)}s; private preparation saved locally`)
 }
 
-async function commit(side, amountIn, minOut, dryRun, vaultOnly = false, bothFunded = false) {
+async function commit(side, amountIn, minOut, dryRun, vaultOnly = false, bothFunded = false, json = false) {
   if (side !== 'sell' && side !== 'buy') fail('side must be sell or buy')
   const t = await tokens()
   const [tin, tout] = side === 'sell' ? [t.token0, t.token1] : [t.token1, t.token0]
@@ -206,7 +240,10 @@ async function commit(side, amountIn, minOut, dryRun, vaultOnly = false, bothFun
     if (balances.some((balance) => balance === 0n)) fail('fund both tokens in the vault before trading')
   }
   if (vaultOnly && check.funding.some((f) => f.shortfall > 0n)) fail('fund the required vault balances before trading; automatic deposits are disabled')
-  if (dryRun) return console.log('dry run: nothing sent')
+  if (dryRun) {
+    if (json) console.log(JSON.stringify(await dryRunReport(t, order, current, enforced)))
+    return console.log('dry run: nothing sent')
+  }
   for (const f of check.funding) {
     if (!f.shortfall) continue
     if (f.approve) await send(f.token, abi.erc20, 'approve', [dep.vault, f.shortfall])
@@ -447,7 +484,7 @@ const [cmd, ...args] = process.argv.slice(2)
 const commands = {
   status: () => status(args.includes('--json')),
   deposit: () => deposit(args[0], args[1]),
-  commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run'), args.includes('--vault-only'), args.includes('--both-funded')),
+  commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run'), args.includes('--vault-only'), args.includes('--both-funded'), args.includes('--json')),
   track: () => trackAll(args.includes('--json')),
   'prepare-admission': () => prepare(args[0]),
   'resume-admission': () => resumeAdmission(),

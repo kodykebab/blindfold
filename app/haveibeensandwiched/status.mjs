@@ -83,7 +83,9 @@ function statusFromJson(value) {
       { role: 'token0', symbol: t0.symbol, decimals: t0.decimals, address: t0.address },
       { role: 'token1', symbol: t1.symbol, decimals: t1.decimals, address: t1.address },
     ],
-    quote: null,
+    quote: quoteFromJson(value.quote),
+    quoteRaw: value.quote ?? null,
+    liquidity: liquidityFromJson(value.quote?.liquidity),
   }
 }
 
@@ -190,6 +192,59 @@ export function parseQuote(text, now = Date.now()) {
   return stampQuote(chosen, now)
 }
 
+/** Prefer a real external price, then the pool price. Age starts when this process read the JSON. */
+export function quoteFromJson(quote, now = Date.now()) {
+  if (!quote) return null
+  const external = quote.external?.price ? quote.external : null
+  const pool = quote.pool?.price ? quote.pool : null
+  const chosen = external ?? pool
+  if (!chosen) return null
+  return stampQuote({
+    source: external ? 'external' : 'pool',
+    price: chosen.price,
+    ageSeconds: 0,
+    parsedAt: now,
+    detail: chosen.source,
+    blockNumber: chosen.blockNumber,
+    at: chosen.at,
+  }, now)
+}
+
+export function quoteReason(quote) {
+  if (!quote) return null
+  const parts = []
+  if (quote.pool && quote.pool.price == null && quote.pool.reason) parts.push(`pool: ${quote.pool.reason}`)
+  if (quote.external && quote.external.price == null && quote.external.reason) parts.push(`external: ${quote.external.reason}`)
+  return parts.length ? parts.join('; ') : null
+}
+
+export function quoteLine(stamped, raw) {
+  if (!stamped?.price) {
+    const why = quoteReason(raw)
+    return why
+      ? `Public pool price is not available (${why}). It is not shown as a live quote.`
+      : 'Public pool price is not in the client status yet, so it is not shown as a live quote.'
+  }
+  const missed = raw?.external && raw.external.price == null && stamped.source === 'pool' && raw.external.reason
+    ? ` External reference is not available (${raw.external.reason}).`
+    : ''
+  const where = stamped.detail ? ` Source: ${stamped.detail}, block ${stamped.blockNumber}.` : ''
+  return `${stamped.label}: ${stamped.price} token1 per token0, ${stamped.ageSeconds}s old${stamped.stale ? ', stale' : ''}.${where}${missed}`
+}
+
+export function liquidityFromJson(liquidity) {
+  if (!liquidity) return null
+  return {
+    raw: liquidity.raw ?? null,
+    reason: liquidity.reason ?? null,
+    source: liquidity.source ?? null,
+    blockNumber: liquidity.blockNumber ?? null,
+    at: liquidity.at ?? null,
+    estimate: liquidity.estimate ?? null,
+    label: liquidity.label ?? 'pool liquidity (v4 units)',
+  }
+}
+
 export function stampQuote(quote, now = Date.now()) {
   if (!quote) return null
   const ageSeconds = quote.ageSeconds + Math.max(0, Math.floor((now - quote.parsedAt) / 1000))
@@ -212,8 +267,26 @@ export function parseLiquidity(text) {
 
 export function liquidityNote(info) {
   if (!info) return 'Pool liquidity near your limit is not reported by the client. Estimated execution is unavailable. An execution figure would be an estimate, not guaranteed.'
+  if (info.raw != null) {
+    const where = info.source ? ` Source: ${info.source}, block ${info.blockNumber}.` : ''
+    return `Pool liquidity (v4 units): ${info.raw}.${where} Estimated execution: estimate not available. Estimate, not guaranteed.`
+  }
+  if (info.reason) return `Pool liquidity is not available (${info.reason}). Estimated execution: estimate not available. Estimate, not guaranteed.`
   const estimate = info.estimate ? `Estimated execution: ${info.estimate}.` : 'Estimated execution is not reported.'
   return `Pool liquidity near your limit: ${info.liquidity}. ${estimate} Estimate, not guaranteed.`
+}
+
+function embeddedObject(text) {
+  const lines = String(text).split(/\r?\n/)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim()
+    if (!trimmed.startsWith('{')) continue
+    try {
+      const value = JSON.parse(trimmed)
+      if (value && (value.quote || value.gas)) return value
+    } catch { /* text that happens to start with a brace */ }
+  }
+  return null
 }
 
 /** Structured review of a `commit --dry-run` transcript. Missing quote, gas or liquidity stay missing. */
@@ -247,8 +320,9 @@ export function parsePreflight(text, now = Date.now()) {
     }
   }
   const oneBatch = oneBatchReason(text)
-  const quote = parseQuote(text, now)
-  const liquidity = parseLiquidity(text)
+  const extra = embeddedObject(text)
+  const quote = quoteFromJson(extra?.quote, now) ?? parseQuote(text, now)
+  const liquidity = liquidityFromJson(extra?.quote?.liquidity) ?? parseLiquidity(text)
   const shortfalls = funding.filter((row) => row.shortfall)
   return {
     side: order[1],
@@ -262,9 +336,11 @@ export function parsePreflight(text, now = Date.now()) {
     shortfalls,
     deadlines,
     gas: gas ? gas[1] : null,
+    gasDetail: extra?.gas ?? null,
     problems,
     oneBatch,
     quote,
+    quoteRaw: extra?.quote ?? null,
     liquidity,
     ok: problems.length === 0 && !oneBatch && shortfalls.length === 0 && !/fund both tokens/.test(text),
   }
@@ -454,16 +530,20 @@ export function presentJob(job, now = Date.now()) {
 }
 
 export function formatReview(review) {
-  const quote = review.quote
-    ? `${review.quote.label}: ${review.quote.price} token1 per token0, ${review.quote.ageSeconds}s old${review.quote.stale ? ', stale' : ''}. This is a reference, not your clearing price.`
-    : 'Public pool price is not in the client status yet, so it is not shown as a live quote.'
+  const quote = `${quoteLine(review.quote, review.quoteRaw)} This is a reference, not your clearing price.`
   const fee = review.fee ? `Commit fee: ${review.fee}. It is not refunded.` : 'Commit fee was not in the preview.'
   const deposit = review.deposit
     ? `Deposit: ${review.deposit}. ${review.depositReturn ?? 'The preview did not say when it returns.'}`
     : 'Deposit was not in the preview.'
   const approvals = review.funding.filter((row) => row.approval).map((row) => row.symbol)
   const approval = approvals.length ? `The client will send an ERC-20 approval for ${approvals.join(', ')} before depositing.` : 'No new ERC-20 approval was listed.'
-  const gas = review.gas ? `Estimated gas: ${review.gas} units. This is an estimate from the client, not a guarantee.` : 'Estimated gas is not reported by the client.'
+  const gas = review.gasDetail?.eth
+    ? `Estimated gas: ${review.gasDetail.eth} ETH. Source: ${review.gasDetail.source}, block ${review.gasDetail.blockNumber}. This is an estimate, not a guarantee.`
+    : review.gasDetail?.reason
+      ? `Estimated gas is not available (${review.gasDetail.reason}).`
+      : review.gas
+        ? `Estimated gas: ${review.gas} units. This is an estimate from the client, not a guarantee.`
+        : 'Estimated gas is not reported by the client.'
   const deadlines = review.deadlines.length ? `Deadlines: ${review.deadlines.join('; ')}.` : 'Deadlines were not in the preview.'
   const block = [fundFirst(review), review.oneBatch].filter(Boolean).join(' ')
   return [

@@ -20,7 +20,7 @@ export function command(input) {
     if (!['token0', 'token1'].includes(token)) throw Error('not supported in this deployment')
     if (number(amount) || (action === 'withdraw' && amount === 'all')) return [action, token, amount]
   }
-  if (['preflight', 'commit'].includes(action) && ['buy', 'sell'].includes(side) && number(amount) && number(minimum)) return ['commit', side, amount, minimum, ...(action === 'preflight' ? ['--dry-run'] : []), '--vault-only', '--both-funded']
+  if (['preflight', 'commit'].includes(action) && ['buy', 'sell'].includes(side) && number(amount) && number(minimum)) return ['commit', side, amount, minimum, ...(action === 'preflight' ? ['--dry-run', '--json'] : []), '--vault-only', '--both-funded']
   throw Error('Invalid action or arguments')
 }
 

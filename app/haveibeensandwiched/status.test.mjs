@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   parseStatus, jobStage, preparedBatch, parseTrack, parseBlockers, displayPair, balanceFields, validateAmount, amountLimits,
-  parseQuote, stampQuote, parsePreflight, reviewChanges, explainClientError, presentJob, transferCheck, fillSummary, liquidityNote,
+  parseQuote, stampQuote, parsePreflight, reviewChanges, explainClientError, presentJob, transferCheck, fillSummary, liquidityNote, quoteFromJson, quoteLine,
   batchPhase, mempoolView, fundFirst, QUOTE_STALE_SECONDS,
 } from './status.mjs'
 
@@ -112,6 +112,29 @@ test('quote parser prefers the external reference and marks it stale', () => {
   assert.equal(later.stale, true)
   assert.equal(later.ageSeconds, 4 + QUOTE_STALE_SECONDS + 2)
   assert.equal(parseQuote('order: sell 1 TKA for at least 1 TKB in batch 1'), null)
+})
+
+test('dry-run JSON keeps the contract source and does not invent an execution estimate', () => {
+  const extra = {
+    quote: {
+      pool: { price: '1', source: 'BlindfoldSettlement.poolPriceX96', blockNumber: '4', at: 1 },
+      external: { price: null, reason: 'ExternalConfig', source: 'BlindfoldSettlement.referencePriceX96', blockNumber: '4', at: 1 },
+      liquidity: { raw: '99', label: 'pool liquidity (v4 units)', source: 'BlindfoldSettlement.poolLiquidity', blockNumber: '4', at: 1, estimate: null, estimateReason: 'estimate not available' },
+    },
+    gas: { eth: '0.00021', units: '21000', source: 'estimateContractGas(commit) * eth_gasPrice', blockNumber: '4', at: 1 },
+  }
+  const review = parsePreflight(`order: sell 1 TKA for at least 1 TKB in batch 1\n${JSON.stringify(extra)}`, 0)
+  assert.equal(review.quote.price, '1')
+  assert.equal(review.quote.source, 'pool')
+  assert.equal(review.quote.ageSeconds, 0)
+  assert.equal(review.liquidity.raw, '99')
+  assert.match(liquidityNote(review.liquidity), /Pool liquidity \(v4 units\): 99/)
+  assert.match(liquidityNote(review.liquidity), /estimate not available/)
+  assert.equal(review.gasDetail.eth, '0.00021')
+  assert.match(quoteLine(review.quote, review.quoteRaw), /Source: BlindfoldSettlement.poolPriceX96, block 4/)
+  assert.match(quoteLine(review.quote, review.quoteRaw), /ExternalConfig/)
+  const missing = quoteFromJson({ pool: { price: null, reason: 'no pool' }, external: { price: null, reason: 'ExternalPrice' } })
+  assert.equal(missing, null)
 })
 
 const PREVIEW = `order: sell 10 TKA for at least 9 TKB in batch 7
