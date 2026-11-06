@@ -19,6 +19,7 @@ async function setup({ admission = true, prove } = {}) {
   const store = { load: () => states.load(dep, owner), write: (s) => states.write(dep, owner, s) }
   const seen = { sent: [], checks: [] }
   const d = admission ? dep : { ...dep, admission: 'off' }
+  let f
   const ctx = {
     dep: d, abi, owner, pub, store,
     prove: prove ?? (async ({ request: r }) => {
@@ -30,10 +31,10 @@ async function setup({ admission = true, prove } = {}) {
         preparation: { seal: '0x01', journal: '0x02' }, online: { seal: '0x03', journal: '0x04' } }
     }),
     tlock: { encrypt: async () => '0xbeef', check: async (...a) => seen.checks.push(a) },
-    async sendTx(tx, onSent) {
+    async sendTx(tx, record) {
       const { functionName, args } = decodeFunctionData({ abi: abi.settlement, data: tx.data })
-      seen.sent.push({ functionName, args, before: await store.load() })
-      await onSent?.(TX)
+      seen.sent.push({ functionName, args, record, before: await store.load() })
+      await f.recordSent(record, TX) // the worker does this on the bridge's `sent`
       seen.afterSent = await store.load()
       const hash = args[1]
       if (functionName === 'admit') pub.table.admissionState = [3n, seen.next.root, 1n] // mined
@@ -41,7 +42,8 @@ async function setup({ admission = true, prove } = {}) {
       return TX
     },
   }
-  return { f: flows(ctx), ctx, seen, store, pub }
+  f = flows(ctx)
+  return { f, ctx, seen, store, pub }
 }
 
 test('admission: proof request, ciphertext check, pending saved before admit, hash saved before mining, reconciled after', async () => {
@@ -55,6 +57,7 @@ test('admission: proof request, ciphertext check, pending saved before admit, ha
 
   const [admit] = s.seen.sent
   assert.equal(admit.functionName, 'admit')
+  assert.equal(admit.record.kind, 'admit')
   const [batch, hash, ciphertext, proof] = admit.args
   assert.deepEqual([batch, ciphertext], [3n, '0xdead'])
   assert.deepEqual(decodeAbiParameters(Array(4).fill({ type: 'bytes' }), proof), ['0x01', '0x02', '0x03', '0x04'])
@@ -82,7 +85,7 @@ test('admission: a prover that disagrees on the transition stops before anything
 
 test('admission: the worker dies after the wallet sent admit; resume waits for that hash and sends nothing new', async () => {
   const s = await setup()
-  s.ctx.sendTx = async (tx, onSent) => { await onSent(TX); throw new Error('bridge page disconnected') }
+  s.ctx.sendTx = async (tx, record) => { await s.f.recordSent(record, TX); throw new Error('bridge page disconnected') }
   await assert.rejects(s.f.commit({ side: 'sell', amountIn: '1', minOut: '0.5' }), /disconnected/)
   const saved = await s.store.load()
   assert.equal(saved.admission.pending.tx, TX)
@@ -114,4 +117,16 @@ test('without admission: the order is saved before commit is sent, its hash when
   assert.deepEqual(s.seen.checks[0], ['0xbeef', 42n, s.seen.checks[0][2]]) // the ciphertext is checked before sending
   assert.equal(r.committed, 9n)
   assert.equal((await s.store.load()).commitments[0].id, 9n)
+})
+
+test('recordSent saves only into the commitment or pending admission it names', async () => {
+  const s = await setup()
+  await s.store.write({ chainId: 31337, settlement: dep.settlement, owner, commitments: [{ id: null, hash: '0x01' }], admission: { pending: { hash: '0x02' } } })
+  await s.f.recordSent({ kind: 'commit', hash: '0x01' }, TX)
+  await s.f.recordSent({ kind: 'admit', hash: '0x02' }, TX)
+  await s.f.recordSent({ kind: 'commit', hash: '0x09' }, TX) // unknown: ignored, nothing invented
+  await s.f.recordSent({ kind: 'admit', hash: '0x09' }, '0xff')
+  const st = await s.store.load()
+  assert.deepEqual(st.commitments, [{ id: null, hash: '0x01', tx: TX }])
+  assert.deepEqual(st.admission.pending, { hash: '0x02', tx: TX })
 })

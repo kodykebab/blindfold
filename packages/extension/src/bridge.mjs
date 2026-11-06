@@ -3,10 +3,11 @@
 import { toHex } from 'viem'
 
 /**
- * origin: the only bridge origin accepted (D9). onWallet(msg) gets every hello/wallets/wallet message.
+ * origin: the only bridge origin accepted (D9). onWallet(msg) gets every hello/wallets/wallet message; onLate(msg) every
+ * `sent` / `result` for an id this worker is not waiting on (the bridge re-delivers them after a reconnect).
  * Returns {accept(port), connected(), connect(selector), send(request, onSent)}.
  */
-export function bridge({ origin, onWallet = () => {}, onError = () => {} }) {
+export function bridge({ origin, onWallet = () => {}, onLate = () => {}, onError = () => {} }) {
   let port = null
   const pending = new Map() // id -> {resolve, reject, onSent, saving}
   let n = 0
@@ -14,7 +15,8 @@ export function bridge({ origin, onWallet = () => {}, onError = () => {} }) {
   function drop() {
     port = null
     onWallet({ type: 'disconnected' })
-    for (const x of pending.values()) x.reject(new Error('bridge page disconnected; a transaction may still have been sent: check your wallet, then run resume or track'))
+    const lost = () => Object.assign(new Error('bridge page disconnected; a transaction may still have been sent: check your wallet, then run resume or track'), { code: 'DISCONNECTED' })
+    for (const x of pending.values()) x.reject(lost())
     pending.clear()
   }
 
@@ -24,12 +26,12 @@ export function bridge({ origin, onWallet = () => {}, onError = () => {} }) {
     port = p
     p.onMessage.addListener((m) => {
       if (['hello', 'wallets', 'wallet'].includes(m?.type)) onWallet(m)
+      else if ((m?.type === 'sent' || m?.type === 'result') && !pending.has(m.id)) onLate(m)
       else if (m?.type === 'sent') {
         const x = pending.get(m.id)
-        if (x) x.saving = x.saving.then(() => x.onSent?.(m.hash ?? m.callsId, m.index))
+        x.saving = x.saving.then(() => x.onSent?.(m.hash ?? m.callsId, m.index))
       } else if (m?.type === 'result') {
         const x = pending.get(m.id)
-        if (!x) return
         pending.delete(m.id)
         // settle only after onSent has persisted the hash, so the caller's later writes can't be overtaken
         x.saving.then(() => (m.ok ? x.resolve(m)
@@ -49,9 +51,8 @@ export function bridge({ origin, onWallet = () => {}, onError = () => {} }) {
      * One call, signed and sent by the wallet. chain: {chainId (number), rpcUrl}. onSent(hash) runs as soon as the
      * wallet accepts it, before it is mined, so the caller can persist the hash. Resolves with the bridge's result.
      */
-    send({ from, to, data, value = '0x0', chain }, onSent) {
+    send({ id = `tx-${Date.now()}-${n++}`, from, to, data, value = '0x0', chain }, onSent) {
       const p = live()
-      const id = `tx-${Date.now()}-${n++}`
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject, onSent, saving: Promise.resolve() })
         p.postMessage({

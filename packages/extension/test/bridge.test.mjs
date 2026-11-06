@@ -54,7 +54,7 @@ test('a wallet error rejects with its code; a dropped port rejects what is pendi
   await assert.rejects(rejected, (e) => e.code === 4001 && /User rejected/.test(e.message))
   const lost = b.send(call)
   p.drop()
-  await assert.rejects(lost, /bridge page disconnected/)
+  await assert.rejects(lost, (e) => e.code === 'DISCONNECTED' && /bridge page disconnected/.test(e.message))
   assert.equal(b.connected(), false)
 })
 
@@ -68,4 +68,19 @@ test('a newer bridge page replaces the old one and fails its pending request', a
   assert.deepEqual(first.posted.at(-1), { type: 'replaced' }) // so the old tab stops reconnecting
   await assert.rejects(pending, /disconnected/)
   assert.ok(b.connected())
+})
+
+test('after a reconnect, sent / result for ids this worker is not waiting on go to onLate', async () => {
+  const late = []
+  const b = bridge({ origin: ORIGIN, onLate: (m) => late.push(m.type) })
+  const p = fakePort()
+  b.accept(p)
+  const mine = b.send({ ...call, id: 'tx-persisted-1' })
+  assert.equal(p.posted[0].id, 'tx-persisted-1')
+  p.emit({ type: 'sent', id: 'tx-from-before', index: 0, hash: '0xbb' })
+  p.emit({ type: 'result', id: 'tx-from-before', ok: true, hashes: ['0xbb'], receipts: [] })
+  p.emit({ type: 'ping' })
+  assert.deepEqual(late, ['sent', 'result'])
+  p.emit({ type: 'result', id: 'tx-persisted-1', ok: true, hashes: ['0xcc'], receipts: [] })
+  assert.deepEqual((await mine).hashes, ['0xcc'])
 })

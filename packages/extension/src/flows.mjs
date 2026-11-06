@@ -1,7 +1,7 @@
 // The trader flows of packages/client/cli.mjs, run by the service worker. The extension builds every transaction;
 // ctx.sendTx hands it to the user's wallet (through the bridge page) to sign and returns its hash.
 //
-// ctx: {dep, abi: {settlement, vault, erc20}, owner, pub (viem public client), sendTx(tx, onSent) -> hash,
+// ctx: {dep, abi: {settlement, vault, erc20}, owner, pub (viem public client), sendTx(tx, record) -> hash,
 //       store: {load(), write(state)} for this account, prove({manifestSha256, request}) -> {ciphertext, ciphertextHash,
 //       newBlind, oldRoot, newRoot, orderHash, preparation: {seal, journal}, online: {seal, journal}} (the helper's answers),
 //       tlock: {encrypt(round, payload), check(ciphertext, round, payload)}, log(line)}
@@ -39,14 +39,24 @@ export function flows(ctx) {
 
   /**
    * Simulate first (revert reasons before any wallet prompt), then the wallet signs and sends. Only the deployment's
-   * vault, settlement and tokens are ever called (S5). onSent(hash) runs before the transaction is mined.
+   * vault, settlement and tokens are ever called (S5). record ({kind, hash}) names the private state a commit or admit
+   * carries: sendTx calls recordSent(record, txHash) as soon as the wallet sends it, before it is mined.
    */
-  async function submit(address, which, functionName, args, onSent) {
+  async function submit(address, which, functionName, args, record) {
     const t = await tokens()
     if (![dep.vault, S, t.token0.address, t.token1.address, t.depositToken].some((a) => eq(a, address))) fail(`refusing to call ${address}: not part of this deployment`)
     await pub.simulateContract({ account: me, address, abi: which, functionName, args })
     log(`sign ${functionName} in your wallet`)
-    return ctx.sendTx({ from: me, to: address, data: encodeFunctionData({ abi: which, functionName, args }), value: '0x0', chainId: dep.chainId }, onSent)
+    return ctx.sendTx({ from: me, to: address, data: encodeFunctionData({ abi: which, functionName, args }), value: '0x0', chainId: dep.chainId }, record)
+  }
+
+  /** Save a sent transaction's hash with the commitment or pending admission it carries (also for re-delivered sends). */
+  async function recordSent({ kind, hash }, tx) {
+    const state = await store.load()
+    if (kind === 'admit' && state.admission?.pending?.hash === hash) state.admission.pending.tx = tx
+    else if (kind === 'commit' && state.commitments.some((c) => c.hash === hash)) mergeCommitments(state, [{ hash, tx }])
+    else return
+    await store.write(state)
   }
   async function confirm(hash, what) {
     const receipt = await pub.waitForTransactionReceipt({ hash })
@@ -173,14 +183,11 @@ export function flows(ctx) {
     }
     const ciphertext = await ctx.tlock.encrypt(round, payload)
     await ctx.tlock.check(ciphertext, round, payload)
-    let state = await store.load()
-    await store.write(mergeCommitments(state, [{ id: null, batchId: current, round, hash, order, salt }])) // before sending
-    const tx = await submit(S, abi.settlement, 'commit', [current, hash, ciphertext],
-      async (sent) => store.write(mergeCommitments(await store.load(), [{ hash, tx: sent }])))
+    await store.write(mergeCommitments(await store.load(), [{ id: null, batchId: current, round, hash, order, salt }])) // before sending
+    const tx = await submit(S, abi.settlement, 'commit', [current, hash, ciphertext], { kind: 'commit', hash })
     const receipt = await confirm(tx, 'commit')
     const [ev] = parseEventLogs({ abi: abi.settlement, logs: receipt.logs, eventName: 'Committed' })
-    state = await store.load()
-    await store.write(mergeCommitments(state, [{ id: ev.args.commitId, hash, tx }]))
+    await store.write(mergeCommitments(await store.load(), [{ id: ev.args.commitId, hash, tx }]))
     return { ...report, committed: ev.args.commitId, round, tx }
   }
 
@@ -218,19 +225,15 @@ export function flows(ctx) {
       await store.write(state)
       return { resumed: 'pending admission reconciled with chain state' }
     } catch (e) { if (!e.message.includes('run resume-admission')) throw e }
-    let tx = pending.tx
-    if (!tx) {
-      const save = async (sent) => { state.admission.pending.tx = sent; await store.write(state) }
-      tx = await submit(S, abi.settlement, 'admit', [pending.batch, pending.hash, pending.ciphertext, pending.proof], save)
-      if (state.admission.pending.tx !== tx) await save(tx)
-    }
+    const tx = pending.tx ?? await submit(S, abi.settlement, 'admit', [pending.batch, pending.hash, pending.ciphertext, pending.proof], { kind: 'admit', hash: pending.hash })
     const receipt = await pub.waitForTransactionReceipt({ hash: tx })
     if (receipt.status !== 'success') fail(`admission reverted in ${tx}; pending state retained until its batch closes`)
     const [ev] = parseEventLogs({ abi: abi.settlement, logs: receipt.logs, eventName: 'Committed' })
     if (!ev || ev.args.hash !== pending.hash) fail('admission receipt did not contain the expected commitment; pending state retained')
-    mergeCommitments(state, [{ id: ev.args.commitId, hash: pending.hash, tx }])
-    state.admission = reconcileFunding(dep, me, state.admission, await fundingOnchain(), await now())
-    await store.write(state)
+    const after = await store.load() // recordSent saved the hash meanwhile
+    mergeCommitments(after, [{ id: ev.args.commitId, hash: pending.hash, tx }])
+    after.admission = reconcileFunding(dep, me, after.admission, await fundingOnchain(), await now())
+    await store.write(after)
     return { admitted: ev.args.commitId, tx }
   }
 
@@ -318,5 +321,5 @@ export function flows(ctx) {
     return { imported: imported.commitments?.length ?? 0, saved: state.commitments.length }
   }
 
-  return { status, deposit, commit, resumeAdmission, track: trackAll, blockers, cleanup, withdraw, exportState, importState, exitSteps, clock }
+  return { status, deposit, commit, resumeAdmission, recordSent, track: trackAll, blockers, cleanup, withdraw, exportState, importState, exitSteps, clock }
 }

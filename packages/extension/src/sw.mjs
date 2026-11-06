@@ -22,7 +22,7 @@ const walletInfo = (m) => {
   if (m.type === 'wallets') return session.set({ wallets: m.wallets })
   if (m.type === 'wallet') return session.set({ wallet: m }).then(tick)
 }
-const bridge = createBridge({ origin: BRIDGE_ORIGIN, onWallet: walletInfo, onError: (e) => console.warn('bridge:', e) })
+const bridge = createBridge({ origin: BRIDGE_ORIGIN, onWallet: walletInfo, onLate: (m) => late(m).catch((e) => console.warn('bridge:', e)), onError: (e) => console.warn('bridge:', e) })
 chrome.runtime.onConnectExternal.addListener(bridge.accept)
 session.set({ bridge: false }) // a fresh worker has no port; the bridge reconnects within a second
 
@@ -70,20 +70,53 @@ async function context(log = () => {}) {
   const abi = { settlement: dep.admission?.manifestSha256 ? a.AdmittedSettlement : a.BlindfoldSettlement, vault: a.BlindfoldVault, erc20: a.MockERC20 }
   const states = key ? stateStore(local, await importKey(key)) : null
   const unlocked = () => states ?? fail('private state is locked: unlock it first')
-  return {
+  const ctx = {
     dep, abi, owner, pub, log, unlocked: !!states,
     store: { load: () => unlocked().load(dep, owner), write: (s) => unlocked().write(dep, owner, s) },
-    sendTx: async (tx, onSent) => (await bridge.send({ ...tx, chain: { chainId: dep.chainId, rpcUrl } }, onSent)).hashes.at(-1),
+    sendTx: (tx, record) => sendTx(ctx, { ...tx, chain: { chainId: dep.chainId, rpcUrl } }, record),
     prove,
     tlock: {
       encrypt: (round, payload) => offscreen('encrypt', { round: String(round), payload, drand: config.drand }),
       check: (ciphertext, round, payload) => offscreen('check', { ciphertext, round: String(round), payload, drand: config.drand }),
     },
   }
+  return ctx
+}
+
+// Each send is journaled in storage.session before it is posted. If the worker restarts while the wallet is open, the
+// bridge re-delivers `sent` / `result` on reconnect (bridge v1) and late() still saves the hash with its order.
+async function sendTx(ctx, tx, record) {
+  const id = `tx-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
+  const key = `send:${id}`
+  await session.set({ [key]: plain({ record, owner: ctx.owner, settlement: ctx.dep.settlement }) })
+  try {
+    const r = await bridge.send({ ...tx, id }, (hash) => record && flows(ctx).recordSent(record, hash))
+    await session.remove(key)
+    return r.hashes.at(-1)
+  } catch (e) {
+    if (e.code !== 'DISCONNECTED') await session.remove(key) // a dropped port may still be answered after reconnect
+    throw e
+  }
+}
+
+async function late(m) {
+  const key = `send:${m.id}`
+  const sent = (await session.get(key))[key]
+  if (!sent) return
+  if (m.type === 'sent' && sent.record && m.hash) {
+    const ctx = await context()
+    if (ctx.owner.toLowerCase() !== sent.owner.toLowerCase() || ctx.dep.settlement.toLowerCase() !== sent.settlement.toLowerCase()) return
+    await navigator.locks.request(lockName(ctx), () => flows(ctx).recordSent(sent.record, m.hash))
+  }
+  if (m.type === 'result') {
+    await session.remove(key)
+    tick()
+  }
 }
 
 // One writer per account (Web Locks); a second mutation fails fast instead of queueing behind a wallet prompt.
-const withLock = (ctx, fn) => navigator.locks.request(`blindfold:${stateId(ctx.dep, ctx.owner)}`, { ifAvailable: true },
+const lockName = (ctx) => `blindfold:${stateId(ctx.dep, ctx.owner)}`
+const withLock = (ctx, fn) => navigator.locks.request(lockName(ctx), { ifAvailable: true },
   (lock) => (lock ? fn() : fail('another operation is running for this account; wait for it to finish')))
 
 const OPS = {
