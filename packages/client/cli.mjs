@@ -2,6 +2,7 @@
 //   npm start -- status                          balances (wallet / available / reserved / withdrawable) and the open batch
 //   npm start -- deposit <token0|token1> <amount>
 //   npm start -- commit <sell|buy> <amountIn> <minAmountOut> [--dry-run]   preflight, encrypt, commit
+//   npm start -- prepare-admission <batch-id>   prove a key wrapper before choosing the order
 //   npm start -- track                           every commitment of this account and what happened to it
 //   npm start -- blockers                        which commitments block withdrawal and what clears each
 //   npm start -- cleanup [--dry-run]             reveal own saved orders, slash unrevealed, expire unsettled batches
@@ -14,7 +15,7 @@ import { connect, encrypt, newSalt, orderHash } from './lib.mjs'
 import { balances, deadlines, exitPlan, isOpen, preflight, track } from './flow.mjs'
 import { exportState, importState, loadState, parseState, saveCommitment, validateState, writeState, withStateLock } from './state.mjs'
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
-import { proveAdmission } from './admission.mjs'
+import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
 
 const ctx = connect()
@@ -91,6 +92,28 @@ async function deposit(name, amount) {
   console.log(`deposited ${fmt(tok, value)}`)
 }
 
+async function checkAdmissionNetwork() {
+  if (await pub.getChainId() !== Number(dep.chainId)) fail('RPC network differs from the deployment; select the correct RPC_URL and deployment')
+}
+
+async function prepare(batchText) {
+  if (!/^\d+$/.test(batchText ?? '')) fail('usage: prepare-admission <batch-id>')
+  await checkAdmissionNetwork()
+  if (!await admissionRequired()) fail('this deployment does not use proof-enforced admission')
+  const batch = BigInt(batchText)
+  const current = await read(S, 'currentBatch')
+  if (batch < current || batch >= 1n << 64n) fail('select an explicit current or future batch')
+  const round = await read(S, 'targetRound', [batch])
+  console.log(`preparing locally for batch ${batch}, round ${round}…`)
+  const preparation = await prepareAdmission({ dep, owner: me, batch, round })
+  if ((await pub.getBlock()).timestamp >= await read(S, 'commitsClose', [batch])) fail('preparation completed after the batch closed; select a later batch')
+  await checkAdmissionNetwork()
+  const state = loadState(dep, me)
+  state.preparation = preparation
+  writeState(dep, me, state)
+  console.log(`prepared batch ${batch} in ${preparation.elapsedSeconds.toFixed(2)}s; private preparation saved locally`)
+}
+
 async function commit(side, amountIn, minOut, dryRun) {
   if (side !== 'sell' && side !== 'buy') fail('side must be sell or buy')
   const t = await tokens()
@@ -103,17 +126,20 @@ async function commit(side, amountIn, minOut, dryRun) {
   const [commitsClose, commits] = await Promise.all([read(S, 'commitsClose', [current]), read(S, 'commitIdsOf', [current])])
   const per = async (f) => Object.fromEntries(await Promise.all(Object.keys(t.byAddress).map(async (a) => [a, await f(a)])))
   const enforced = await admissionRequired()
-  let funding
+  let funding, minLead = 3n
   if (enforced) {
+    await checkAdmissionNetwork()
     if (!dep.admission?.manifestSha256) fail('this deployment requires admission; its deployment file must include the parameter manifest')
     const state = loadState(dep, me)
     funding = reconcileFunding(dep, me, state.admission, await fundingOnchain(), now)
+    if (state.preparation) validatePreparation(state.preparation, { dep, owner: me, batch: current, round: await read(S, 'targetRound', [current]) })
+    minLead = admissionLead(!!state.preparation)
     state.admission = funding
     if (!dryRun) writeState(dep, me, state)
   }
   const check = preflight({
     cumulative: enforced ? { [t.token0.address]: funding.totals[0], [t.token1.address]: funding.totals[1] } : {},
-    minLead: enforced ? 60n : 3n,
+    minLead,
     order, tokenIn: tin.address, depositToken: t.depositToken, depositAmount, fee,
     free: await per((a) => read(dep.vault, 'freeBalance', [me, a])),
     wallet: await per((a) => read(a, 'balanceOf', [me], abi.erc20)),
@@ -145,8 +171,11 @@ async function commit(side, amountIn, minOut, dryRun) {
       const free = await read(dep.vault, 'freeBalance', [me, tok.address])
       return free - (tok.address.toLowerCase() === t.depositToken.toLowerCase() ? depositAmount + fee : 0n)
     }))
-    console.log('generating admission proofs locally…')
-    const result = await proveAdmission({ dep, owner: me, batch: current, round, funding, budgets, order, salt })
+    const prepared = consumePreparation(loadState(dep, me), { dep, owner: me, batch: current, round }, (state) => writeState(dep, me, state))
+    console.log(prepared ? 'generating the online admission proof locally…' : 'generating both admission proofs locally…')
+    const result = await proveAdmission({ dep, owner: me, batch: current, round, funding, budgets, order, salt, prepared })
+    console.log(`local proving completed in ${result.timings.elapsedSeconds.toFixed(2)}s`)
+    await checkAdmissionNetwork()
     const latest = (await pub.getBlock()).timestamp
     if (latest >= commitsClose) fail('proof completed after this batch closed; nothing submitted, start a new order in the current batch')
     reconcileFunding(dep, me, funding, await fundingOnchain(), latest)
@@ -171,6 +200,7 @@ async function fundingOnchain() {
 }
 
 async function resumeAdmission() {
+  await checkAdmissionNetwork()
   if (!dep.admission?.manifestSha256 || !await admissionRequired()) fail('this deployment does not use proof-enforced admission')
   const state = loadState(dep, me)
   const chain = await fundingOnchain(), now = (await pub.getBlock()).timestamp
@@ -305,6 +335,7 @@ const commands = {
   deposit: () => deposit(args[0], args[1]),
   commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run')),
   track: () => trackAll(),
+  'prepare-admission': () => prepare(args[0]),
   'resume-admission': () => resumeAdmission(),
   blockers: () => blockers(),
   cleanup: () => cleanup(args.includes('--dry-run')),
@@ -314,7 +345,7 @@ const commands = {
 }
 if (!commands[cmd]) fail(`usage: npm start -- <${Object.keys(commands).join('|')}> ...`)
 try {
-  const mutates = ['commit', 'resume-admission', 'import-state', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
+  const mutates = ['prepare-admission', 'commit', 'resume-admission', 'import-state', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
   await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())
 }
 catch (e) { console.error(`client: ${e.shortMessage ?? e.message}`); process.exitCode = 1 }

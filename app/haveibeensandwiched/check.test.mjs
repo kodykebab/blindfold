@@ -4,7 +4,8 @@ import { classify, matchVictim, duneSql, check, FIXTURES } from './check.mjs'
 
 const POOL = '0x' + '11'.repeat(20), ID = '0x' + '00'.repeat(32)
 // v3 pool-side amounts: a0 > 0 means token0 paid in (zeroForOne)
-const sw = (txIndex, from, a0, a1, trader = from) => ({ v4: false, pool: POOL, poolId: ID, txIndex, logIndex: 0, from, trader, a0, a1 })
+// `trader` (court-watcher before S5) and `caller` (after) both name the contract that called the pool
+const sw = (txIndex, from, a0, a1, via = from) => ({ v4: false, pool: POOL, poolId: ID, txIndex, logIndex: 0, from, trader: via, caller: via, a0, a1 })
 const block = [
   sw(1, 'bot', 100n, -90n),   // front: buys token1
   sw(2, 'alice', 50n, -40n),  // victim 1
@@ -28,6 +29,20 @@ test('matchVictim finds every victim, not just the first', () => {
     assert.equal(m.profit, 5n)
     assert.equal(m.front.txIndex, 1)
   }
+})
+
+test('matchVictim finds a victim who used the same router as the attacker', () => {
+  const R = 'router'
+  const shared = [
+    sw(1, 'bot', 100n, -90n, R), // front, through a public router
+    sw(2, 'alice', 50n, -40n),   // another victim, own route
+    sw(3, 'carol', 20n, -15n, R), // victim through the same router
+    sw(4, 'bot', -105n, 90n, R), // back
+  ]
+  const [m, ...rest] = matchVictim(shared, 3)
+  assert.equal(rest.length, 0)
+  assert.equal(m.victim.from, 'carol')
+  assert.equal(m.front.txIndex, 1)
 })
 
 test('matchVictim ignores attacker, opposite-direction and outside txs', () => {
