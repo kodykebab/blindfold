@@ -4,20 +4,17 @@
 // Real proofs are E3 (needs the real local-prover). EXT_E2E=1.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ROOT } from '../lib/chain.mjs'
 import { launch, stopBridge, EXTENSION_DIST, EXTENSION_ID } from '../lib/browser.mjs'
 import { openApp } from '../lib/extension.mjs'
+import { hasGo, installHelper, sha256File as sha } from '../lib/helper.mjs'
 
-const hasGo = (() => { try { execFileSync('go', ['version']); return true } catch { return false } })()
 const skip = process.env.EXT_E2E !== '1' || (!existsSync(join(EXTENSION_DIST, 'manifest.json')) && 'no extension build')
   || (!existsSync(join(ROOT, 'packages/prover-helper/install.sh')) && 'no prover-helper') || (!hasGo && 'no go toolchain')
-const sha = (f) => createHash('sha256').update(readFileSync(f)).digest('hex')
-let dir, b
+let dir, b, installed
 
 before(async () => {
   if (skip) return
@@ -27,11 +24,7 @@ before(async () => {
   chmodSync(prover, 0o755)
   mkdirSync(params)
   writeFileSync(join(params, 'manifest.json'), '{"stub":true}\n')
-  const gocache = execFileSync('go', ['env', 'GOCACHE'], { encoding: 'utf8' }).trim()
-  execFileSync('bash', [join(ROOT, 'packages/prover-helper/install.sh'), EXTENSION_ID, profile], {
-    env: { ...process.env, HOME: join(dir, 'home'), GOCACHE: gocache, GOTOOLCHAIN: 'local', INSTALL_DIR: join(dir, 'bin'), ADMISSION_PROVER: prover, ADMISSION_PARAMS: params },
-    stdio: 'pipe',
-  })
+  installed = installHelper(profile, { prover, params })
   b = await launch({ profile })
   Object.assign(b, { prover, params })
 })
@@ -39,7 +32,7 @@ after(async () => {
   if (skip) return
   await b?.close()
   await stopBridge()
-  rmSync(dir, { recursive: true, force: true })
+  for (const d of [dir, installed]) rmSync(d, { recursive: true, force: true })
 })
 
 /** Open one native port from the extension page, send `requests`, collect one answer each (or the disconnect). */

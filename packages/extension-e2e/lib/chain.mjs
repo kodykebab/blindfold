@@ -47,12 +47,14 @@ export async function ensureBuilt(names = ['MockERC20', 'BlindfoldVault', 'Blind
 }
 
 /**
- * Start anvil on 8563 and deploy. admission: {params, manifestSha256} for AdmittedSettlement (E3).
+ * Start anvil on 8563 and deploy. admission: {params, manifestSha256} for AdmittedSettlement (E3); timestamp: anvil's start time.
  * Returns the deployment plus helpers; dep is what the extension imports (D5 shape, client chain.mjs).
  */
-export async function startChain({ admission, schedule = {}, dir = join(fileURLToPath(new URL('..', import.meta.url)), '.chain') } = {}) {
-  await ensureBuilt()
-  const anvil = spawn('anvil', ['--silent', '--port', String(PORT), '--accounts', '20', '--gas-limit', '300000000'], { stdio: ['ignore', 'ignore', 'pipe'] })
+export async function startChain({ admission, schedule = {}, timestamp, dir = join(fileURLToPath(new URL('..', import.meta.url)), '.chain') } = {}) {
+  await ensureBuilt(admission ? ['MockERC20', 'AdmissionVault', 'AdmittedSettlement', 'PoolManager', 'AdmissionPoolFactory'] : undefined)
+  const args = ['--silent', '--port', String(PORT), '--accounts', '20', '--gas-limit', '300000000']
+  if (timestamp) args.push('--timestamp', String(timestamp)) // E3: a past start whose drand round is recorded
+  const anvil = spawn('anvil', args, { stdio: ['ignore', 'ignore', 'pipe'] })
   let stderr = ''
   anvil.stderr.on('data', (b) => { stderr += b })
   const exited = new Promise((r) => anvil.once('exit', r))
