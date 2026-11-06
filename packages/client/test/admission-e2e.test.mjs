@@ -13,8 +13,8 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
   const params = process.env.ADMISSION_PARAMS
   const manifestSha256 = process.env.ADMISSION_MANIFEST_SHA256
   assert.match(manifestSha256 ?? '', /^[0-9a-f]{64}$/)
-  const timestamp = 1692803367n + (1000000n - 3n) * 3n - 900n
-  const c = await localChain({ timestamp, admission: { params, manifestSha256 }, schedule: { batchLength: 900, settleLength: 30 }, fee: 1n })
+  const timestamp = 1692803367n + (1000000n - 3n) * 3n - 900n // with the start pinned below, batch 0 targets round 1000000 (the recorded beacon)
+  const c = await localChain({ timestamp, admission: { params, manifestSha256 }, schedule: { start: Number(timestamp), batchLength: 900, settleLength: 30 }, fee: 1n })
   const oldState = process.env.CLIENT_STATE
   try {
     process.env.CLIENT_STATE = join(c.dir, 'state')
@@ -77,7 +77,8 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
     assert.equal(await c.read(c.vault, 'BlindfoldVault', 'lockedOf', [owner, c.token0]), 10n ** 18n)
     assert.equal(await c.read(c.vault, 'BlindfoldVault', 'lockedOf', [owner, c.token1]), 10n ** 18n)
     await c.warp(await c.read(c.settlement, 'AdmittedSettlement', 'revealCloses', [batch]))
-    await c.write(c.settlement, 'AdmittedSettlement', 'settle', [batch, 1n << 96n])
+    const [first] = final.commitments
+    await c.write(c.settlement, 'AdmittedSettlement', 'settlePeer', [batch, first.id, first.order.amountIn])
     assert.equal(await c.read(c.vault, 'BlindfoldVault', 'openCommitments', [owner]), 0n)
     assert.equal(await c.read(c.vault, 'BlindfoldVault', 'freeBalance', [owner, c.token0]), 100n * 10n ** 18n)
     assert.equal(await c.read(c.vault, 'BlindfoldVault', 'freeBalance', [owner, c.token1]), 100n * 10n ** 18n - 2n)

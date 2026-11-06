@@ -79,6 +79,8 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
   const pool = { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks }
   if (admission) await write(manager, 'PoolManager', 'initialize', [pool, 1n << 96n])
   await write(settlement, settlementContract, 'initialize', [pool])
+  // Admission chains add no pool liquidity, so a matched batch settles through settlePeer, priced by this market.
+  if (admission) await write(settlement, settlementContract, 'configureExternal', [await deploy('MockExternalMarket', [settlement, token0, token1])])
 
   const dir = mkdtempSync(join(tmpdir(), 'blindfold-client-'))
   const deployments = join(dir, 'blindfold.local.json')
