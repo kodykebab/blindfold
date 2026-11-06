@@ -1,14 +1,17 @@
-// Blindfold keeper: reveals committed orders once their drand round is out, slashes what nobody revealed, and expires
-// batches nobody settled, so no user stays locked. Every action is permissionless; this service just does them on time.
+// Blindfold keeper: reveals committed orders once their drand round is out, slashes what nobody revealed, settles batches
+// the solver missed (by running the solver itself) and expires batches nobody settled, so no user stays locked. Every
+// action is permissionless; this service just does them on time.
 //   npm start            # poll every POLL_MS
 //   npm start -- --once  # do the work due now, print one status line, exit (non-zero on an unexpected error)
 // Discovery reads Committed events from the settlement; contract state is the only source of truth (no Arkiv needed).
+import { execFile } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { createPublicClient, createWalletClient, defineChain, http } from 'viem'
+import { fileURLToPath } from 'node:url'
+import { createPublicClient, createWalletClient, defineChain, http, toHex } from 'viem'
 import { mnemonicToAccount, privateKeyToAccount } from 'viem/accounts'
 // shortcut: reuses the client's helpers in place, so packages/client must be installed too; publish them as a package if a third consumer appears
 import { TEST_MNEMONIC, decrypt, drandClient, loadAbi, loadDeployment, orderHash } from '../client/lib.mjs'
-import { canSpend, due, lostRace, opened } from './work.mjs'
+import { canSpend, due, lostRace, opened, settledBatches } from './work.mjs'
 
 const E = process.env
 const once = process.argv.includes('--once')
@@ -18,6 +21,12 @@ const MIN_BALANCE = BigInt(E.KEEPER_MIN_BALANCE_WEI ?? 10n ** 15n)
 const STATUS = E.KEEPER_STATUS // optional file the monitor reads; also carries the spend across restarts
 // anvil account 1 is the keeper (PLAN.md seams); public test key, local only
 const account = E.KEEPER_KEY ? privateKeyToAccount(E.KEEPER_KEY) : mnemonicToAccount(E.MNEMONIC || TEST_MNEMONIC, { addressIndex: Number(E.KEEPER_INDEX ?? 1) })
+// Fallback settlement: after this many seconds past a batch's reveal deadline, settle it if no solver has.
+// KEEPER_SETTLE_GRACE_S=off disables it. The default leaves the solver one block or so to go first.
+const SETTLE_GRACE = (E.KEEPER_SETTLE_GRACE_S ?? '15') === 'off' ? null : Number(E.KEEPER_SETTLE_GRACE_S ?? 15)
+if (SETTLE_GRACE !== null && !(Number.isInteger(SETTLE_GRACE) && SETTLE_GRACE >= 0)) throw new Error('KEEPER_SETTLE_GRACE_S must be a non-negative integer or off')
+const SOLVER = E.KEEPER_SOLVER || fileURLToPath(new URL('../solver/solver.mjs', import.meta.url))
+const solverKey = E.KEEPER_KEY ?? toHex(account.getHdKey().privateKey)
 
 const dep = loadDeployment()
 const abi = loadAbi('BlindfoldSettlement')
@@ -34,7 +43,7 @@ const json = (v) => JSON.stringify(v, (_, x) => (typeof x === 'bigint' ? x.toStr
 let spent = STATUS && existsSync(STATUS) ? BigInt(JSON.parse(readFileSync(STATUS, 'utf8')).spentWei ?? 0) : 0n
 
 async function cycle() {
-  const st = { keeper: account.address, revealed: 0, slashed: 0, expired: 0, lostRace: 0, waitingBeacon: [], unopenable: [], skipped: [], errors: [], gas: {} }
+  const st = { keeper: account.address, revealed: 0, slashed: 0, settled: 0, expired: 0, lostRace: 0, waitingBeacon: [], unopenable: [], skipped: [], errors: [], gas: {} }
   const [block, balance] = await Promise.all([pub.getBlock(), pub.getBalance({ address: account.address })])
   const now = block.timestamp
   Object.assign(st, { block: block.number, chainTime: now })
@@ -50,8 +59,8 @@ async function cycle() {
       read('revealOpens', [b]), read('revealCloses', [b]), read('settleCloses', [b]), read('finalized', [b]), read('orderIdsOf', [b])])
     batches.set(b, { revealOpens, revealCloses, settleCloses, finalized, orders: BigInt(ids.length) })
   }
-  const work = due(commitments, batches, now)
-  st.due = { reveal: work.reveal.length, slash: work.slash.length, expire: work.expire.length }
+  const work = due(commitments, batches, now, SETTLE_GRACE)
+  st.due = { reveal: work.reveal.length, slash: work.slash.length, settle: work.settle.length, expire: work.expire.length }
 
   /** Simulate right before sending, so a reveal someone else already landed costs nothing (REVIEW S8). */
   async function send(kind, functionName, args) {
@@ -95,12 +104,36 @@ async function cycle() {
     else await send('reveal', 'reveal', o.args)
   }
   for (const c of work.slash) await send('slash', 'slashUnrevealed', [c.id])
+  if (work.settle.length) await settleMissed(work.settle, st, balance)
   for (const b of work.expire) await send('expire', 'expire', [b])
 
   Object.assign(st, { at: new Date().toISOString(), spentWei: spent, budgetWei: BUDGET, balanceWei: await pub.getBalance({ address: account.address }) })
   console.log(json(st))
   if (STATUS) writeFileSync(STATUS, json(st))
   return st
+}
+
+/**
+ * Run the solver once with the keeper's key, so the keeper settles with the solver's own search and checks instead of a
+ * copy of them. The solver settles every batch in its window; a batch it finds already finalized is skipped.
+ */
+async function settleMissed(batchIds, st, balance) {
+  const gate = canSpend({ spent, budget: BUDGET, balance, minBalance: MIN_BALANCE })
+  if (!gate.ok) return st.skipped.push({ kind: 'settle', args: batchIds, why: gate.why })
+  const before = await pub.getBalance({ address: account.address })
+  const { code, output } = await new Promise((resolve) => {
+    execFile(process.execPath, [SOLVER, '--once'], { env: { ...E, RPC_URL: rpc, SOLVER_KEY: solverKey }, timeout: 120_000 },
+      (e, stdout, stderr) => resolve({ code: e ? (e.code ?? 1) : 0, output: `${stdout}${stderr}` }))
+  })
+  const after = await pub.getBalance({ address: account.address })
+  if (after < before) spent += before - after
+  const settled = settledBatches(output)
+  st.settled += settled.length
+  for (const b of batchIds) {
+    if (settled.includes(b)) continue
+    if (await read('finalized', [b])) st.lostRace++ // the solver (or another keeper) settled it first
+    else if (code !== 0) st.errors.push(`settle ${b}: ${output.trim().split('\n').pop()}`)
+  }
 }
 
 if (once) {

@@ -1,9 +1,10 @@
 # Keeper
 
-Reveals committed orders once their drand round is out, slashes commitments nobody could reveal, and expires batches nobody settled. Every one of these calls is permissionless; the keeper only makes sure they happen on time.
+Reveals committed orders once their drand round is out, slashes commitments nobody could reveal, settles batches the solver missed, and expires batches nobody settled. Every one of these calls is permissionless; the keeper only makes sure they happen on time.
 
 ```bash
 (cd ../client && npm ci --ignore-scripts)   # the keeper reuses the client's decrypt and hash helpers
+(cd ../solver && npm ci --ignore-scripts)   # and runs the solver for its fallback settlement
 npm ci --ignore-scripts
 npm test                                    # offline unit tests (needs `forge build` for the settlement ABI)
 npm start                                   # poll every POLL_MS
@@ -34,6 +35,11 @@ Measured on a local anvil (`KEEPER_E2E=1`, gas used per transaction, 3 runs):
 | `slashUnrevealed` | 70,716 – 87,816 |
 | `expire` (2 orders) | 77,489 |
 
+## Fallback settlement (FIXES.md fix 3)
+If no solver settles a batch within `KEEPER_SETTLE_GRACE_S` seconds of its reveal deadline (default 15), the keeper settles it. It runs `packages/solver/solver.mjs --once` with its own key, so it uses the solver's search, simulation and checks rather than a copy of them. The solver skips batches that are already finalized; a batch someone else settled first counts as `lostRace`. The settlement gas counts against `KEEPER_BUDGET_WEI` like any other send, and `settled` in the status line says how many batches it settled.
+
+The public-pool route only accepts a settlement within the market's `maxDelay` of the reveal deadline. For the fallback to be useful, deploy markets whose `maxDelay` covers the settle window: `ExternalLateSettlementFork.t.sol` settles 240 s late on the real USDC/WETH pool with `maxDelay` 300, and shows a 30 s `maxDelay` rejecting the same settlement.
+
 ## Configuration
 | Var | Default | Meaning |
 |---|---|---|
@@ -45,9 +51,11 @@ Measured on a local anvil (`KEEPER_E2E=1`, gas used per transaction, 3 runs):
 | `KEEPER_BUDGET_WEI` | unlimited | Gas spend cap |
 | `KEEPER_MIN_BALANCE_WEI` | `1e15` | Stop sending below this balance |
 | `KEEPER_STATUS` | — | Status file for monitoring; carries the spend across restarts |
+| `KEEPER_SETTLE_GRACE_S` | `15` | Seconds after the reveal deadline before the keeper settles a batch itself; `off` disables it |
+| `KEEPER_SOLVER` | `../solver/solver.mjs` | Solver CLI the fallback runs |
 
 ## Local end-to-end test
-It starts its own anvil at the time whose batch 0 targets drand round 1,000,000, so the recorded round in `packages/client/test/fixtures` decrypts offline. Two keepers race on the same orders and a garbage commitment gets slashed. A run with the budget at zero and a run below the balance floor send nothing, and the users then recover through the client.
+It starts its own anvil at the time whose batch 0 targets drand round 1,000,000, so the recorded round in `packages/client/test/fixtures` decrypts offline. Two keepers race on the same orders and a garbage commitment gets slashed. A run with the budget at zero and a run below the balance floor send nothing, and the users then recover through the client. A third run has no solver: the keeper leaves the batch alone inside the grace period, then settles it itself.
 
 ```bash
 source ../../env.sh && (cd ../../contracts && forge build)
