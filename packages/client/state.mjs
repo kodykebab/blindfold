@@ -61,9 +61,9 @@ export function validateState(state, { dep, owner, orderHash, chainHashes }) {
 }
 
 // Ready encryption keys are deliberately not portable: restoring an old backup must not reuse one for a new order.
-// Proving times describe this device, so another device measures its own.
+// Proving times and preparation progress describe this device, so another device measures its own.
 export const exportState = (dep, owner) => {
-  const { preparation, proving, ...state } = loadState(dep, owner)
+  const { preparation, preparing, consumedPreparation, proving, ...state } = loadState(dep, owner)
   return JSON.stringify(state, replacer, 2)
 }
 export const parseState = (text) => JSON.parse(text, reviver)
