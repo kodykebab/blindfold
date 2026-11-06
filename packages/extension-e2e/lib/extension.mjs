@@ -51,6 +51,7 @@ export async function onboard(b, dep, { passphrase = PASSPHRASE, deployment = de
   await app.locator('#passphrase').fill(passphrase)
   await app.locator('button[data-call="setup"]').click()
   await until(async () => (await call(app, 'session')).unlocked, 'unlocked')
+  await app.locator('.settings summary').click()
   await app.locator('#rpc-url').fill(RPC)
   await app.locator('#deployment').fill(JSON.stringify(deployment))
   await app.locator('#drand').fill(JSON.stringify(DRAND))
