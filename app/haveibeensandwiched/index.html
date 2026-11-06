@@ -391,10 +391,10 @@ function decrypt(el) {
 }
 function result(r) {
   if (r.error) return `<header><div class="lbl">Lookup failed</div><p>${esc(r.error)}</p></header>`
-  const testnet = r.network === 'testnet', protocols = testnet ? 'v3' : 'v3/v4'
+  const testnet = r.network === 'testnet', protocols = 'v3/v4'
   const rows = r.txs.flatMap((t) => t.sandwiches.length
     ? t.sandwiches.map((s) => `<tr><td>${scan('tx', t.txHash, r.network)}</td><td>${s.block.toLocaleString('en-US')}</td><td>${scan('address', s.attacker, r.network)}</td>
-        <td>${s.amount != null ? `${s.amount.toPrecision(4)} ${esc(s.symbol)} · ${usd(s.usd)}` : `${esc(s.profitRaw)} raw${s.v4 ? ' (v4)' : ''}`}</td>
+        <td>${s.amount != null ? `${s.amount.toPrecision(4)} ${esc(s.symbol)}${testnet ? '' : ` · ${usd(s.usd)}`}` : `${esc(s.profitRaw)} raw${s.v4 ? ' (v4)' : ''}`}</td>
         <td class="${s.courtProvable ? 'yes' : 'no'}" title="${testnet ? 'Court is available for Ethereum mainnet results' : s.courtProvable ? 'Within the 8,191-block L1 anchor window' : s.strict === false ? "Court's predicate needs the bot to close its position within 1%. This bot kept some." : 'Older than 8,191 blocks'}">${testnet ? '—' : s.courtProvable ? 'yes' : 'no'}</td></tr>`)
     : [`<tr><td>${scan('tx', t.txHash, r.network)}</td><td>${t.block?.toLocaleString('en-US') ?? '—'}</td><td colspan="3" class="no">no Uniswap ${protocols} sandwich found by our checker</td></tr>`])
   const n = r.sandwichCount
@@ -421,7 +421,7 @@ document.getElementById('look').onsubmit = async (e) => {
 }
 document.querySelectorAll('input[name=network]').forEach((input) => input.addEventListener('change', () => {
   ++asked; res.hidden = true
-  document.getElementById('network-detail').textContent = input.value === 'testnet' ? 'Unichain Sepolia · v3' : 'Ethereum · v3 / v4'
+  document.getElementById('network-detail').textContent = input.value === 'testnet' ? 'Unichain Sepolia · v3 / v4' : 'Ethereum · v3 / v4'
   document.getElementById('demo').parentElement.hidden = input.value === 'testnet'
 }))
 document.getElementById('demo').onclick = () => { q.value = DEMO; document.getElementById('look').requestSubmit() }

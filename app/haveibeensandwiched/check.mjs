@@ -1,12 +1,21 @@
-// Was this tx / address sandwiched on Ethereum mainnet, and what did it cost?
-// Tx hashes: our own detector (court-watcher), RPC only. Addresses: recent txs from Etherscan, then our detector per tx.
+// Was this tx / address sandwiched on Ethereum mainnet or Unichain Sepolia, and what did it cost?
+// Tx hashes: our own detector (court-watcher), RPC only. Addresses: recent txs from Etherscan (Blockscout on the testnet),
+// then our detector per tx.
 import { readFileSync } from 'node:fs'
 import { rpc, ETH_RPC, swapLogs, findSandwiches, HISTORY_WINDOW, V3_SWAP, V4_SWAP, V4_POOL_MANAGER } from '../../packages/court-watcher/lib.mjs'
 
+// poolManager: the chain's Uniswap v4 PoolManager. blockscout: a keyless Etherscan-style API for wallet history and v4 pool currencies.
 const NETWORKS = {
-  mainnet: { name: 'Ethereum mainnet', rpc: () => ETH_RPC },
-  testnet: { name: 'Unichain Sepolia', rpc: () => process.env.UNICHAIN_SEPOLIA_RPC || 'https://sepolia.unichain.org' },
+  mainnet: { name: 'Ethereum mainnet', rpc: () => ETH_RPC, poolManager: V4_POOL_MANAGER },
+  testnet: {
+    name: 'Unichain Sepolia', rpc: () => process.env.UNICHAIN_SEPOLIA_RPC || 'https://sepolia.unichain.org',
+    poolManager: '0x00b036b58a818b1bc34d502d3fe730db729e62ac', blockscout: 'https://unichain-sepolia.blockscout.com/api',
+  },
 }
+// shortcut: court-watcher's swapLogs reads one PoolManager per process (V4_POOL_MANAGER), so this network's v4 logs are
+// relabelled to it before parsing. Upgrade: a per-call PoolManager argument in court-watcher (Bhoumik's lane).
+const onPoolManager = (receipts, pm) => (pm === V4_POOL_MANAGER ? receipts
+  : receipts.map((r) => ({ ...r, logs: r.logs.map((l) => (l.address.toLowerCase() === pm ? { ...l, address: V4_POOL_MANAGER } : l)) })))
 const ETHERSCAN = 'https://api.etherscan.io/v2/api'
 const SCAN_TXS = 40 // recent txs per address whose receipts we fetch
 const LLAMA = 'https://coins.llama.fi/prices/historical'
@@ -88,23 +97,35 @@ export function matchVictim(swaps, txIndex) {
 const V4_INIT = '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438'
 const v4Keys = new Map() // poolId -> [currency0, currency1]; a pool's currencies never change
 
-/** A v4 pool's currencies, from its Initialize log. Public RPCs refuse archive getLogs, so this goes through Etherscan. */
-async function v4Currencies(poolId) {
-  if (v4Keys.has(poolId)) return v4Keys.get(poolId)
-  if (!process.env.ETHERSCAN_API_KEY) return null // shortcut: without a key, v4 sandwiches stay in raw units
-  const u = `${ETHERSCAN}?chainid=1&module=logs&action=getLogs&address=${V4_POOL_MANAGER}&topic0=${V4_INIT}&topic1=${poolId}&topic0_1_opr=and&fromBlock=0&toBlock=latest&apikey=${process.env.ETHERSCAN_API_KEY}`
+/** A v4 pool's currencies, from its Initialize log. Public RPCs refuse archive getLogs, so this goes through Etherscan (Blockscout on the testnet, no key). */
+async function v4Currencies(poolId, network = 'mainnet') {
+  const id = `${network}:${poolId}`, config = NETWORKS[network]
+  if (v4Keys.has(id)) return v4Keys.get(id)
+  if (!config.blockscout && !process.env.ETHERSCAN_API_KEY) return null // shortcut: without a key, mainnet v4 sandwiches stay in raw units
+  const q = `module=logs&action=getLogs&address=${config.poolManager}&topic0=${V4_INIT}&topic1=${poolId}&topic0_1_opr=and&fromBlock=0&toBlock=latest`
+  const u = config.blockscout ? `${config.blockscout}?${q}` : `${ETHERSCAN}?chainid=1&${q}&apikey=${process.env.ETHERSCAN_API_KEY}`
   const t = await fetch(u).then((r) => r.json()).then((j) => (j.status === '1' ? j.result[0]?.topics : null)).catch(() => null)
   if (!t) return null
   const key = [t[2], t[3]].map((x) => '0x' + x.slice(26))
-  v4Keys.set(poolId, key)
+  v4Keys.set(id, key)
   return key
 }
 
-async function token(sw, url) {
-  if (sw.front.v4) return (await v4Currencies(sw.front.poolId))?.[sw.profitInToken0 ? 0 : 1] ?? null
+async function token(sw, url, network) {
+  if (sw.front.v4) return (await v4Currencies(sw.front.poolId, network))?.[sw.profitInToken0 ? 0 : 1] ?? null
   const sel = sw.profitInToken0 ? '0x0dfe1681' : '0xd21220a7' // token0() / token1()
   const r = await rpc(url, 'eth_call', [{ to: sw.front.pool, data: sel }, 'latest'])
   return '0x' + r.slice(26)
+}
+
+/** Symbol and decimals read from the chain, for networks DefiLlama doesn't price. */
+async function units(addr, url) {
+  if (addr === NATIVE) return { symbol: 'ETH', decimals: 18, price: null }
+  const call = (data) => rpc(url, 'eth_call', [{ to: addr, data }, 'latest'])
+  const [d, s] = await Promise.all([call('0x313ce567'), call('0x95d89b41').catch(() => null)]) // decimals(), symbol()
+  const b = s && Buffer.from(s.slice(2), 'hex')
+  const symbol = b?.length >= 64 ? b.subarray(64, 64 + Number(b.readBigUInt64BE(56))).toString('utf8') : null // ABI string
+  return { symbol: symbol || addr.slice(0, 8), decimals: Number(BigInt(d)), price: null }
 }
 
 const NATIVE = '0x' + '00'.repeat(20), WETH = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
@@ -127,14 +148,14 @@ export async function checkTx(hash, rc, network = 'mainnet') {
   const [receipts, block, head] = await Promise.all([rpc(url, 'eth_getBlockReceipts', [blockNumber]), rpc(url, 'eth_getBlockByNumber', [blockNumber, false]), rpc(url, 'eth_blockNumber')])
   const ts = Number(block.timestamp)
   const txAt = (i) => receipts.find((r) => Number(r.transactionIndex) === i)?.transactionHash ?? null
-  const sandwiches = await Promise.all(matchVictim(swapLogs(receipts).filter((sw) => network === 'mainnet' || !sw.v4), Number(rc.transactionIndex)).map(async (sw) => {
-    const tok = await token(sw, url).catch(() => null)
-    const p = network === 'mainnet' && tok ? await price(tok, ts) : null
+  const sandwiches = await Promise.all(matchVictim(swapLogs(onPoolManager(receipts, config.poolManager)), Number(rc.transactionIndex)).map(async (sw) => {
+    const tok = await token(sw, url, network).catch(() => null)
+    const p = !tok ? null : network === 'mainnet' ? await price(tok, ts) : await units(tok, url).catch(() => null)
     const amount = p ? Number(sw.profit) / 10 ** p.decimals : null
     return {
-      block: Number(n), time: ts, v4: sw.front.v4, pool: sw.front.pool, poolId: sw.front.poolId,
+      block: Number(n), time: ts, v4: sw.front.v4, pool: sw.front.v4 ? config.poolManager : sw.front.pool, poolId: sw.front.poolId,
       attacker: sw.front.from, frontTx: txAt(sw.front.txIndex), backTx: txAt(sw.back.txIndex),
-      profitRaw: sw.profit.toString(), token: tok, symbol: p?.symbol ?? null, amount, usd: amount !== null ? amount * p.price : null,
+      profitRaw: sw.profit.toString(), token: tok, symbol: p?.symbol ?? null, amount, usd: amount !== null && p.price != null ? amount * p.price : null,
       strict: sw.strict, // false: the bot kept inventory, which Court's predicate doesn't accept
       courtProvable: network === 'mainnet' && sw.strict && BigInt(head) - n <= HISTORY_WINDOW, // Court's predicate, within the L1 anchor window (AGENTS.md gotcha 7)
     }
@@ -152,12 +173,12 @@ function summarize(r) {
 
 /** Successful txs the address sent itself: the only ones where it can be the sandwich victim. */
 export const ownTxs = (list, addr) => list.filter((t) => t.from?.toLowerCase() === addr && t.isError === '0' && t.txreceipt_status !== '0')
-export const hasSwap = (rc, network = 'mainnet') => rc.logs.some((l) => l.topics[0] === V3_SWAP || (network === 'mainnet' && l.topics[0] === V4_SWAP))
+export const hasSwap = (rc) => rc.logs.some((l) => l.topics[0] === V3_SWAP || l.topics[0] === V4_SWAP)
 
 async function etherscanTxs(addr, network) {
   const u = network === 'mainnet'
     ? `${ETHERSCAN}?chainid=1&module=account&action=txlist&address=${addr}&sort=desc&page=1&offset=100&apikey=${process.env.ETHERSCAN_API_KEY}`
-    : `https://unichain-sepolia.blockscout.com/api?module=account&action=txlist&address=${addr}&sort=desc&page=1&offset=100`
+    : `${NETWORKS[network].blockscout}?module=account&action=txlist&address=${addr}&sort=desc&page=1&offset=100`
   let j
   for (let t = 0; ; t++) {
     try { j = await (await fetch(u)).json(); break } catch (e) { if (t >= 2) throw e; await new Promise((r) => setTimeout(r, 500 * 2 ** t)) }
@@ -172,7 +193,7 @@ export async function checkAddress(addr, network = 'mainnet') {
   if (network === 'mainnet' && !process.env.ETHERSCAN_API_KEY) return { kind: 'address', input: addr, error: 'address lookup needs ETHERSCAN_API_KEY (or OFFLINE=1 for fixtures)' }
   const txs = ownTxs(await etherscanTxs(addr, network), addr).slice(0, SCAN_TXS)
   const rcs = await rpcBatch('eth_getTransactionReceipt', txs.map((t) => [t.hash]), NETWORKS[network].rpc())
-  const swaps = rcs.filter((rc) => rc && hasSwap(rc, network)).slice(0, MAX_ENRICH)
+  const swaps = rcs.filter((rc) => rc && hasSwap(rc)).slice(0, MAX_ENRICH)
   const checked = await mapLimit(swaps, LIMIT, (rc) => checkTx(rc.transactionHash, rc, network))
   const hit = checked.flatMap((c) => c?.txs ?? []).filter((t) => t.sandwiches.length)
   const failed = rcs.filter((rc) => !rc).length + checked.filter((c) => !c).length
