@@ -86,7 +86,7 @@ try {
   for (const token of [token0, token1]) {
     await write(token, 'MockERC20', 'mint', [user(0).address, 10n ** 30n])
     await write(token, 'MockERC20', 'approve', [lp, (1n << 256n) - 1n])
-    await write(token, 'MockERC20', 'mint', [user(10).address, 100n * 10n ** 18n])
+    for (const index of [10, 11, 12]) await write(token, 'MockERC20', 'mint', [user(index).address, 100n * 10n ** 18n]) // the page's account and two demo traders
   }
   await write(lp, 'PoolModifyLiquidityTest', 'modifyLiquidity', [key, { tickLower: -60000, tickUpper: 60000, liquidityDelta: 10n ** 22n, salt: toHex(0n, { size: 32 }) }, '0x'])
   const deployment = join(dir, 'blindfold.local.json')
@@ -128,8 +128,12 @@ try {
   }
   await report()
   setInterval(() => report().catch((e) => console.error(`stack health: ${e.message}`)), 3000).unref()
+  // For demo helpers (scripts/demo-trader.sh, scripts/demo-frontrun.mjs): local test values only, no real keys.
+  writeFileSync(join(dir, 'stack.env'), Object.entries({ RPC_URL: rpc, DEPLOYMENTS: deployment, CONTRACTS_OUT: out, ADMISSION_PARAMS: params, ADMISSION_PROVER: prover,
+    SETTLEMENT_ARTIFACT: env.SETTLEMENT_ARTIFACT, MNEMONIC: mnemonic }).map(([k, v]) => `${k}='${v}'`).join('\n') + '\n', { mode: 0o600 })
   console.log(`LOCAL_WEB_URL=${url}/trade`)
   console.log(`Service health: ${env.STACK_HEALTH}`)
   console.log(`Local deployment and private state: ${dir}`)
+  console.log(`Demo helpers: scripts/demo-trader.sh ${dir} <client command> · node scripts/demo-frontrun.mjs ${dir}`)
   console.log('Proof-enforced development chain 31337; Anvil test accounts and local test tokens only. Ctrl-C stops this stack.')
 } catch (error) { stop(); console.error(`local stack: ${error.message}`); process.exitCode = 1 }

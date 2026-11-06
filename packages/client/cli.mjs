@@ -187,6 +187,10 @@ async function deposit(name, amount) {
   const t = await tokens()
   const tok = pick(t, name)
   const value = parseUnits(amount, tok.decimals)
+  if (value === 0n) fail('deposit amount must be above zero')
+  // Check the wallet first: the transfer probe below would otherwise fail with an arithmetic error.
+  const held = await read(tok.address, 'balanceOf', [me], abi.erc20)
+  if (held < value) fail(`not enough ${tok.symbol} in the wallet: it holds ${fmt(tok, held)}, the deposit needs ${fmt(tok, value)}`)
   let arrived
   try { arrived = await arrivedOnTransfer(tok.address, value) }
   catch (error) { fail(`could not check how much this token delivers on transfer (${error.shortMessage || error.message})`) }
