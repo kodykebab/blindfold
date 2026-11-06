@@ -8,11 +8,37 @@ here has a test in `packages/extension-e2e` or in the owning package.
 was discarded, so the unpacked dev build always gets this ID). Native host `allowed_origins`:
 `chrome-extension://eaoidifkamkmkbcomcbpldjlhipogdgo/`. `packages/extension` has a test that recomputes it from the key.
 
-## Extension <-> prover helper (Chrome native messaging)
-- Host name: `xyz.blindfold.prover` (proposed). Framing: Chrome native messaging (4-byte little-endian length + UTF-8 JSON).
-- Request: `{ "id": string, "cmd": string, ...args }`. Response: `{ "id": string, "ok": true, "result": {...} }` or `{ "id": string, "ok": false, "error": { "code": string, "message": string } }`.
-- Commands (to be specified by agents 2 and 3): `hello` (version, parameter manifest hash), `prepare`, `online`, plus anything else needed.
-- Limits: host-to-Chrome messages must stay under 1 MB.
+## Extension <-> prover helper (Chrome native messaging) — v1
+Implemented in `packages/prover-helper/main.go` (tests: `main_test.go`); the extension's client is
+`packages/extension/src/helper.mjs`. `packages/extension-e2e` runs `hello` against the installed helper.
+
+- **Host.** Name `xyz.blindfold.prover`; host manifest `allowed_origins: ["chrome-extension://eaoidifkamkmkbcomcbpldjlhipogdgo/"]`
+  only. The helper also checks the caller origin Chrome passes as its first argument (`E_ORIGIN`). `install.sh` writes
+  the manifest and a `config.json` next to the binary: `{ extensionId, prover, params, manifestSha256 }` (absolute paths).
+- **Framing.** Chrome native messaging: 4-byte little-endian length, then UTF-8 JSON. At most 1 MB each way, requests
+  included (`E_TOO_LARGE`).
+- **Envelope.** Request `{ "id": string, "cmd": string, ... }`. Response `{ "id", "ok": true, "result": {...} }` or
+  `{ "id", "ok": false, "error": { "code": string, "message": string } }`. A frame that is not JSON gets `id: null`.
+- **One port per order.** The extension opens a port, sends `prepare`, then `online` with the returned `session` on the
+  **same port**, then disconnects. The helper keeps the witness in memory only: a disconnect (which also stops a running
+  proof) or a new `prepare` discards it, and `online` then fails with `E_SESSION`.
+
+| `cmd` | Request fields | `result` |
+| --- | --- | --- |
+| `hello` | none | `{ protocol: 1, version, chainId: "31337", developmentOnly: true, manifestSha256, proverSha256 }`. The extension refuses to prove unless `manifestSha256` equals its deployment's `admission.manifestSha256` |
+| `prepare` | `protocol: 1`, `manifestSha256`, `request`: the `local-prover fixture-local` request exactly as `packages/client/admission.mjs` builds it: `{ chainId, settlement, owner, batch, round, step, totals: [t0, t1], budgets: [b0, b1], oldBlind, zeroForOne, amount, minimum, salt }` (integers as decimal strings) | `{ session, orderHash, oldRoot, newRoot, ciphertextHash, ciphertext, newBlind, preparation: { seal, journal } }` (all `0x` hex). The extension checks `orderHash`, `oldRoot` and `newRoot` against its own computation, as `admission.mjs` does, before using anything |
+| `online` | `protocol: 1`, `session` | `{ online: { seal, journal } }`. The `admit` proof argument is `abi.encode(bytes, bytes, bytes, bytes)` of preparation seal, preparation journal, online seal, online journal |
+
+**Error codes.** `E_ORIGIN` (caller is not the extension), `E_CONFIG` (not installed or config invalid: re-run
+`install.sh`), `E_TOO_LARGE`, `E_BAD_REQUEST` (not JSON, unknown `cmd`), `E_VERSION` (`protocol` is not 1), `E_PARAMS`
+(manifest differs from the pinned one, or parameter files changed), `E_CHAIN` (development parameters: chain 31337
+only), `E_SESSION` (no matching `prepare` on this port), `E_PROVER` (local-prover failed; for `prepare` the message
+may carry its validation error, never witness values), `E_TIMEOUT` (1 min fixture, 10 min proof), `E_CANCELLED`
+(helper shutting down), `E_INTERNAL`.
+
+**Privacy.** The order, salt and blinding cross this port because the proof needs them; they stay on the machine. The
+helper writes the witness only to a 0700 temp directory that is removed when the prover exits, captures all child
+output, and logs nothing.
 
 ## Extension <-> bridge page (externally_connectable) — v1
 Implemented in `packages/bridge/public/protocol.mjs` (message handling) and `public/wallet.mjs` (EIP-1193 adapter);
@@ -51,6 +77,7 @@ quantities as in JSON-RPC (`"0x7a69"`).
 | `type` | Fields | Effect |
 | --- | --- | --- |
 | `connect` | `uuid` or `rdns` | connect that wallet (`eth_requestAccounts`), then send `wallet`. The user can also pick it on the page. Fails with `error` `NO_WALLET` if unknown |
+| `replaced` | none | sent to the old port just before disconnecting it, when another bridge tab connects (the newest tab wins). That tab stops reconnecting and tells the user; without it two tabs take the port from each other every second |
 | `send` | `id` (1–64 chars), `from`, `chain: { chainId, chainName, rpcUrls, nativeCurrency: { name, symbol, decimals } }`, `calls: [{ to, data, value? }]` (1–8 calls, `data` at most 128 KiB each) | sign and send with the selected wallet; answered by `sent`* then exactly one `result` |
 
 **`send`, in order.**
@@ -78,6 +105,50 @@ bridge, checks that every call targets the deployment's vault, settlement or tok
 deployment's chain, before it sends `send` (S5).
 
 ## Pages <-> service worker
-Owned by agent 1; listed here once stable.
+Owned by agent 1. Implemented in `packages/extension/src/sw.mjs` (worker) and `src/app.mjs` (page). Extension pages use
+`chrome.runtime.sendMessage`; the worker ignores other senders and anything with `target: "offscreen"`. Bigints in
+results are strings like `"123n"`, the CLI's export format.
+
+**Calls**, answered directly: `{ type: "call", op, args }` -> `{ ok: true, result }` or `{ ok: false, error: string }`.
+
+| `op` | `args` | `result` |
+| --- | --- | --- |
+| `session` | none | `{ hasPassphrase, unlocked, bridge, bridgeOrigin, wallet, wallets, clock, config }` (`wallet`/`wallets`: the bridge's last messages) |
+| `setup` | `{ passphrase }` | `{ unlocked: true }`; first run only, else `a passphrase is already set` |
+| `unlock` | `{ passphrase }` | `{ unlocked: true }`, or `error: "wrong passphrase"` |
+| `lock` | none | `{ unlocked: false }` |
+| `config` | `{ rpcUrl, deployment, drand }` | `{ saved: true }`. `deployment`: a `deployments/*.local.json` object (needs `chainId`, `vault`, `settlement`; `admission.manifestSha256` selects `AdmittedSettlement`). `drand`: recorded rounds `{ public_key, chain_hash, rounds }` (local mode) or `null` for live quicknet |
+| `connect` | `{ uuid }` or `{ rdns }` | `{ requested: true }`; forwards bridge `connect` |
+
+**Jobs**, the flows: `{ type: "run", op, args }` -> `{ ok: true, result: { job } }` at once. The worker writes
+`job:<job>` to `chrome.storage.session` as `{ op, state: "running" | "done" | "failed", log: string[], result?, error? }`
+(`log` grows while it runs, e.g. `sign admit in your wallet`); the page removes the record once it has read it. Jobs need
+a wallet account from the bridge; `commit`, `resume`, `cleanup`, `blockers`, `export` and `import` also need `unlock`.
+
+| `op` | `args` | `result` |
+| --- | --- | --- |
+| `status` | none | balances per token, open commitments, batch, deadlines |
+| `track` | none | `[{ id, batchId, state, order, got? }]` (states as the CLI's `track`) |
+| `blockers` | none | `[{ id, batchId, state, action, wait?, at?, why }]` |
+| `preflight` | `{ side: "sell" \| "buy", amountIn, minOut }` (decimal token units) | `{ ok, problems, order, costs, funding, deadlines }`; sends nothing |
+| `commit` | same as `preflight` | preflight result plus `{ committed, round, tx }` or, with admission, `{ admitted, tx }` |
+| `resume` | none | `{ resumed }` or `{ admitted, tx }` (the CLI's `resume-admission`) |
+| `deposit` | `{ token: "token0" \| "token1", amount }` | `{ deposited }` |
+| `cleanup` | `{ dryRun }` | `{ steps, stillOpen }` |
+| `withdraw` | `{ token, amount }` (`"all"` allowed) | `{ withdrew }` |
+| `export` | none | the state JSON text (same format as the CLI's `export-state`) |
+| `import` | `{ text }` | `{ imported, saved }`; refused unless every entry hashes right and matches the chain |
+
+Mutating jobs (`deposit`, `commit`, `resume`, `cleanup`, `withdraw`, `import`) take a Web Lock per account and fail
+fast with `another operation is running for this account` if it is held.
+
+**Clock.** After each job, on `wallet` messages and on `chrome.alarms` (`tick`, set for the next deadline of an open
+commitment) the worker writes `clock: { now, open, due: [{ id, action }], next }` to `chrome.storage.session` and puts
+the number of due steps on the action badge.
+
+**Offscreen document.** Worker -> `offscreen.html`: `{ target: "offscreen", op: "encrypt", round, payload, drand }` ->
+`{ ok, result: ciphertextHex }`; `{ target: "offscreen", op: "check", ciphertext, round, payload, drand }` ->
+`{ ok, result: { round, decrypted } }` (one tlock stanza for quicknet and `round`; decrypted and compared to `payload`
+when the round's signature is available).
 
 ## Proposals

@@ -45,13 +45,17 @@ discover(window, (w) => bridge.add(w))
 function connectPort() {
   if (!globalThis.chrome?.runtime?.connect) return show('extension', 'Blindfold extension not found: install or enable it, then reload this page.')
   port = chrome.runtime.connect(EXTENSION_ID, { name: 'blindfold-bridge' })
+  let replaced = false
   port.onMessage.addListener((m) => {
+    if (m?.type === 'replaced') return void (replaced = true)
     if (m?.type === 'send') show('activity', `Confirm ${m.calls?.length ?? 0} transaction(s) in your wallet...`)
     bridge.onMessage(m)
   })
   port.onDisconnect.addListener(() => {
     void chrome.runtime.lastError
     port = null
+    // reconnecting here would take the port back from the newer tab, which would then take it back, forever
+    if (replaced) return show('extension', 'Blindfold is using a bridge page in another tab. Reload this page to use this one instead.')
     show('extension', 'Extension disconnected; reconnecting...')
     setTimeout(connectPort, 1000)
   })
