@@ -10,7 +10,7 @@ createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x')
   if (url.pathname === '/api/check') {
     let body, code = 200
-    try { body = await check(url.searchParams.get('q')) } catch (e) { code = 502; body = { error: e.message } }
+    try { body = await check(url.searchParams.get('q'), url.searchParams.get('network') ?? 'mainnet') } catch (e) { code = 502; body = { error: e.message } }
     res.writeHead(code, { 'content-type': 'application/json' })
     return res.end(JSON.stringify(body))
   }

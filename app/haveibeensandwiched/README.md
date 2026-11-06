@@ -17,8 +17,11 @@ ETHERSCAN_API_KEY=your-key   # https://etherscan.io/myapikey, free tier is enoug
 |---|---|---|
 | `ETHERSCAN_API_KEY` | none | Address lookups (last 40 sent txs via Etherscan V2), and pricing Uniswap v4 sandwiches |
 | `ETH_RPC` | `https://ethereum-rpc.publicnode.com` | All lookups. Must support `eth_getBlockReceipts` |
+| `UNICHAIN_SEPOLIA_RPC` | `https://sepolia.unichain.org` | Unichain Sepolia lookups; must support `eth_getBlockReceipts` |
 | `PORT` | `3100` | Server port |
 | `OFFLINE` | unset | `1` serves `fixtures.json` only, no network or keys |
+
+The network selector searches Ethereum mainnet (v3/v4) or Unichain Sepolia (v3 only). Testnet wallet lookups use Blockscout, and testnet profits are shown in raw token units.
 
 Tx-hash lookups need no key: they use `ETH_RPC` and DefiLlama prices (v4 sandwiches stay in raw units without a key). Without the key, address lookups return an error saying so.
 

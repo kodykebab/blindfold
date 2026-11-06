@@ -25,6 +25,12 @@ h1{font:300 clamp(48px,7.4vw,118px)/.95 var(--disp);letter-spacing:-.035em;max-w
 form.look{display:flex;max-width:620px;background:rgba(14,19,26,.85);border:1px solid var(--edge);backdrop-filter:blur(10px)}
 form.look input{flex:1;min-width:0;background:none;border:0;outline:none;color:var(--text);font:400 14px var(--mono);padding:18px}
 form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--disp);padding:0 26px;cursor:pointer}
+.network{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.network-options{display:inline-flex;border:1px solid var(--edge);background:rgba(14,19,26,.85)}
+.network-options label{cursor:pointer;font:400 11px var(--mono);color:var(--mute);padding:7px 11px}
+.network-options label:has(input:checked){background:var(--seal);color:#fff}
+.network-options input{position:absolute;opacity:0;pointer-events:none}
+.network-options label:has(input:focus-visible){outline:2px solid var(--seal);outline-offset:3px}
 .hint{margin-top:14px}
 .card{position:fixed;left:32px;bottom:40px;z-index:5;width:min(440px,calc(100vw - 36px));background:rgba(5,7,10,.88);border:1px solid var(--edge);padding:22px 24px;backdrop-filter:blur(8px);
   opacity:0;transform:translateY(12px);transition:opacity .4s,transform .4s;pointer-events:none}
@@ -73,6 +79,7 @@ form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--
     <div class="lbl" style="margin-bottom:16px">Every line is a swap · every square a slot in the block</div>
     <h1>Have you been sandwiched?</h1>
     <p>Paste a transaction or a wallet. We replay its Ethereum blocks and show what bots took from your swaps.</p>
+    <div class="network"><span class="lbl">NETWORK</span><div class="network-options" role="radiogroup" aria-label="Search network"><label><input type="radio" name="network" value="mainnet" checked>Mainnet</label><label><input type="radio" name="network" value="testnet">Testnet</label></div><span class="lbl" id="network-detail">Ethereum · v3 / v4</span></div>
     <form class="look" id="look"><input id="q" name="q" required aria-label="Transaction hash or wallet address" placeholder="0x… transaction hash or wallet" autocomplete="off" spellcheck="false"><button>Check</button></form>
     <div class="hint lbl">Try <button type="button" class="try" id="demo">0xcf36…4be5</button> · or scroll to see how a sandwich works, and how Blindfold stops it ↓</div>
     <section class="res" id="res" aria-live="polite" hidden></section>
@@ -346,7 +353,7 @@ const res = document.getElementById('res'), q = document.getElementById('q')
 const esc = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 const short = (h) => (h ? `${h.slice(0, 8)}…${h.slice(-4)}` : '—')
 const usd = (x) => (x == null ? 'unpriced' : `$${x.toFixed(2)}`)
-const scan = (kind, h) => `<a href="https://etherscan.io/${kind}/${esc(h)}" target="_blank" rel="noopener">${esc(short(h))}</a>`
+const scan = (kind, h, network) => `<a href="${network === 'testnet' ? 'https://sepolia.uniscan.xyz' : 'https://etherscan.io'}/${kind}/${esc(h)}" target="_blank" rel="noopener">${esc(short(h))}</a>`
 
 // Swap the panel's content without a jump: it fades in the first time, and afterwards its height eases from old to new.
 function show(html, done) {
@@ -384,14 +391,15 @@ function decrypt(el) {
 }
 function result(r) {
   if (r.error) return `<header><div class="lbl">Lookup failed</div><p>${esc(r.error)}</p></header>`
+  const testnet = r.network === 'testnet', protocols = testnet ? 'v3' : 'v3/v4'
   const rows = r.txs.flatMap((t) => t.sandwiches.length
-    ? t.sandwiches.map((s) => `<tr><td>${scan('tx', t.txHash)}</td><td>${s.block.toLocaleString('en-US')}</td><td>${scan('address', s.attacker)}</td>
+    ? t.sandwiches.map((s) => `<tr><td>${scan('tx', t.txHash, r.network)}</td><td>${s.block.toLocaleString('en-US')}</td><td>${scan('address', s.attacker, r.network)}</td>
         <td>${s.amount != null ? `${s.amount.toPrecision(4)} ${esc(s.symbol)} · ${usd(s.usd)}` : `${esc(s.profitRaw)} raw${s.v4 ? ' (v4)' : ''}`}</td>
-        <td class="${s.courtProvable ? 'yes' : 'no'}" title="${s.courtProvable ? 'Within the 8,191-block L1 anchor window' : s.strict === false ? "Court's predicate needs the bot to close its position within 1%. This bot kept some." : 'Older than 8,191 blocks'}">${s.courtProvable ? 'yes' : 'no'}</td></tr>`)
-    : [`<tr><td>${scan('tx', t.txHash)}</td><td>${t.block?.toLocaleString('en-US') ?? '—'}</td><td colspan="3" class="no">no Uniswap v3/v4 sandwich found by our checker</td></tr>`])
+        <td class="${s.courtProvable ? 'yes' : 'no'}" title="${testnet ? 'Court is available for Ethereum mainnet results' : s.courtProvable ? 'Within the 8,191-block L1 anchor window' : s.strict === false ? "Court's predicate needs the bot to close its position within 1%. This bot kept some." : 'Older than 8,191 blocks'}">${testnet ? '—' : s.courtProvable ? 'yes' : 'no'}</td></tr>`)
+    : [`<tr><td>${scan('tx', t.txHash, r.network)}</td><td>${t.block?.toLocaleString('en-US') ?? '—'}</td><td colspan="3" class="no">no Uniswap ${protocols} sandwich found by our checker</td></tr>`])
   const n = r.sandwichCount
-  const scope = r.scannedTxs != null ? `Checked ${r.swapTxs} Uniswap v3/v4 swaps in this wallet's last ${r.scannedTxs} sent transactions.` : ''
-  return `<header><div class="lbl">${r.kind === 'tx' ? 'Transaction' : 'Wallet'} ${esc(short(r.input))}${r.cached ? ' · cached' : ''}</div>
+  const scope = r.scannedTxs != null ? `Checked ${r.swapTxs} Uniswap ${protocols} swaps in this wallet's last ${r.scannedTxs} sent transactions.` : ''
+  return `<header><div class="lbl">${testnet ? 'Unichain Sepolia' : 'Ethereum mainnet'} · ${r.kind === 'tx' ? 'Transaction' : 'Wallet'} ${esc(short(r.input))}${r.cached ? ' · cached' : ''}</div>
       ${n && r.lostUsd > 0 ? `<strong class="lost">Lost at least <span>${usd(r.lostUsd)}</span></strong><div class="lbl">${n} sandwich${n > 1 ? 'es' : ''}${r.unpriced ? `, ${r.unpriced} unpriced` : ''}. That's the bots' gross profit, so your loss is at least this.</div>`
         : n ? `<strong class="lost">Sandwiched ${n}×</strong><div class="lbl">We couldn't price what the bot took, so the table shows it in raw token units.</div>`
         : `<strong class="clean">No sandwich found</strong><div class="lbl">${r.kind === 'tx' ? 'No front-run and back-run wrapped this swap in its block.' : 'None of the swaps we checked were sandwiched.'}</div>`}
@@ -400,16 +408,22 @@ function result(r) {
     <footer>${scope ? `<span class="lbl">${scope}</span>` : ''}${r.failed ? `<span class="lbl">${r.failed} lookups failed. Check again for a full result.</span>` : ''}${r.fixture ? '<span class="lbl">Saved result (OFFLINE=1).</span>' : ''}
       <button class="more" type="button" onclick="go(1)">${n ? 'See how this happened, and how Blindfold stops it ↓' : 'See how a sandwich works ↓'}</button></footer>`
 }
-const loading = () => '<div class="loading"><div class="lbl">Replaying blocks on Ethereum mainnet</div><div class="track"></div><div class="lbl">A wallet takes a few seconds the first time.</div></div>'
+const loading = (network) => `<div class="loading"><div class="lbl">Replaying blocks on ${network === 'testnet' ? 'Unichain Sepolia' : 'Ethereum mainnet'}</div><div class="track"></div><div class="lbl">A wallet takes a few seconds the first time.</div></div>`
 let asked = 0
 document.getElementById('look').onsubmit = async (e) => {
   e.preventDefault()
   const id = ++asked // only the latest lookup gets to draw
-  show(loading())
+  const network = document.querySelector('input[name=network]:checked').value
+  show(loading(network))
   let r
-  try { r = await (await fetch('/api/check?q=' + encodeURIComponent(q.value))).json() } catch (err) { r = { error: `Couldn't reach the lookup server (${err.message}).` } }
+  try { r = await (await fetch('/api/check?q=' + encodeURIComponent(q.value) + '&network=' + encodeURIComponent(network))).json() } catch (err) { r = { error: `Couldn't reach the lookup server (${err.message}).` } }
   if (id === asked) show(result(r), true)
 }
+document.querySelectorAll('input[name=network]').forEach((input) => input.addEventListener('change', () => {
+  ++asked; res.hidden = true
+  document.getElementById('network-detail').textContent = input.value === 'testnet' ? 'Unichain Sepolia · v3' : 'Ethereum · v3 / v4'
+  document.getElementById('demo').parentElement.hidden = input.value === 'testnet'
+}))
 document.getElementById('demo').onclick = () => { q.value = DEMO; document.getElementById('look').requestSubmit() }
 
 // ---- hero ambient: runs on its own clock only while the hero is on screen, in the empty right half

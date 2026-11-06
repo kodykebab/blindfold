@@ -1,8 +1,12 @@
 // Was this tx / address sandwiched on Ethereum mainnet, and what did it cost?
 // Tx hashes: our own detector (court-watcher), RPC only. Addresses: recent txs from Etherscan, then our detector per tx.
 import { readFileSync } from 'node:fs'
-import { rpc, ETH_RPC, getBlock, getReceipts, swapLogs, findSandwiches, HISTORY_WINDOW, V3_SWAP, V4_SWAP, V4_POOL_MANAGER } from '../../packages/court-watcher/lib.mjs'
+import { rpc, ETH_RPC, swapLogs, findSandwiches, HISTORY_WINDOW, V3_SWAP, V4_SWAP, V4_POOL_MANAGER } from '../../packages/court-watcher/lib.mjs'
 
+const NETWORKS = {
+  mainnet: { name: 'Ethereum mainnet', rpc: () => ETH_RPC },
+  testnet: { name: 'Unichain Sepolia', rpc: () => process.env.UNICHAIN_SEPOLIA_RPC || 'https://sepolia.unichain.org' },
+}
 const ETHERSCAN = 'https://api.etherscan.io/v2/api'
 const SCAN_TXS = 40 // recent txs per address whose receipts we fetch
 const LLAMA = 'https://coins.llama.fi/prices/historical'
@@ -13,11 +17,11 @@ const TTL = 5 * 60_000
 const cache = new Map() // shortcut: in-memory and unbounded; fine for a demo server, use an LRU if this goes public
 
 /** One JSON-RPC batch request, results in input order. Items the batch drops or fails get retried one by one. */
-export async function rpcBatch(method, paramsList) {
+export async function rpcBatch(method, paramsList, url = ETH_RPC) {
   const out = new Array(paramsList.length).fill(null)
   if (!paramsList.length) return out
   try {
-    const res = await fetch(ETH_RPC, {
+    const res = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify(paramsList.map((params, id) => ({ jsonrpc: '2.0', id, method, params }))),
     })
@@ -25,7 +29,7 @@ export async function rpcBatch(method, paramsList) {
     if (Array.isArray(arr)) for (const r of arr) if (r.result != null && Number.isInteger(r.id) && r.id < out.length) out[r.id] = r.result
   } catch {}
   const missing = out.flatMap((r, i) => (r === null ? [i] : []))
-  const again = await mapLimit(missing, LIMIT, (i) => rpc(ETH_RPC, method, paramsList[i]))
+  const again = await mapLimit(missing, LIMIT, (i) => rpc(url, method, paramsList[i]))
   missing.forEach((i, k) => { out[i] = again[k] })
   return out
 }
@@ -96,10 +100,10 @@ async function v4Currencies(poolId) {
   return key
 }
 
-async function token(sw) {
+async function token(sw, url) {
   if (sw.front.v4) return (await v4Currencies(sw.front.poolId))?.[sw.profitInToken0 ? 0 : 1] ?? null
   const sel = sw.profitInToken0 ? '0x0dfe1681' : '0xd21220a7' // token0() / token1()
-  const r = await rpc(ETH_RPC, 'eth_call', [{ to: sw.front.pool, data: sel }, 'latest'])
+  const r = await rpc(url, 'eth_call', [{ to: sw.front.pool, data: sel }, 'latest'])
   return '0x' + r.slice(26)
 }
 
@@ -114,23 +118,25 @@ async function price(addr, ts) {
   } catch { return null }
 }
 
-export async function checkTx(hash, rc) {
-  rc ??= await rpc(ETH_RPC, 'eth_getTransactionReceipt', [hash])
-  if (!rc) return { kind: 'tx', input: hash, error: 'tx not found on Ethereum mainnet' }
+export async function checkTx(hash, rc, network = 'mainnet') {
+  const config = NETWORKS[network], url = config.rpc()
+  rc ??= await rpc(url, 'eth_getTransactionReceipt', [hash])
+  if (!rc) return { kind: 'tx', input: hash, error: `tx not found on ${config.name}` }
   const n = BigInt(rc.blockNumber)
-  const [receipts, block, head] = await Promise.all([getReceipts(n), getBlock(n), rpc(ETH_RPC, 'eth_blockNumber')])
+  const blockNumber = '0x' + n.toString(16)
+  const [receipts, block, head] = await Promise.all([rpc(url, 'eth_getBlockReceipts', [blockNumber]), rpc(url, 'eth_getBlockByNumber', [blockNumber, false]), rpc(url, 'eth_blockNumber')])
   const ts = Number(block.timestamp)
   const txAt = (i) => receipts.find((r) => Number(r.transactionIndex) === i)?.transactionHash ?? null
-  const sandwiches = await Promise.all(matchVictim(swapLogs(receipts), Number(rc.transactionIndex)).map(async (sw) => {
-    const tok = await token(sw).catch(() => null)
-    const p = tok && await price(tok, ts)
+  const sandwiches = await Promise.all(matchVictim(swapLogs(receipts).filter((sw) => network === 'mainnet' || !sw.v4), Number(rc.transactionIndex)).map(async (sw) => {
+    const tok = await token(sw, url).catch(() => null)
+    const p = network === 'mainnet' && tok ? await price(tok, ts) : null
     const amount = p ? Number(sw.profit) / 10 ** p.decimals : null
     return {
       block: Number(n), time: ts, v4: sw.front.v4, pool: sw.front.pool, poolId: sw.front.poolId,
       attacker: sw.front.from, frontTx: txAt(sw.front.txIndex), backTx: txAt(sw.back.txIndex),
       profitRaw: sw.profit.toString(), token: tok, symbol: p?.symbol ?? null, amount, usd: amount !== null ? amount * p.price : null,
       strict: sw.strict, // false: the bot kept inventory, which Court's predicate doesn't accept
-      courtProvable: sw.strict && BigInt(head) - n <= HISTORY_WINDOW, // Court's predicate, within the L1 anchor window (AGENTS.md gotcha 7)
+      courtProvable: network === 'mainnet' && sw.strict && BigInt(head) - n <= HISTORY_WINDOW, // Court's predicate, within the L1 anchor window (AGENTS.md gotcha 7)
     }
   }))
   return summarize({ kind: 'tx', input: hash, txs: [{ txHash: hash, block: Number(n), sandwiches }] })
@@ -146,10 +152,12 @@ function summarize(r) {
 
 /** Successful txs the address sent itself: the only ones where it can be the sandwich victim. */
 export const ownTxs = (list, addr) => list.filter((t) => t.from?.toLowerCase() === addr && t.isError === '0' && t.txreceipt_status !== '0')
-export const hasSwap = (rc) => rc.logs.some((l) => l.topics[0] === V3_SWAP || l.topics[0] === V4_SWAP)
+export const hasSwap = (rc, network = 'mainnet') => rc.logs.some((l) => l.topics[0] === V3_SWAP || (network === 'mainnet' && l.topics[0] === V4_SWAP))
 
-async function etherscanTxs(addr) {
-  const u = `${ETHERSCAN}?chainid=1&module=account&action=txlist&address=${addr}&sort=desc&page=1&offset=100&apikey=${process.env.ETHERSCAN_API_KEY}`
+async function etherscanTxs(addr, network) {
+  const u = network === 'mainnet'
+    ? `${ETHERSCAN}?chainid=1&module=account&action=txlist&address=${addr}&sort=desc&page=1&offset=100&apikey=${process.env.ETHERSCAN_API_KEY}`
+    : `https://unichain-sepolia.blockscout.com/api?module=account&action=txlist&address=${addr}&sort=desc&page=1&offset=100`
   let j
   for (let t = 0; ; t++) {
     try { j = await (await fetch(u)).json(); break } catch (e) { if (t >= 2) throw e; await new Promise((r) => setTimeout(r, 500 * 2 ** t)) }
@@ -160,24 +168,25 @@ async function etherscanTxs(addr) {
 }
 
 // shortcut: only the last SCAN_TXS sent txs and MAX_ENRICH swaps, Uniswap v3/v4 only; page through Etherscan for full history
-export async function checkAddress(addr) {
-  if (!process.env.ETHERSCAN_API_KEY) return { kind: 'address', input: addr, error: 'address lookup needs ETHERSCAN_API_KEY (or OFFLINE=1 for fixtures)' }
-  const txs = ownTxs(await etherscanTxs(addr), addr).slice(0, SCAN_TXS)
-  const rcs = await rpcBatch('eth_getTransactionReceipt', txs.map((t) => [t.hash]))
-  const swaps = rcs.filter((rc) => rc && hasSwap(rc)).slice(0, MAX_ENRICH)
-  const checked = await mapLimit(swaps, LIMIT, (rc) => checkTx(rc.transactionHash, rc))
+export async function checkAddress(addr, network = 'mainnet') {
+  if (network === 'mainnet' && !process.env.ETHERSCAN_API_KEY) return { kind: 'address', input: addr, error: 'address lookup needs ETHERSCAN_API_KEY (or OFFLINE=1 for fixtures)' }
+  const txs = ownTxs(await etherscanTxs(addr, network), addr).slice(0, SCAN_TXS)
+  const rcs = await rpcBatch('eth_getTransactionReceipt', txs.map((t) => [t.hash]), NETWORKS[network].rpc())
+  const swaps = rcs.filter((rc) => rc && hasSwap(rc, network)).slice(0, MAX_ENRICH)
+  const checked = await mapLimit(swaps, LIMIT, (rc) => checkTx(rc.transactionHash, rc, network))
   const hit = checked.flatMap((c) => c?.txs ?? []).filter((t) => t.sandwiches.length)
   const failed = rcs.filter((rc) => !rc).length + checked.filter((c) => !c).length
-  return { ...summarize({ kind: 'address', input: addr, txs: hit }), source: 'etherscan', scannedTxs: txs.length, swapTxs: swaps.length, failed }
+  return { ...summarize({ kind: 'address', input: addr, txs: hit }), source: network === 'mainnet' ? 'etherscan' : 'blockscout', scannedTxs: txs.length, swapTxs: swaps.length, failed }
 }
 
-export async function check(q) {
+export async function check(q, network = 'mainnet') {
+  if (!Object.hasOwn(NETWORKS, network)) return { error: 'unknown network' }
   const { kind, value } = classify(q)
   if (kind === 'invalid') return { kind, input: value, error: 'enter a 0x tx hash (66 chars) or address (42 chars)' }
-  if (process.env.OFFLINE === '1') return FIXTURES[value] ? { ...FIXTURES[value], fixture: true } : { kind, input: value, error: 'OFFLINE=1 and no fixture for this input' }
-  const hit = cache.get(value)
+  if (process.env.OFFLINE === '1') return network === 'mainnet' && FIXTURES[value] ? { ...FIXTURES[value], network, fixture: true } : { kind, input: value, error: 'OFFLINE=1 and no fixture for this input' }
+  const hit = cache.get(`${network}:${value}`)
   if (hit && Date.now() - hit.at < TTL) return { ...hit.r, cached: true }
-  const r = await (kind === 'tx' ? checkTx(value) : checkAddress(value))
-  if (!r.error && !r.failed) cache.set(value, { at: Date.now(), r })
-  return r
+  const r = await (kind === 'tx' ? checkTx(value, undefined, network) : checkAddress(value, network))
+  if (!r.error && !r.failed) cache.set(`${network}:${value}`, { at: Date.now(), r: { ...r, network } })
+  return { ...r, network }
 }
