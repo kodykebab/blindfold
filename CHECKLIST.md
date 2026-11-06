@@ -1,7 +1,7 @@
 # Release checklist
 
 Status: `[x]` done · `[~]` partly done · `[ ]` open. Owner: **Claude** (this branch stack), **Cursor** (sections 3 and 8, see `CURSOR_PROMPT.md`), **Antigravity** (section 5 on branch `bhoumik/orders-ui`, see `ANTIGRAVITY_PROMPT.md`), **Team** (needs a decision or another lane).
-Updated after every 3 completed tasks. Last update: 2026-11-07, 64 done, 13 partly done, 16 open of 93.
+Updated after every 3 completed tasks. Last update: 2026-11-07, 68 done, 9 partly done, 16 open of 93.
 
 ## 1. Local setup and operation (Claude)
 - [x] Repeatable clean-clone setup: install, build, deploy. A fresh clone of #82 passed `check.sh` (after committing the prover-helper lockfile it caught) and every `e2e.sh` tier.
@@ -20,7 +20,7 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 64 done, 13 part
 - [x] Account changes, disconnects and reconnects. `accountsChanged`/`chainChanged` forwarded (e2e I2); `WRONG_ACCOUNT` blocks sending from another account.
 - [x] Rejected signatures and transactions. 4001 stops the sequence and reports what was already sent (`wallet.test.mjs`).
 - [x] Insufficient funds and gas. The bridge checks ETH for the first call before signing and names `INSUFFICIENT_FUNDS` (`wallet.test.mjs`). The page side is Cursor's.
-- [~] Cross-account, cross-network and deployment recovery. The CLI refuses a mismatched chain, vault or pair before signing.
+- [x] Cross-account, cross-network and deployment recovery. CLI refuses a mismatched chain, vault or pair before signing (`CLIENT_E2E`); state is keyed by chain, settlement and owner; foreign backups are refused (`PROVER_E2E`, `prover-view.test.mjs`); a changed identity disables submit on the page.
 - [x] Review the webpage/local-service/wallet/prover trust boundary. `TRUST-BOUNDARIES.md`; it fixed page framing (`server.test.mjs`) and lists the open items.
 
 ## 3. Trading interface (Cursor)
@@ -93,16 +93,16 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 64 done, 13 part
 - [x] An optional-indexer outage doesn't block recovery. `history.test.mjs`: "history stays unavailable when Arkiv is down, without throwing". `mirror.test.mjs`: "a throwing Arkiv does not fail the settlement".
 - [x] Batch, mempool and Court-ledger views. `status.test.mjs`: "batch phase and mempool use only public schedule and counts". `court-view` test: "court ledger skips the registry events it does not show instead of going unavailable".
 - [x] Arkiv schema, setup, query and integration docs. `arkiv/schema.md`. Fields locked by `arkiv.test.mjs`: "query rows unwrap Arkiv values and sort oldest first before the recent-batches reverse".
-- [~] Court coverage → claim → collection demonstration. `scripts/court-demo.sh` prints each step's transactions. Not a `node --test`.
+- [x] Court coverage → claim → collection demonstration. `DEMO_E2E`: "Court demo: a sandwiched victim claims from the RPC bond and is paid" (it also fixed the script's broken transaction printer).
 - [~] Aqua token movement, if still in scope. Out of this demo. See DEMO.md.
-- [~] Multi-user demo, written and rehearsed. `scripts/demo-multi.sh` and DEMO.md. Not a `node --test`.
+- [x] Multi-user demo, written and rehearsed. `DEMO_E2E`: "multi-user demo: three accounts commit, the keeper reveals, the solver settles, all withdraw"; rehearsal record in DEMO.md.
 - [~] Decide on optional Swarm support. Out of this release. See DEMO.md.
 
 ## 9. Testing and release (Claude)
 - [x] Final web → fresh proof → v4 → keeper → solver → withdrawal test. `STACK_E2E=1 STACK_REAL_PROOF=1` passed in `e2e.sh --real-proof`.
 - [ ] Partial fills, unfilled orders, cleanup and outages in that acceptance run.
 - [x] Full browser acceptance against real local contracts. `ORDERS_E2E` 3/3, `PROVER_E2E` 3/3, `WEB_E2E`.
-- [~] Reload, rejected-signature, stale-quote and insufficient-gas/funds browser tests. Reload in `PROVER_E2E`; the others are unit-tested only.
+- [x] Reload, rejected-signature, stale-quote and insufficient-gas/funds browser tests. Reload in `PROVER_E2E`; fund-first, changed balance and stale quote in `REVIEW_E2E`. The page never signs (the CLI does), so rejected signatures and wallet gas are tested in the extension's bridge (`wallet.test.mjs`).
 - [~] Keyboard, mobile and supported-browser testing. `A11Y_E2E`: Tab reaches every control with visible focus; nothing scrolls at 375 px; every field labelled. Chromium only.
 - [x] Isolated offline `scripts/check.sh` tier.
 - [x] Local `scripts/e2e.sh` tier using actual services.
