@@ -15,6 +15,7 @@ Blindfold is an MEV-protected way to trade on Uniswap v4. Orders are sealed unti
 | Run the tests | [Testing](testing.md) |
 | Know what each component may see and do | [Security](security.md) |
 | Look up a term (batch, reveal, admission, …) | [Glossary](glossary.md) |
+| Record the 4-minute demo video | [Demo video shot list](demo-video.md) |
 
 ## Deeper material
 
