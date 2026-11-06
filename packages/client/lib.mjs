@@ -126,7 +126,7 @@ export function connect() {
   const acct = account()
   const pub = createPublicClient({ chain, transport, pollingInterval: 100 })
   const wallet = createWalletClient({ account: acct, chain, transport })
-  const abi = { settlement: loadAbi('BlindfoldSettlement'), vault: loadAbi('BlindfoldVault'), erc20: loadAbi('MockERC20') }
+  const abi = { settlement: loadAbi(dep.admission?.manifestSha256 ? 'AdmittedSettlement' : 'BlindfoldSettlement'), vault: loadAbi('BlindfoldVault'), erc20: loadAbi('MockERC20') }
   const read = (address, functionName, args = [], which = address === dep.vault ? abi.vault : abi.settlement) =>
     pub.readContract({ address, abi: which, functionName, args })
   return { dep, pub, wallet, account: acct, abi, read }
