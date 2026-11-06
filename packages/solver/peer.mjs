@@ -1,4 +1,4 @@
-import { Q96, allocationsAt, sameLimit } from './price.mjs'
+import { Q96, allocationsAt, sameLimit, limitGroups } from './price.mjs'
 
 /** Pre-bonus token budgets. Conservation must hold separately for each token. */
 export function peerTotals(orders, price, marginal) {
@@ -23,7 +23,7 @@ export function peerTotals(orders, price, marginal) {
 export async function solvePeer({ orders, priceX96, simulate }) {
   if (priceX96 <= 0n) throw new Error('invalid peer reference price')
   const groups = []
-  for (const o of [...orders].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
+  for (const o of limitGroups(orders)) {
     const out = o.zeroForOne ? o.amountIn * priceX96 / Q96 : o.amountIn * Q96 / priceX96
     if (out === 0n || out < o.minAmountOut || groups.some((g) => sameLimit(g, o))) continue
     groups.push(o)
