@@ -29,6 +29,7 @@ echo 'Local tier (admission off): real client, web service, keeper, solver and v
 WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs
 STACK_E2E=1 node --test packages/solver/test/local-stack.e2e.test.mjs
 CLIENT_E2E=1 node --test packages/client/test/e2e.test.mjs
+DEADLINE_E2E=1 node --test packages/client/test/deadline.e2e.test.mjs
 KEEPER_E2E=1 node --test packages/keeper/test/e2e.test.mjs
 OUTAGE_E2E=1 SETTLEMENT_ARTIFACT="$(node -e "import('./packages/solver/artifacts.mjs').then((m) => console.log(m.artifactPath(process.env.CONTRACTS_OUT, 'BlindfoldSettlement')))")" node --test scripts/outage.e2e.test.mjs
 SOLVER_E2E=1 node --test packages/solver/test/integration.test.mjs

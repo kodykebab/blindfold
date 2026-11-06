@@ -158,7 +158,9 @@ async function commit(side, amountIn, minOut, dryRun, vaultOnly = false, bothFun
   const [commitsClose, commits] = await Promise.all([read(S, 'commitsClose', [current]), read(S, 'commitIdsOf', [current])])
   const per = async (f) => Object.fromEntries(await Promise.all(Object.keys(t.byAddress).map(async (a) => [a, await f(a)])))
   const enforced = await admissionRequired()
-  let funding, minLead = 3n
+  const leadText = process.env.CLIENT_MIN_LEAD_SECONDS || '3'
+  if (!/^\d+$/.test(leadText)) fail('CLIENT_MIN_LEAD_SECONDS must be a whole number of seconds')
+  let funding, minLead = BigInt(leadText)
   if (enforced) {
     await checkAdmissionNetwork()
     if (!dep.admission?.manifestSha256) fail('this deployment requires admission; its deployment file must include the parameter manifest')
@@ -214,7 +216,7 @@ async function commit(side, amountIn, minOut, dryRun, vaultOnly = false, bothFun
     console.log(`local proving completed in ${result.timings.elapsedSeconds.toFixed(2)}s`)
     await checkAdmissionNetwork()
     const latest = (await pub.getBlock()).timestamp
-    if (latest >= commitsClose) fail('proof completed after this batch closed; nothing submitted, start a new order in the current batch')
+    if (latest + 1n >= commitsClose) fail('proof completed after this batch closed; nothing submitted, start a new order in the current batch')
     reconcileFunding(dep, me, funding, await fundingOnchain(), latest)
     const state = loadState(dep, me)
     state.commitments.push({ id: null, batchId: current, round, hash, order, salt })

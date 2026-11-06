@@ -28,9 +28,13 @@ export function preflight({ order, tokenIn, depositToken, depositAmount, fee, fr
     return { token, need: amount, free: free[token], shortfall, approve }
   })
   if (order.amountIn > 0n && order.minAmountOut === 0n) problems.push('minAmountOut is 0: the order has no price protection')
+  // Each funding transaction mines a block first, so the commit lands at now + txs + 1 or later, and the contract takes
+  // it only before commitsClose (BatchAuction.currentBatch). The configured lead is a margin on top of that floor.
+  const txs = BigInt(funding.reduce((n, f) => n + (f.shortfall ? 1 : 0) + (f.approve ? 1 : 0), 0))
+  const lead = minLead > txs + 2n ? minLead : txs + 2n
   if (batch.id !== batch.current) problems.push(`batch ${batch.id} is not open (current ${batch.current})`)
   else if (batch.commits >= batch.maxCommits) problems.push(`batch ${batch.id} is full (${batch.maxCommits} commitments)`)
-  else if (batch.commitsClose - batch.now < minLead) problems.push(`batch ${batch.id} closes in ${batch.commitsClose - batch.now}s; wait for the next one`)
+  else if (batch.commitsClose - batch.now < lead) problems.push(`batch ${batch.id} closes in ${batch.commitsClose - batch.now}s; wait for the next one`)
   return { ok: problems.length === 0, problems, funding }
 }
 
@@ -88,17 +92,21 @@ export const isOpen = (c) => c.state === 'committed' || c.state === 'revealed'
  * saved: Set of commitment hashes whose order and salt the client still has; now: latest block timestamp.
  * action: 'reveal' (own saved order), 'slash' (unrevealed after the window), 'expire' (unsettled after the deadline)
  * or 'wait' until `at`.
+ * Each step is simulated at `now` and lands in a later block, so it is offered only when the contract accepts it at
+ * both now and now + 1 (BatchAuction.reveal: opens <= t < closes; slashUnrevealed: t >= closes; expire: t >= settleCloses).
+ * In the last second of the reveal window a reveal would land after it, so the plan waits for the slash or release.
  */
 export function exitPlan(open, { now, sched, saved, admissionRequired = false }) {
   return open.map((c) => {
     const s = sched.get(c.batchId)
     if (c.state === 'committed') {
       if (now < s.revealOpens) return { c, action: 'wait', at: s.revealOpens, why: 'sealed until its drand round' }
-      if (now < s.revealCloses) {
+      if (now + 1n < s.revealCloses) {
         return saved.has(c.hash)
           ? { c, action: 'reveal', why: 'own saved order: revealing it yourself keeps the bounty' }
           : { c, action: 'wait', at: s.revealCloses, why: admissionRequired ? 'order and salt not saved here: a keeper can reveal it; otherwise the deposit can be released after the window' : 'order and salt not saved here: a keeper must reveal it, or it can be slashed' }
       }
+      if (now < s.revealCloses) return { c, action: 'wait', at: s.revealCloses, why: `reveal window closes in 1s, too soon for a reveal to land; it can be ${admissionRequired ? 'released' : 'slashed'} after` }
       if (admissionRequired) return { c, action: 'release', why: 'never revealed: release returns the deposit, retains the fee and closes the commitment' }
       return { c, action: 'slash', why: 'never revealed: slashing forfeits its deposit and releases the account' }
     }

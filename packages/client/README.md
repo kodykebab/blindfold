@@ -35,6 +35,19 @@ The client saves each order and salt (`.state/`, or `CLIENT_STATE`) **before** i
 | `PRIVATE_KEY` | — | Use this key instead of an anvil account |
 | `DRAND` | quicknet over HTTP | Path to recorded rounds (`test/fixtures/drand.json` format) for offline runs |
 | `CLIENT_STATE` | `packages/client/.state` | Where orders and salts are kept |
+| `CLIENT_MIN_LEAD_SECONDS` | `3` | Admission off: seconds a commit needs before commits close. Never below 2 plus one per funding transaction, because the commit lands in a later block |
+
+## Deadlines
+The client uses the contract's comparisons (`BatchAuction.sol`, `BlindfoldSettlement.expire`) and judges each action at the time its transaction can land, one block after the chain time it reads:
+
+| Action | Contract accepts at block time `t` | Client offers it when chain time is `now` |
+|---|---|---|
+| commit | `t < commitsClose` | `commitsClose − now ≥ max(lead, 2 + funding txs)` |
+| reveal | `revealOpens ≤ t < revealCloses` | `revealOpens ≤ now` and `now + 1 < revealCloses` |
+| slash / release | `t ≥ revealCloses` | `now ≥ revealCloses` |
+| expire | `t ≥ settleCloses` | `now ≥ settleCloses` |
+
+In the last second of a reveal window `blockers` says to wait for the slash or release instead of offering a reveal that would land too late.
 
 ## Local end-to-end test
 Starts its own anvil, deploys the vault and settlement from `contracts/out`, and drives the real CLI.
