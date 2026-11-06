@@ -10,19 +10,17 @@ source env.sh                                  # Node 22 on PATH
 
 Address lookups need an API key. Put it in the repo-root `.env` (gitignored, never commit it). `npm start` loads that file:
 ```bash
-ETHERSCAN_API_KEY=your-key   # https://etherscan.io/myapikey, free tier is enough (one call per lookup)
-# DUNE_API_KEY=your-key      # optional fallback, used only when ETHERSCAN_API_KEY is unset
+ETHERSCAN_API_KEY=your-key   # https://etherscan.io/myapikey, free tier is enough
 ```
 
 | Var | Default | Needed for |
 |---|---|---|
-| `ETHERSCAN_API_KEY` | none | Address lookups (last 40 sent txs via Etherscan V2) |
-| `DUNE_API_KEY` | none | Address lookups through Dune's `dex.sandwiched`, if there's no Etherscan key |
+| `ETHERSCAN_API_KEY` | none | Address lookups (last 40 sent txs via Etherscan V2), and pricing Uniswap v4 sandwiches |
 | `ETH_RPC` | `https://ethereum-rpc.publicnode.com` | All lookups. Must support `eth_getBlockReceipts` |
 | `PORT` | `3100` | Server port |
 | `OFFLINE` | unset | `1` serves `fixtures.json` only, no network or keys |
 
-Tx-hash lookups need no key: they use `ETH_RPC` and DefiLlama prices. With neither key set, address lookups return an error saying so.
+Tx-hash lookups need no key: they use `ETH_RPC` and DefiLlama prices (v4 sandwiches stay in raw units without a key). Without the key, address lookups return an error saying so.
 
 ## Run
 ```bash

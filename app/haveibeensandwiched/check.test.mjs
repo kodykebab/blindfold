@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classify, matchVictim, duneSql, check, FIXTURES } from './check.mjs'
+import { classify, matchVictim, check, checkAddress, FIXTURES } from './check.mjs'
 
 const POOL = '0x' + '11'.repeat(20), ID = '0x' + '00'.repeat(32)
 // v3 pool-side amounts: a0 > 0 means token0 paid in (zeroForOne)
@@ -73,9 +73,11 @@ test('matchVictim marks the strict sandwiches Court can prove', () => {
   assert.equal(matchVictim(block, 2)[0].strict, true)
 })
 
-test('duneSql only takes a validated address', () => {
-  assert.match(duneSql('0x' + 'ab'.repeat(20)), /tx_from = 0xabab/)
-  assert.throws(() => duneSql("0x00' or 1=1 --"))
+test('address lookup without an Etherscan key says what it needs', async () => {
+  const key = process.env.ETHERSCAN_API_KEY
+  delete process.env.ETHERSCAN_API_KEY
+  assert.match((await checkAddress('0x' + 'ab'.repeat(20))).error, /needs ETHERSCAN_API_KEY/)
+  if (key !== undefined) process.env.ETHERSCAN_API_KEY = key
 })
 
 test('OFFLINE serves fixtures and reports misses', async () => {

@@ -1,9 +1,8 @@
 // Was this tx / address sandwiched on Ethereum mainnet, and what did it cost?
-// Tx hashes: our own detector (court-watcher), RPC only. Addresses: recent txs from Etherscan (or Dune's dex.sandwiched), then our detector per tx.
+// Tx hashes: our own detector (court-watcher), RPC only. Addresses: recent txs from Etherscan, then our detector per tx.
 import { readFileSync } from 'node:fs'
 import { rpc, ETH_RPC, getBlock, getReceipts, swapLogs, findSandwiches, HISTORY_WINDOW, V3_SWAP, V4_SWAP, V4_POOL_MANAGER } from '../../packages/court-watcher/lib.mjs'
 
-const DUNE = 'https://api.dune.com/api/v1'
 const ETHERSCAN = 'https://api.etherscan.io/v2/api'
 const SCAN_TXS = 40 // recent txs per address whose receipts we fetch
 const LLAMA = 'https://coins.llama.fi/prices/historical'
@@ -145,31 +144,6 @@ function summarize(r) {
   return r
 }
 
-async function dune(path, init = {}) {
-  const res = await fetch(DUNE + path, { ...init, headers: { 'content-type': 'application/json', 'x-dune-api-key': process.env.DUNE_API_KEY } })
-  const j = await res.json()
-  if (!res.ok || j.error) throw new Error(`dune ${path}: ${JSON.stringify(j.error ?? j)}`)
-  return j
-}
-
-export function duneSql(addr) {
-  if (classify(addr).kind !== 'address') throw new Error('bad address') // interpolated into SQL: validate here, not only at the caller
-  return `select tx_hash, block_number, block_time, project, version, token_pair, amount_usd
-from dex.sandwiched where blockchain = 'ethereum' and tx_from = ${addr}
-order by block_time desc limit 50`
-}
-
-async function duneRows(addr) {
-  const { execution_id: id } = await dune('/sql/execute', { method: 'POST', body: JSON.stringify({ sql: duneSql(addr) }) })
-  for (let t = 0; t < 60; t++) {
-    const s = await dune(`/execution/${id}/status`)
-    if (s.state === 'QUERY_STATE_COMPLETED') return (await dune(`/execution/${id}/results`)).result.rows
-    if (s.is_execution_finished) throw new Error(`dune query ${s.state}`)
-    await new Promise((r) => setTimeout(r, 2000))
-  }
-  throw new Error('dune query timed out')
-}
-
 /** Successful txs the address sent itself: the only ones where it can be the sandwich victim. */
 export const ownTxs = (list, addr) => list.filter((t) => t.from?.toLowerCase() === addr && t.isError === '0' && t.txreceipt_status !== '0')
 export const hasSwap = (rc) => rc.logs.some((l) => l.topics[0] === V3_SWAP || l.topics[0] === V4_SWAP)
@@ -185,8 +159,9 @@ async function etherscanTxs(addr) {
   throw new Error(`etherscan: ${j.result}`)
 }
 
-// shortcut: only the last SCAN_TXS sent txs and MAX_ENRICH swaps, Uniswap v3/v4 only; use Dune for full history
-async function checkAddressEtherscan(addr) {
+// shortcut: only the last SCAN_TXS sent txs and MAX_ENRICH swaps, Uniswap v3/v4 only; page through Etherscan for full history
+export async function checkAddress(addr) {
+  if (!process.env.ETHERSCAN_API_KEY) return { kind: 'address', input: addr, error: 'address lookup needs ETHERSCAN_API_KEY (or OFFLINE=1 for fixtures)' }
   const txs = ownTxs(await etherscanTxs(addr), addr).slice(0, SCAN_TXS)
   const rcs = await rpcBatch('eth_getTransactionReceipt', txs.map((t) => [t.hash]))
   const swaps = rcs.filter((rc) => rc && hasSwap(rc)).slice(0, MAX_ENRICH)
@@ -194,19 +169,6 @@ async function checkAddressEtherscan(addr) {
   const hit = checked.flatMap((c) => c?.txs ?? []).filter((t) => t.sandwiches.length)
   const failed = rcs.filter((rc) => !rc).length + checked.filter((c) => !c).length
   return { ...summarize({ kind: 'address', input: addr, txs: hit }), source: 'etherscan', scannedTxs: txs.length, swapTxs: swaps.length, failed }
-}
-
-export async function checkAddress(addr) {
-  if (process.env.ETHERSCAN_API_KEY) return checkAddressEtherscan(addr)
-  if (!process.env.DUNE_API_KEY) return { kind: 'address', input: addr, error: 'address lookup needs ETHERSCAN_API_KEY or DUNE_API_KEY (or OFFLINE=1 for fixtures)' }
-  const rows = [...new Map((await duneRows(addr)).map((r) => [r.tx_hash, r])).values()] // one row per swap; keep one per tx
-  const txs = await Promise.all(rows.map(async (r, i) => {
-    const base = { txHash: r.tx_hash, block: r.block_number, project: r.project, version: r.version, pair: r.token_pair, tradeUsd: r.amount_usd }
-    if (i >= MAX_ENRICH) return { ...base, sandwiches: [] }
-    const c = await checkTx(r.tx_hash).catch(() => null)
-    return { ...base, sandwiches: c?.txs?.[0]?.sandwiches ?? [] }
-  }))
-  return { ...summarize({ kind: 'address', input: addr, txs }), duneHits: rows.length }
 }
 
 export async function check(q) {

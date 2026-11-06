@@ -1,4 +1,4 @@
-// haveibeensandwiched MVP. Env: PORT (3100), ETH_RPC, ETHERSCAN_API_KEY or DUNE_API_KEY (address lookups; npm start loads ../../.env), OFFLINE=1 (serve fixtures.json only).
+// haveibeensandwiched MVP. Env: PORT (3100), ETH_RPC, ETHERSCAN_API_KEY (address lookups and v4 pricing; npm start loads ../../.env), OFFLINE=1 (serve fixtures.json only).
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { check } from './check.mjs'
