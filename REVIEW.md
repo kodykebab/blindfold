@@ -1,6 +1,6 @@
 # REVIEW.md
 
-Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each item has an ID (R1–R9), a status, where it lives in the code, the fix, and an owner. The fixes are scheduled in [PLAN.md](PLAN.md). Design reference: [ARCHITECTURE.MD](ARCHITECTURE.MD).
+Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each item has an ID (R1–R11), a status, where it lives in the code, the fix, and an owner. The fixes are scheduled in [PLAN.md](PLAN.md). Design reference: [ARCHITECTURE.MD](ARCHITECTURE.MD).
 
 **Proven** means a Foundry test reproduces it against the current contracts (code in the [appendix](#appendix-reproduction-tests)). **From code** means it follows from reading the code and has no test yet.
 
@@ -15,6 +15,8 @@ Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each
 | R7 | Remaining trust in the sequencer and timestamps; the safety margin is 4–6 s, not ≥6 s | Medium | From code | Kritarth |
 | R8 | Court bonds can be drained by sandwiching yourself | High | From code | Bhoumik |
 | R9 | Real sandwichers can easily slip past the Court predicate | Medium | From code | Bhoumik |
+| R10 | A commit into the next batch can unfund the account's own open order | Medium | Proven | Unassigned |
+| R11 | One order larger than the pool's depth makes every price revert | Medium | Proven | Unassigned |
 
 ---
 
@@ -179,10 +181,46 @@ As written, Court catches only naive bots. Loosening the predicate invites false
 - **Track near-misses publicly:** the watcher records near-misses (different signers in the same block around a receipted transaction, partial closes) as public, non-paying `court.suspect` entries on Arkiv. That shows recall without opening the bond to false claims.
 - **Document the trade-off:** write it in ARCHITECTURE.MD §10.
 
+## R10. A commit into the next batch can unfund the account's own open order
+**Where:** `BatchAuction.commit` takes the deposit from free balance ([`:158`](contracts/src/BatchAuction.sol#L158)) without looking at the account's open orders; funding is checked only at reveal ([`:183`](contracts/src/BatchAuction.sol#L183)).
+
+**Problem:** between `commitsClose(b)` and `revealOpens(b)` (4–6 s, R7), batch b+1 accepts commits while batch b's orders are still unrevealed. Any commit into b+1, padding included, takes another deposit in the deposit token. If an order in b pays in the deposit token and the account's free balance is close to its `amountIn`, that order closes unfunded at reveal: it never trades, and `depositAmount − bounty` goes to the treasury.
+- **Honest users:** a client that commits every batch loses orders and deposits with no warning.
+- **Strategic users:** it's a fourth way to cancel after commits close (R2), limited to orders paid in the deposit token and to the 4–6 s gap.
+
+**Proof:**
+- **Setup:** Alice has 1,000 token1 and commits a buy of 995 token1, which leaves 995 free after the deposit.
+- **The trigger:** at `commitsClose(b)` she commits a padding order into b+1, leaving 990 free.
+- **Result:** the keeper's reveal closes her order as unfunded, and the treasury receives 4 token1.
+
+**Fix:**
+- **With admission proofs:** the one-active-batch rule (ARCHITECTURE.MD §5, `ReservationModel.t.sol`) prevents it, at R6's throughput cost. S11's client check alone is not enough, because the contract still accepts the commit.
+- **Until then:** `commit` reverts while the sender has open commitments from an earlier batch. That needs a per-account active batch in `BatchAuction`, like the reservation model's `activeBatch`.
+- **Acceptance:** the R10 test's second commit reverts.
+
+## R11. One order larger than the pool's depth makes every price revert
+**Where:** `quote` fills any order whose limit holds ([`BlindfoldSettlement.sol:132`](contracts/src/BlindfoldSettlement.sol#L132)); the residual swap must use its whole input ([`:250`](contracts/src/BlindfoldSettlement.sol#L250)).
+
+**Problem:** a sell with `minAmountOut = 1` fills at every plausible price. If it is larger than what the pool can absorb before the swap reaches its price limit, the residual swap fills only partly and every `settle` reverts with `PartialResidual`. As with R1, the capital is only locked: it comes back at `expire`, and a self-reveal returns the deposit.
+- **R1's fix doesn't cover it:** the order's limit is nowhere near `p`, so it can't be the marginal order.
+- **Precondition:** no liquidity reaches the swap's price limit. A full-range position removes the depth limit, but then the batch clears at a crashed price instead.
+
+**Proof:**
+- **Setup:** the `BlindfoldTest` pool, whose one position needs about 191k token0 to reach its lower tick.
+- **The batch:** Mallory sells 250k token0 with `minAmountOut = 1`, and Bob buys with 10 token1.
+- **Result:** all 838 prices tried, from 2^-20 to 2^20 times the pool price, revert.
+- **Cost:** after `expire`, Mallory holds exactly her 250k token0 and her deposit.
+
+**Fix:**
+- **Partial fills sized to depth:** add this case to S1's executable model, so the allocation fills only what the pool can absorb.
+- **Or bound order size:** a per-order `maxAmountIn` set at deployment from the expected pool depth.
+- **Acceptance:** the R11 test settles, or its order is rejected before it can lock the batch.
+
 ---
 
 ## Smaller items
 - **Rounding dust:** it stays in the settlement contract's own vault balance, with no sweep.
+- **`test_liquidityRemovedAfterReveal_canExpire` doesn't test liquidity removal:** its `settle(b, Q96)` reverts with `ResidualShort` even with liquidity untouched (the same call `test_settle_rejectsBadPrices` rejects as too generous), so it passes whether or not removal matters. R5 cites it. Replace the revert with a price that settles before the removal and reverts after it: `test_poc_liquidityRemovalRevertsSolvedPrice` below, which also proves R5's removal half.
 - **CONTEXT.md is out of date:**
   - "Team of 4";
   - "≥6 s margin" (R7);
@@ -324,6 +362,114 @@ contract ReviewPoCControl is BlindfoldTest {
         vm.warp(s.revealCloses(b));
         uint256 p = _solve(b);
         emit log_named_decimal_uint("settled at", p * 1e18 / Q96, 18);
+    }
+}
+```
+
+</details>
+
+R10, R11 and the liquidity-test item have their own file: save it as `contracts/test/ReviewPoCMore.t.sol` and run `forge test --match-contract ReviewPoCMore --match-test poc -vv`. The same rule applies: don't commit it as-is.
+
+<details>
+<summary>ReviewPoCMore.t.sol (R10, R11, liquidity test)</summary>
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+// Reproduces REVIEW.md R10, R11 and the liquidity-test item against main @ d75c699. Each test passes while its flaw exists.
+import {BlindfoldTest} from "./Blindfold.t.sol";
+import {BatchAuction} from "../src/BatchAuction.sol";
+import {BlindfoldSettlement} from "../src/BlindfoldSettlement.sol";
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
+
+contract ReviewPoCMore is BlindfoldTest {
+    address mallory = makeAddr("mallory");
+
+    // R10. A commit into the next batch takes another deposit and unfunds the account's own open order.
+    function test_poc_nextBatchCommitUnfundsOwnOrder() public {
+        uint64 b = s.currentBatch();
+        uint256 free1 = vault.freeBalance(alice, address(t1));
+        BatchAuction.Order memory buy = _o(alice, false, free1 - DEPOSIT, 1); // all token1 left after the deposit
+        uint256 c = _commit(alice, buy, "a");
+
+        vm.warp(s.commitsClose(b)); // batch b+1 is open, b is not revealable yet
+        assertEq(s.currentBatch(), b + 1);
+        assertLt(block.timestamp, s.revealOpens(b));
+        _commit(alice, _o(alice, true, 0, 0), "pad"); // an ordinary padding commit charges another deposit
+
+        uint256 t = vault.balanceOf(treasury, address(t1));
+        vm.warp(s.revealOpens(b));
+        vm.prank(keeper);
+        s.reveal(c, buy, "a");
+        assertEq(s.orderIdsOf(b).length, 0, "order closed as unfunded");
+        assertEq(vault.balanceOf(treasury, address(t1)) - t, DEPOSIT - DEPOSIT * BOUNTY_BPS / 10_000, "deposit forfeited");
+    }
+
+    // R11. One order larger than the pool's depth makes every price revert; its limit is far from any price.
+    function test_poc_orderBeyondPoolDepthBlocksEveryPrice() public {
+        t0.mint(mallory, 250_000e18); // depth to the position's lower tick is ~191k token0
+        t1.mint(mallory, DEPOSIT);
+        vm.startPrank(mallory);
+        t0.approve(address(vault), 250_000e18);
+        t1.approve(address(vault), DEPOSIT);
+        vault.deposit(address(t0), 250_000e18);
+        vault.deposit(address(t1), DEPOSIT);
+        vm.stopPrank();
+
+        uint64 b = s.currentBatch();
+        BatchAuction.Order memory whale = _o(mallory, true, 250_000e18, 1);
+        BatchAuction.Order memory honest = _o(bob, false, 10e18, 9e18);
+        uint256 cw = _commit(mallory, whale, "w");
+        uint256 ch = _commit(bob, honest, "h");
+        vm.warp(s.revealOpens(b));
+        vm.prank(mallory);
+        s.reveal(cw, whale, "w");
+        s.reveal(ch, honest, "h");
+        vm.warp(s.revealCloses(b));
+
+        uint256 pool = s.poolPriceX96();
+        uint256 ok;
+        for (uint256 e; e <= 40; e++) {
+            uint256 p = e >= 20 ? pool << (e - 20) : pool >> (20 - e); // 2^-20 .. 2^20 of the pool price
+            try s.settle(b, p) {
+                ok++;
+            } catch {}
+        }
+        for (uint256 k = 100; k <= 20_000; k += 25) {
+            try s.settle(b, pool * k / 10_000) {
+                ok++;
+            } catch {}
+        }
+        assertEq(ok, 0, "some price settled");
+
+        vm.warp(s.settleCloses(b));
+        s.expire(b);
+        assertEq(vault.balanceOf(mallory, address(t0)), 250_000e18, "capital returned");
+        assertEq(vault.balanceOf(mallory, address(t1)), DEPOSIT, "deposit returned");
+    }
+
+    // test_liquidityRemovedAfterReveal_canExpire: settle(b, Q96) reverts on price with liquidity untouched.
+    function test_poc_liquidityTestRevertsWithoutRemoval() public {
+        uint64 b = _twoSided();
+        try s.settle(b, Q96) {
+            revert("settled");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), BlindfoldSettlement.ResidualShort.selector, "price, not liquidity");
+        }
+    }
+
+    // What that test should check: a price that settles before the removal reverts after it.
+    function test_poc_liquidityRemovalRevertsSolvedPrice() public {
+        uint64 b = _twoSided();
+        uint256 snap = vm.snapshotState();
+        uint256 p = _solve(b);
+        vm.revertToState(snap);
+        lp.modifyLiquidity(key, IPoolManager.ModifyLiquidityParams(-60_000, 60_000, -2.5e21, 0), ""); // 25% removed
+        try s.settle(b, p) {
+            revert("solver's price still settled");
+        } catch {}
+        assertFalse(s.finalized(b));
     }
 }
 ```
