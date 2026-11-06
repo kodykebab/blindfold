@@ -128,4 +128,19 @@ contract ExternalEthereumForkTest is Test {
         vm.expectRevert(UniswapV3Market.StaleObservation.selector);
         market.referencePrice(block.timestamp);
     }
+
+    /// The real pool after an hour with no trades: the activity policy rejects it, the default prices it at the last
+    /// trade's price, which is what the pool's own oracle extrapolates.
+    function test_ethereum_quietHourPricesWithoutActivityCheck() public {
+        (address pool) = FACTORY.getPool(USDC, WETH, 500);
+        UniswapV3Market quiet = new UniswapV3Market(address(this), FACTORY, IV3Pool(pool), 600, 30, 0, 1e15, 100);
+        (uint160 sqrt,,,,,,) = IV3Pool(pool).slot0();
+        vm.warp(forkTime + 1 hours);
+        vm.expectRevert(UniswapV3Market.StaleObservation.selector);
+        market.referencePrice(block.timestamp);
+        uint256 ref = quiet.referencePrice(block.timestamp);
+        uint256 spot = FullMath.mulDiv(sqrt, sqrt, Q96);
+        uint256 diff = ref > spot ? ref - spot : spot - ref;
+        assertLe(diff, spot / 10_000, "mean of an untraded hour is the last price, within tick rounding");
+    }
 }
