@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blindfold</title>
+<body>
+<h1>Blindfold</h1>
+<p id="session" role="status" aria-live="polite"></p>
+
+<section id="unlock">
+  <h2>Private state</h2>
+  <label>Passphrase <input id="passphrase" type="password" autocomplete="current-password"></label>
+  <button data-call="unlock">Unlock</button>
+  <button data-call="setup">Create passphrase</button>
+  <button data-call="lock">Lock</button>
+  <p>A forgotten passphrase cannot be recovered: keep an export.</p>
+</section>
+
+<section>
+  <h2>Wallet</h2>
+  <p>Your wallet signs on the <a id="bridge-link" target="_blank" rel="noopener">bridge page</a>.</p>
+  <div id="wallets"></div>
+</section>
+
+<section>
+  <h2>Account</h2>
+  <button data-run="status">Status</button>
+  <button data-run="track">Track</button>
+  <button data-run="blockers">Blockers</button>
+  <button data-run="resume">Resume admission</button>
+</section>
+
+<section>
+  <h2>Deposit</h2>
+  <label>Token <select id="deposit-token"><option>token0</option><option>token1</option></select></label>
+  <label>Amount <input id="deposit-amount" inputmode="decimal"></label>
+  <button data-run="deposit">Deposit</button>
+</section>
+
+<section>
+  <h2>Order</h2>
+  <label>Side <select id="side"><option value="sell">sell token0 for token1</option><option value="buy">buy token0 with token1</option></select></label>
+  <label>Amount in <input id="amount-in" inputmode="decimal"></label>
+  <label>Minimum out <input id="min-out" inputmode="decimal"></label>
+  <button data-run="preflight">Preflight</button>
+  <button data-run="commit">Seal and commit</button>
+</section>
+
+<section>
+  <h2>Cleanup and withdraw</h2>
+  <label><input id="cleanup-dry" type="checkbox"> dry run</label>
+  <button data-run="cleanup">Cleanup</button>
+  <label>Token <select id="withdraw-token"><option>token0</option><option>token1</option></select></label>
+  <label>Amount <input id="withdraw-amount" value="all"></label>
+  <button data-run="withdraw">Withdraw</button>
+</section>
+
+<section>
+  <h2>Backup</h2>
+  <p>An export holds your orders, salts and funding opening in plain text. Keep it private.</p>
+  <button data-run="export">Export</button>
+  <label>Import <input id="import-file" type="file" accept="application/json,.json"></label>
+</section>
+
+<section>
+  <h2>Settings</h2>
+  <label>RPC URL <input id="rpc-url" placeholder="http://127.0.0.1:8545"></label><br>
+  <label>Deployment JSON<br><textarea id="deployment" rows="6" cols="80"></textarea></label><br>
+  <label>Recorded drand rounds (optional, local mode)<br><textarea id="drand" rows="3" cols="80"></textarea></label><br>
+  <button data-call="config">Save settings</button>
+</section>
+
+<h2>Output</h2>
+<pre id="out" role="log" aria-live="polite"></pre>
+<script type="module" src="app.js"></script>
+</body>
+</html>
