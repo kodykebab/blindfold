@@ -112,12 +112,12 @@ contract BlindfoldVault {
         balanceOf[account][token] -= amount;
     }
 
-    function _receive(address token, address from, uint256 amount) internal {
+    function _receive(address token, address from, uint256 amount) internal virtual {
         (bool ok, bytes memory r) = token.call(abi.encodeCall(IERC20Like.transferFrom, (from, address(this), amount)));
         if (!ok || (r.length != 0 && !abi.decode(r, (bool)))) revert TokenTransferFailed();
     }
 
-    function _send(address token, address to, uint256 amount) internal {
+    function _send(address token, address to, uint256 amount) internal virtual {
         (bool ok, bytes memory r) = token.call(abi.encodeCall(IERC20Like.transfer, (to, amount)));
         if (!ok || (r.length != 0 && !abi.decode(r, (bool)))) revert TokenTransferFailed();
     }
