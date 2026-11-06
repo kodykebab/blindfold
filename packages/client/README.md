@@ -31,7 +31,7 @@ The client saves each order and salt (`.state/`, or `CLIENT_STATE`) **before** i
 | `RPC_URL` | `http://127.0.0.1:8545` | Chain |
 | `DEPLOYMENTS` | `deployments/blindfold.local.json` | Addresses (PLAN.md seam) |
 | `CONTRACTS_OUT` | `contracts/out` | ABIs from `forge build` |
-| `USER` | `10` | anvil test account index (users are 10–19). Public test keys: local only |
+| `CLIENT_ACCOUNT_INDEX` | `10` | Anvil account index (users are 10–19). Numeric `USER` remains a legacy fallback; OS usernames are ignored. Public test keys: local only |
 | `PRIVATE_KEY` | — | Use this key instead of an anvil account |
 | `DRAND` | quicknet over HTTP | Path to recorded rounds (`test/fixtures/drand.json` format) for offline runs |
 | `CLIENT_STATE` | `packages/client/.state` | Where orders and salts are kept |

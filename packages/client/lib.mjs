@@ -104,9 +104,14 @@ export function loadDeployment(path = E.DEPLOYMENTS || join(ROOT, 'deployments/b
   return dep
 }
 
-export function account() {
-  if (E.PRIVATE_KEY) return privateKeyToAccount(E.PRIVATE_KEY)
-  return mnemonicToAccount(E.MNEMONIC || TEST_MNEMONIC, { addressIndex: Number(E.USER ?? 10) })
+export function account(env = E) {
+  if (env.PRIVATE_KEY) return privateKeyToAccount(env.PRIVATE_KEY)
+  // USER normally contains the OS login. Retain explicit numeric USER values for existing local scripts.
+  const value = env.CLIENT_ACCOUNT_INDEX ?? (/^\d+$/.test(env.USER ?? '') ? env.USER : '10')
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) >= 2 ** 31) {
+    throw new Error('CLIENT_ACCOUNT_INDEX must be an integer from 0 to 2147483647')
+  }
+  return mnemonicToAccount(env.MNEMONIC || TEST_MNEMONIC, { addressIndex: Number(value) })
 }
 
 /** Everything a command needs: clients, the deployment, ABIs and a bound reader. */

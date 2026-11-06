@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { decrypt, drandClient, encrypt, orderHash, encodePayload, decodePayload } from '../lib.mjs'
+import { account, decrypt, drandClient, encrypt, orderHash, encodePayload, decodePayload } from '../lib.mjs'
 import { validateState } from '../state.mjs'
 import { balances, deadlines, exitPlan, preflight, track, isOpen } from '../flow.mjs'
 
@@ -151,4 +151,16 @@ test('cleanup and deadline text distinguish released deposits from slashing', ()
   assert.equal(exitPlan([c], { ...context, admissionRequired: true })[0].action, 'release')
   assert.match(deadlines(times, true)[2].what, /fee retained/)
   assert.match(deadlines(times)[2].what, /deposit lost/)
+})
+
+
+test('local account defaults ignore OS usernames and preserve numeric USER compatibility', () => {
+  const expected = account({ CLIENT_ACCOUNT_INDEX: '10' }).address
+  assert.equal(account({}).address, expected)
+  assert.equal(account({ USER: 'ordinary-local-user' }).address, expected)
+  assert.equal(account({ USER: '11' }).address, account({ CLIENT_ACCOUNT_INDEX: '11' }).address)
+  assert.equal(account({ USER: '11', CLIENT_ACCOUNT_INDEX: '10' }).address, expected)
+  for (const value of ['', '-1', '1.5', 'typo', '2147483648']) {
+    assert.throws(() => account({ CLIENT_ACCOUNT_INDEX: value }), /CLIENT_ACCOUNT_INDEX must be/)
+  }
 })

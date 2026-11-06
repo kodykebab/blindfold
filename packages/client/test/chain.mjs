@@ -70,7 +70,7 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
     /** Run the real CLI as user i; resolves {code, out, err}. */
     cli: (i, args, env = {}) => new Promise((resolve) => {
       execFile(process.execPath, [CLI, ...args], {
-        env: { ...process.env, RPC_URL: rpc, DEPLOYMENTS: deployments, USER: String(i), DRAND, CLIENT_STATE: join(dir, 'state'), ...env },
+        env: { ...process.env, RPC_URL: rpc, DEPLOYMENTS: deployments, CLIENT_ACCOUNT_INDEX: String(i), DRAND, CLIENT_STATE: join(dir, 'state'), ...env },
       }, (e, out, err) => resolve({ code: e ? e.code : 0, out, err }))
     }),
     stop: () => anvil.kill(),
