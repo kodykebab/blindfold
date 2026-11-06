@@ -10,6 +10,7 @@ import { createPublicClient, createWalletClient, defineChain, http,
   getCreate2Address, toHex, parseEventLogs } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
 import { solve, Q96, allocationsAt } from '../price.mjs'
+import { solveExternal } from '../external.mjs'
 import { solvePeer } from '../peer.mjs'
 import { artifactPath } from '../artifacts.mjs'
 
@@ -97,8 +98,17 @@ test('solver CLI executes AMM and peer-only groups and preserves one-sided recov
     const deploymentPath = join(directory, 'deployment.json')
     writeFileSync(deploymentPath, JSON.stringify({ chainId: 31337, settlement }))
     let snapshot = await client.request({ method: 'evm_snapshot' })
-    for (const scenario of [{ sell: true }, { sell: false }, { sell: true, noLiquidity: true }, { sell: true, noLiquidity: true, peerMode: true }, { sell: false, noLiquidity: true, peerMode: true }]) {
-      const { sell, noLiquidity = false, peerMode = false } = scenario
+    for (const scenario of [{ sell: true }, { sell: false }, { sell: true, noLiquidity: true }, { sell: true, noLiquidity: true, peerMode: true }, { sell: false, noLiquidity: true, peerMode: true }, { sell: true, noLiquidity: true, externalMode: true }, { sell: false, noLiquidity: true, externalMode: true }, { sell: true, noLiquidity: true, externalMode: true, partialExternal: true }, { sell: false, noLiquidity: true, externalMode: true, partialExternal: true }]) {
+      const { sell, noLiquidity = false, peerMode = false, externalMode = false, partialExternal = false } = scenario
+      if (peerMode || externalMode) {
+        const market = await deploy('MockExternalMarket', [settlement, token0, token1])
+        await send(settlement, 'BlindfoldSettlement', 'configureExternal', [market])
+        if (externalMode) {
+          for (const token of [token0, token1]) await send(token, 'MockERC20', 'mint', [market, 10_000n * 10n ** 18n])
+          await send(market, 'MockExternalMarket', 'setOutputBps', [9990n])
+          if (partialExternal) await send(market, 'MockExternalMarket', 'setMaxInput', [810n * 10n ** 18n])
+        }
+      }
       const batch = await read(settlement, 'BlindfoldSettlement', 'currentBatch')
       const orders = [1000n, 500n].map((amount, i) => ({ id: BigInt(i), owner: account.address, zeroForOne: peerMode && i === 1 ? !sell : sell,
         amountIn: amount * 10n ** 18n, minAmountOut: amount * 9n * 10n ** 17n }))
@@ -112,10 +122,10 @@ test('solver CLI executes AMM and peer-only groups and preserves one-sided recov
       await warp(await read(settlement, 'BlindfoldSettlement', 'revealCloses', [batch]))
       if (noLiquidity) await send(lp, 'PoolModifyLiquidityTest', 'modifyLiquidity', [key, { tickLower: -60000, tickUpper: 60000, liquidityDelta: -(10n ** 22n), salt: toHex(0n, { size: 32 }) }, '0x'])
       let simulations = 0
-      const simulate = async (p, m, peer = false) => {
+      const simulate = async (p, m, peer = false, external = false) => {
         simulations++
         try {
-          await client.simulateContract({ address: settlement, abi: load('BlindfoldSettlement').abi, functionName: peer ? 'settlePeer' : 'settle',
+          await client.simulateContract({ address: settlement, abi: load('BlindfoldSettlement').abi, functionName: peer ? 'settlePeer' : external ? 'settleExternal' : 'settle',
             args: peer ? [batch, m.id, m.amountIn] : m ? [batch, p, m.id, m.amountIn] : [batch, p], account })
           return { ok: true }
         } catch (e) {
@@ -143,6 +153,15 @@ test('solver CLI executes AMM and peer-only groups and preserves one-sided recov
         const expected = allocationsAt(orders, solution.priceX96, solution.marginal)
         assert.equal(expected[0], expected[1] * 2n)
       }
+      if (externalMode) {
+        const callsBefore = simulations
+        const started = performance.now()
+        const external = await solveExternal({ referenceX96: Q96, deviationBps: 100, orders,
+          simulate: (p, m) => simulate(p, m, false, true) })
+        assert.ok(external?.external)
+        if (partialExternal) assert.equal(external.marginal.amountIn, 540n * 10n ** 18n)
+        t.diagnostic(`external ${sell ? 'sell' : 'buy'}: ${simulations - callsBefore} simulations, ${Math.round(performance.now() - started)} ms locally`)
+      }
       const startBlock = await client.getBlockNumber({ cacheTime: 0 })
       const cli = spawn(process.execPath, [new URL('../solver.mjs', import.meta.url).pathname, '--once'], {
         env: { ...process.env, RPC_URL: rpc, DEPLOYMENTS: deploymentPath,
@@ -152,8 +171,8 @@ test('solver CLI executes AMM and peer-only groups and preserves one-sided recov
       cli.stdout.on('data', (b) => { output += b })
       cli.stderr.on('data', (b) => { output += b })
       const [exitCode] = await once(cli, 'exit')
-      assert.equal(exitCode, noLiquidity && !peerMode ? 1 : 0, output)
-      if (noLiquidity && !peerMode) {
+      assert.equal(exitCode, noLiquidity && !peerMode && !externalMode ? 1 : 0, output)
+      if (noLiquidity && !peerMode && !externalMode) {
         assert.match(output, /search found no executable candidate/)
         assert.equal(await read(settlement, 'BlindfoldSettlement', 'finalized', [batch]), false)
         await warp(await read(settlement, 'BlindfoldSettlement', 'settleCloses', [batch]))
@@ -165,7 +184,12 @@ test('solver CLI executes AMM and peer-only groups and preserves one-sided recov
       assert.equal(await read(vault, 'BlindfoldVault', 'lockedOf', [account.address, sell ? token0 : token1]), 0n)
       const logs = await client.getLogs({ address: settlement, fromBlock: startBlock, toBlock: 'latest' })
       const fills = parseEventLogs({ abi: load('BlindfoldSettlement').abi, logs, eventName: 'Filled' })
-      assert.equal(fills.length, noLiquidity && !peerMode ? 0 : 2)
+      assert.equal(fills.length, noLiquidity && !peerMode && !externalMode ? 0 : 2)
+      if (externalMode) assert.match(output, /public-pool residual route/)
+      if (partialExternal) {
+        assert.equal(fills[0].args.amountIn, 540n * 10n ** 18n)
+        assert.equal(fills[1].args.amountIn, 270n * 10n ** 18n)
+      }
       if (peerMode) assert.equal(fills[0].args.amountIn, fills[1].args.amountIn)
       else if (!noLiquidity) assert.equal(fills[0].args.amountIn, fills[1].args.amountIn * 2n)
       for (let i = 0; i < fills.length; i++) {

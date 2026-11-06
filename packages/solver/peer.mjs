@@ -16,7 +16,7 @@ export function peerTotals(orders, price, marginal) {
   return t
 }
 
-/** Find a price-priority crossing at the fixed pool price, without an AMM leg.
+/** Find a price-priority crossing at the fixed reference price, without an AMM leg.
  * Amount search is local BigInt arithmetic; only budget-balanced candidates go
  * to RPC simulation. This helper never changes the reference price.
  */
