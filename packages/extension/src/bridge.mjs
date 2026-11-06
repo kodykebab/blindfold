@@ -48,15 +48,15 @@ export function bridge({ origin, onWallet = () => {}, onLate = () => {}, onError
     connected: () => port !== null,
     connect: (selector) => live().postMessage({ type: 'connect', ...selector }),
     /**
-     * One call, signed and sent by the wallet. chain: {chainId (number), rpcUrl}. onSent(hash) runs as soon as the
+     * One or more calls, signed and sent by the wallet. chain: {chainId (number), rpcUrl}. onSent(hash) runs as soon as the
      * wallet accepts it, before it is mined, so the caller can persist the hash. Resolves with the bridge's result.
      */
-    send({ id = `tx-${Date.now()}-${n++}`, from, to, data, value = '0x0', chain }, onSent) {
+    send({ id = `tx-${Date.now()}-${n++}`, from, to, data, value = '0x0', calls, chain }, onSent) {
       const p = live()
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject, onSent, saving: Promise.resolve() })
         p.postMessage({
-          type: 'send', id, from, calls: [{ to, data, value }],
+          type: 'send', id, from, calls: calls ?? [{ to, data, value }],
           chain: { chainId: toHex(chain.chainId), chainName: `Blindfold ${chain.chainId}`, rpcUrls: [chain.rpcUrl], nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 } },
         })
       })

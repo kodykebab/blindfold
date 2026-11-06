@@ -18,7 +18,7 @@ async function setup(chainOpts = {}, { admission = true } = {}) {
     store: { load: () => states.load(dep, owner), write: (s) => states.write(dep, owner, s) },
     prove: async () => { calls.push('prove'); throw new Error('stop after preflight') },
     tlock: { encrypt: async () => { calls.push('encrypt'); throw new Error('stop after preflight') }, check: async () => calls.push('check') },
-    sendTx: async (tx) => { calls.push(tx.to); return `0x${'aa'.repeat(32)}` },
+    sendTx: async (tx) => { calls.push(tx.calls ? tx.calls.map((c) => c.to) : tx.to); return `0x${'aa'.repeat(32)}` },
   }
   return { f: flows(ctx), calls, pub }
 }
@@ -54,7 +54,7 @@ test('U2 approval: a wallet-funded shortfall is approved and deposited before an
   assert.match(r.funding.join('\n'), /needs approval/)
   await assert.rejects(f.commit(order), /stop after preflight/)
   // approve + deposit per token, all before the prover is asked
-  assert.deepEqual(calls, [T0, dep.vault, T1, dep.vault, 'prove'])
+  assert.deepEqual(calls, [[T0, dep.vault], [T1, dep.vault], 'prove'])
 })
 
 test('U2 deadlines: a closed or closing batch is refused', async () => {

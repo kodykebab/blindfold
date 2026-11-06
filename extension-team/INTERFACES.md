@@ -146,6 +146,9 @@ a wallet account from the bridge; `commit`, `resume`, `cleanup`, `blockers`, `ex
 | `export` | none | the state JSON text (same format as the CLI's `export-state`) |
 | `import` | `{ text }` | `{ imported, saved }`; refused unless every entry hashes right and matches the chain |
 
+Unread `export` records are removed on worker restart, on lock and by a one-minute cleanup alarm. A page waiting
+on a removed result reports that it expired and can be requested again.
+
 Mutating jobs (`deposit`, `commit`, `resume`, `cleanup`, `withdraw`, `import`) take a Web Lock per account and fail
 fast with `another operation is running for this account` if it is held.
 

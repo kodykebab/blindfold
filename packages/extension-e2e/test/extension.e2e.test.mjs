@@ -74,6 +74,38 @@ test('E1: fund and withdraw with no orders (approve + deposit signed through the
   assertOnlyDeploymentCalls(b.wallet)
 })
 
+test('B2: the extension submits approve + deposit as one EIP-5792 wallet request', { skip }, async () => {
+  const app = await openApp(b)
+  b.wallet.atomic = true
+  await call(app, 'connect', { rdns: RDNS })
+  await until(async () => (await call(app, 'session')).wallet.atomic, 'atomic wallet connected')
+  const start = b.wallet.log.length
+  const r = await run(app, 'deposit', { token: 'token1', amount: '1' })
+  assert.equal(r.state, 'done', r.error)
+  const requests = b.wallet.log.slice(start)
+  const batches = requests.filter((x) => x.method === 'wallet_sendCalls')
+  assert.equal(batches.length, 1)
+  assert.deepEqual(batches[0].params[0].calls.map((x) => x.to.toLowerCase()), [c.dep.token1, c.dep.vault].map((x) => x.toLowerCase()))
+  assert.equal(requests.filter((x) => x.method === 'eth_sendTransaction').length, 0)
+  assert.equal(await vault(c.dep.token1), parseEther('1'))
+  assert.equal((await run(app, 'withdraw', { token: 'token1', amount: 'all' })).state, 'done')
+  b.wallet.atomic = false
+  await call(app, 'connect', { rdns: RDNS })
+  await until(async () => !(await call(app, 'session')).wallet.atomic, 'sequential wallet connected')
+})
+
+test('B5: locking discards an unread plaintext export result', { skip }, async () => {
+  const app = await openApp(b)
+  const key = await app.evaluate(async () => {
+    const { result } = await chrome.runtime.sendMessage({ type: 'run', op: 'export' })
+    return `job:${result.job}`
+  })
+  await until(async () => app.evaluate(async (key) => (await chrome.storage.session.get(key))[key]?.state === 'done', key), 'unread export finished')
+  await call(app, 'lock')
+  assert.equal(await app.evaluate(async (key) => (await chrome.storage.session.get(key))[key], key), undefined)
+  await call(app, 'unlock', { passphrase: PASSPHRASE })
+})
+
 const S = () => c.dep.settlement
 const readS = (fn, args = []) => c.read(S(), 'BlindfoldSettlement', fn, args)
 const open = () => c.read(c.dep.vault, 'BlindfoldVault', 'openCommitments', [me.address])

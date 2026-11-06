@@ -22,7 +22,13 @@ async function run(op, args) {
       chrome.storage.session.remove(key) // results may hold an export: drop them once read
       rec.state === 'done' ? resolve(rec.result) : reject(new Error([...rec.log, rec.error].join('\n')))
     }
-    const listener = (changes, area) => { if (area === 'session' && changes[key]) seen(changes[key].newValue) }
+    const listener = (changes, area) => {
+      if (area !== 'session' || !changes[key]) return
+      if (!changes[key].newValue) {
+        chrome.storage.onChanged.removeListener(listener)
+        reject(new Error('job result expired or was cleared; run the operation again'))
+      } else seen(changes[key].newValue)
+    }
     chrome.storage.onChanged.addListener(listener)
     chrome.storage.session.get(key).then((r) => seen(r[key]))
   })

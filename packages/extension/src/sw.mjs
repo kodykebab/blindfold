@@ -5,12 +5,14 @@ import { createPublicClient, defineChain, http } from 'viem'
 import { replacer, stateId } from './core.mjs'
 import { createVault, importKey, exportKey, stateStore, unlockVault } from './vault.mjs'
 import { flows } from './flows.mjs'
+import { clearExports } from './jobs.mjs'
 import { bridge as createBridge } from './bridge.mjs'
 import { helper as createHelper } from './helper.mjs'
 
 const BRIDGE_ORIGIN = globalThis.BLINDFOLD_BRIDGE_ORIGIN // replaced by build.mjs from BRIDGE_ORIGIN (D9)
 const DEFAULT_RPC = 'http://127.0.0.1:8545'
 const local = chrome.storage.local, session = chrome.storage.session
+const ready = clearExports(session) // discard unread exports left by a previous worker
 const fail = (msg) => { throw new Error(msg) }
 const plain = (x) => JSON.parse(JSON.stringify(x, replacer)) // bigints as "123n", as in exports
 
@@ -141,9 +143,13 @@ async function runJob(id, op, args) {
   // Extension API calls reset the idle timer: keeps the worker alive through wallet prompts and proving.
   const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), 20_000)
   try {
+    await ready
     const ctx = await context((line) => { log.push(line); put({ state: 'running' }) })
     const work = () => OPS[op](flows(ctx), args ?? {})
-    await put({ state: 'done', result: await (MUTATING.has(op) ? withLock(ctx, work) : work()) })
+    const result = await (MUTATING.has(op) ? withLock(ctx, work) : work())
+    if (op === 'export' && !(await session.get('key')).key) fail('private state was locked during export')
+    await put({ state: 'done', result })
+    if (op === 'export' && !await chrome.alarms.get('clear-exports')) chrome.alarms.create('clear-exports', { delayInMinutes: 1 })
   } catch (e) {
     await put({ state: 'failed', error: e.shortMessage ?? e.message })
   } finally {
@@ -157,7 +163,7 @@ async function runJob(id, op, args) {
 const CALLS = {
   async setup({ passphrase }) { await session.set({ key: await exportKey(await createVault(local, passphrase)) }); return { unlocked: true } },
   async unlock({ passphrase }) { await session.set({ key: await exportKey(await unlockVault(local, passphrase)) }); tick(); return { unlocked: true } },
-  async lock() { await session.remove('key'); return { unlocked: false } },
+  async lock() { await session.remove('key'); await clearExports(session); return { unlocked: false } },
   async session() {
     const [{ config, kdf }, s] = await Promise.all([local.get(['config', 'kdf']), session.get(['key', 'bridge', 'wallet', 'wallets', 'clock'])])
     return { hasPassphrase: !!kdf, unlocked: !!s.key, bridge: !!s.bridge, bridgeOrigin: BRIDGE_ORIGIN, wallet: s.wallet ?? null, wallets: s.wallets ?? [], clock: s.clock ?? null, config: config ?? null }
@@ -181,7 +187,7 @@ chrome.runtime.onMessage.addListener((m, sender, respond) => {
     return false
   }
   if (m?.type !== 'call' || !CALLS[m.op]) return false
-  CALLS[m.op](m.args ?? {}).then((result) => respond({ ok: true, result: plain(result) }), (e) => respond({ ok: false, error: e.message }))
+  ready.then(() => CALLS[m.op](m.args ?? {})).then((result) => respond({ ok: true, result: plain(result) }), (e) => respond({ ok: false, error: e.message }))
   return true
 })
 
@@ -203,7 +209,10 @@ async function tick() {
     chrome.action.setBadgeText({ text: '' })
   }
 }
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'tick') tick() })
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name === 'tick') tick()
+  if (a.name === 'clear-exports') clearExports(session)
+})
 chrome.runtime.onStartup.addListener(tick)
 chrome.runtime.onInstalled.addListener(tick)
 chrome.action.onClicked.addListener(() => chrome.tabs.create({ url: 'app.html' }))

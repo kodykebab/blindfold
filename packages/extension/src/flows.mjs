@@ -106,9 +106,24 @@ export function flows(ctx) {
     const t = await tokens()
     const tok = pick(t, name)
     const value = parseUnits(amount, tok.decimals)
-    if (await read(tok.address, 'allowance', [me, dep.vault], abi.erc20) < value) await send(tok.address, abi.erc20, 'approve', [dep.vault, value])
-    await send(dep.vault, abi.vault, 'deposit', [tok.address, value])
+    await fund(tok.address, value)
     return { deposited: fmt(tok, value) }
+  }
+
+  // Keep dependent approve + deposit calls in one bridge request. The bridge batches on capable wallets and
+  // otherwise mines approval before sending deposit. Deposit cannot be simulated against the old allowance.
+  async function fund(token, value) {
+    if (await read(token, 'allowance', [me, dep.vault], abi.erc20) >= value) {
+      await send(dep.vault, abi.vault, 'deposit', [token, value])
+      return
+    }
+    await pub.simulateContract({ account: me, address: token, abi: abi.erc20, functionName: 'approve', args: [dep.vault, value] })
+    log('sign approve and deposit in your wallet')
+    const calls = [
+      { to: token, data: encodeFunctionData({ abi: abi.erc20, functionName: 'approve', args: [dep.vault, value] }), value: '0x0' },
+      { to: dep.vault, data: encodeFunctionData({ abi: abi.vault, functionName: 'deposit', args: [token, value] }), value: '0x0' },
+    ]
+    await confirm(await ctx.sendTx({ from: me, calls, chainId: dep.chainId }), 'deposit')
   }
 
   const fundingOnchain = async () => {
@@ -161,8 +176,7 @@ export function flows(ctx) {
     if (!check.ok) fail(`preflight failed:\n  ${check.problems.join('\n  ')}`)
     for (const f of check.funding) {
       if (!f.shortfall) continue
-      if (f.approve) await send(f.token, abi.erc20, 'approve', [dep.vault, f.shortfall])
-      await send(dep.vault, abi.vault, 'deposit', [f.token, f.shortfall])
+      await fund(f.token, f.shortfall)
     }
     const salt = newSalt()
     const hash = orderHash(dep.chainId, S, current, order, salt)

@@ -84,3 +84,15 @@ test('after a reconnect, sent / result for ids this worker is not waiting on go 
   p.emit({ type: 'result', id: 'tx-persisted-1', ok: true, hashes: ['0xcc'], receipts: [] })
   assert.deepEqual((await mine).hashes, ['0xcc'])
 })
+
+test('approve and deposit stay together in one bridge request for wallet batching', async () => {
+  const b = bridge({ origin: ORIGIN })
+  const p = fakePort()
+  b.accept(p)
+  const calls = [{ to: call.to, data: '0xaaaa', value: '0x0' }, { to: call.to, data: '0xbbbb', value: '0x0' }]
+  const done = b.send({ from: call.from, calls, chain: call.chain })
+  const [m] = p.posted
+  assert.deepEqual(m.calls, calls)
+  p.emit({ type: 'result', id: m.id, ok: true, hashes: ['0xaa', '0xbb'], receipts: [] })
+  assert.deepEqual((await done).hashes, ['0xaa', '0xbb'])
+})
