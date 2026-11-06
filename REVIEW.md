@@ -566,3 +566,17 @@ limit and 100 bps band passed the sampled regime, but this does not justify them
 as production settings. A consistent manipulation of spot and TWAP can pass
 these checks; economic attack cost has not been established. No production
 launch should be inferred from passing these implementation tests.
+
+Executable-lot fallback for the PR #6 dust-companion review: ordinary proportional
+input flooring stays when its output covers the ceil-rounded minimum. Otherwise
+input rounds down to amountIn/gcd(amountIn,minAmountOut); if that is zero the order
+stays unfilled. The fallback never rounds down the user's output minimum. Zero-
+minimum orders with zero output also stay unfilled. Solidity regressions include
+the review's 300-token/40-wei pair and both trade directions. The user selected
+this refinement after strict lot rounding reduced the fixed model corpus's
+rescued count from 49 to 38. Allocation is consequently price-dependent at these
+integer boundaries; solver discretion is not eliminated. The solver and model
+must use the same fallback, and complete clearing remains conditional.
+
+
+
