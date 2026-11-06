@@ -4,6 +4,7 @@
 //   npm start            # keep settling, polling every POLL_MS
 //   npm start -- --once  # settle what is due now, then exit (non-zero if a due batch can't be settled)
 import { readFileSync } from 'node:fs'
+import { errorText, rpcOrigin } from '../client/rpc-error.mjs'
 import { BaseError, ContractFunctionRevertedError, createPublicClient, createWalletClient, defineChain, http } from 'viem'
 import { mnemonicToAccount, privateKeyToAccount } from 'viem/accounts'
 import { solve } from './price.mjs'
@@ -145,7 +146,7 @@ for (;;) {
         status.settled.push(await settleBatch(d))
       } catch (e) {
         failed = true
-        const msg = e.shortMessage ?? e.message
+        const msg = errorText(e, RPC_URL)
         status.errors.push({ batch: String(d.b), message: msg })
         if (!jsonMode && reported.get(d.b) !== msg) console.error(msg)
         reported.set(d.b, msg)
@@ -153,9 +154,9 @@ for (;;) {
     }
   } catch (e) {
     failed = true
-    const msg = e.shortMessage ?? e.message
+    const msg = errorText(e, RPC_URL)
     status.errors.push({ message: msg })
-    if (!jsonMode) console.error(`solver: ${msg} (RPC_URL ${RPC_URL})`)
+    if (!jsonMode) console.error(`solver: ${msg} (RPC ${rpcOrigin(RPC_URL)})`)
   }
   if (jsonMode) console.log(JSON.stringify(status))
   if (once) process.exit(failed ? 1 : 0)
