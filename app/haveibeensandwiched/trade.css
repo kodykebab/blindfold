@@ -13,3 +13,7 @@
 .order-note{color:var(--mute);line-height:1.6;margin:15px 0 0}
 
 #job-progress{display:block;width:100%;height:4px;margin:16px 0 -6px;accent-color:var(--seal)}#job-progress[hidden]{display:none}
+
+.order-list{list-style:none;margin:0;padding:0}.order-list li{border-top:1px solid var(--edge);padding:14px 0;font-size:13px}.order-list strong{font-weight:500}.order-state{float:right;color:#8493ff;font:11px ui-monospace,monospace;text-transform:uppercase}.order-list p{margin:7px 0 0;color:var(--mute);overflow-wrap:anywhere;font:11px/1.6 ui-monospace,monospace}
+
+.wallet-inspect{border-top:1px solid var(--edge);margin-top:20px;padding-top:20px}.wallet-inspect .fine{color:var(--mute);line-height:1.6}.wallet-inspect .tools{margin-top:10px}.wallet-inspect select{margin-top:8px}

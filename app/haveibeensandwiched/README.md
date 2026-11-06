@@ -50,6 +50,21 @@ The local server binds to `127.0.0.1`, accepts a fixed list of CLI actions, and 
 
 The solver is a separate service. Configure it with the same RPC and deployment, then run `npm start --prefix packages/solver -- --once` to process eligible batches once, or omit `-- --once` to poll. It uses its own configured account to submit settlement transactions; it does not need the trader's signing key. See `packages/solver/README.md` for routing and local setup.
 
-The trading page can run `prepare-admission` for an explicit current or future batch. A running CLI command remains in the local server when the page reloads; the same tab reconnects to its job. The backup controls invoke the CLI's `export-state` and `import-state` commands. Exported JSON includes sensitive order and funding state and is not encrypted by the CLI. Import is validated against the configured account, deployment and onchain commitments.
+The trading page can run `prepare-admission` for an explicit current or future batch. A running CLI command remains in the local server when the page reloads; the browser can reconnect to its job after the tab is reloaded or reopened. The backup controls invoke the CLI's `export-state` and `import-state` commands. Exported JSON includes sensitive order and funding state and is not encrypted by the CLI. Import is validated against the configured account, deployment and onchain commitments.
 
 The real CLI/Anvil backup test is opt-in: `WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs`. It starts its own Anvil and does not use an existing chain.
+
+## Checks
+
+From the repository root, after preparing submodules, dependencies and the proof-bench upstreams:
+
+```bash
+scripts/check.sh                 # offline contract, package and circuit tests
+scripts/check.sh --fork          # include configured network fork tests
+scripts/e2e.sh                   # isolated local web/client/keeper/solver lifecycle
+scripts/e2e.sh --real-proof      # also run fresh-proof stack and client recovery gates
+```
+
+The local stack test runs with admission off and uses recorded drand, public Anvil accounts, test tokens, a real local v4 PoolManager and its hook. The opt-in fresh-proof tier uses generated development parameters and verifiers selected by `ADMISSION_PARAMS`; it is separate from production parameter setup.
+
+To start a separate proof-enforced local development stack after preparing the development proving parameters and generated verifiers, run `scripts/dev.sh`. It starts its own Anvil, deploys a v4 pool, hook, admission verifiers and settlement, funds a public Anvil test account with local test tokens, and starts the web service, keeper and solver. It prints the trading URL and the directory containing the deployment manifest and private client state. The stack uses 300-second development batches and live quicknet drand. Stop its own processes with Ctrl-C.

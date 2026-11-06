@@ -11,8 +11,10 @@ export function parseStatus(text) {
   }
   if (!account || !batch || !open || !rows.length) return null
   const deadlines = lines.filter((line) => /^\s*-?\d+s\s+/.test(line)).map((line) => line.trim())
+  const network = lines.find((line) => /^network \d+$/.test(line)) ?? null
+  const pair = lines.find((line) => /^pair .+ \/ .+$/.test(line)) ?? null
   const preparation = lines.find((line) => /^preparation: /.test(line)) ?? null
-  return { account, batch, open, rows, deadlines, preparation }
+  return { account, network, pair, batch, open, rows, deadlines, preparation }
 }
 
 // Only report stages the CLI has explicitly logged; elapsed time is not proof progress.
@@ -25,4 +27,31 @@ export function jobStage(job) {
 
 export function preparedBatch(output) {
   return output.match(/(?:^|\n)prepared batch (\d+) in /)?.[1] ?? null
+}
+
+// Unknown or incomplete output remains in the activity log instead of being guessed.
+export function parseTrack(text) {
+  if (text.trim() === 'no commitments') return []
+  const lines = text.trim().split(/\r?\n/)
+  const rows = []
+  for (const line of lines) {
+    const match = line.match(/^#(\d+) batch (\d+): (committed|revealed|padding|unfunded|slashed|released|filled|unfilled|expired) \(([^)]*)\)(.*)$/)
+    if (!match) return null
+    const detail = match[5].trim()
+    const label = match[3] === 'filled' && detail.includes('[partial fill:') ? 'partially filled' : match[3]
+    rows.push({ id: match[1], batch: match[2], state: label, detail: [match[4], detail].filter(Boolean).join(' ') })
+  }
+  return rows.length ? rows : null
+}
+
+export function parseBlockers(text) {
+  if (['nothing blocks withdrawal', 'dry run: nothing sent'].includes(text.trim())) return []
+  const lines = text.trim().split(/\r?\n/).filter((line) => line !== 'dry run: nothing sent')
+  const rows = []
+  for (const line of lines) {
+    const match = line.match(/^#(\d+) batch (\d+) \((committed|revealed)\): (wait -?\d+s|reveal|slash|release|expire) — (.+)$/)
+    if (!match) return null
+    rows.push({ id: match[1], batch: match[2], state: match[3], action: match[4], reason: match[5] })
+  }
+  return rows.length ? rows : null
 }

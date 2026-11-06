@@ -1,5 +1,6 @@
-import { jobStage, parseStatus, preparedBatch } from './status.mjs'
+import { jobStage, parseBlockers, parseStatus, parseTrack, preparedBatch } from './status.mjs'
 import { createBackupReminder, createJobStore } from './job-store.mjs'
+import { createWalletView, walletMismatch } from './wallet-view.mjs'
 const output = document.querySelector('#output')
 const state = document.querySelector('#job-state')
 const reconnect = document.querySelector('#reconnect')
@@ -10,13 +11,17 @@ reminder.hidden = !reminderStore.get()
 const jobStore = (() => { try { return createJobStore(localStorage) } catch { return createJobStore(null) } })()
 const mobile = matchMedia('(max-width: 760px) and (pointer: coarse)')
 const desktopOnly = new Set(['prepare-admission', 'preflight', 'commit', 'deposit', 'cleanup', 'resume-admission', 'backup-import'])
-let busy = false
+let busy = false, lastStatus = null, walletState = { wallets: [], selected: null }
 const savedJob = () => jobStore.get()
 const saveJob = (id) => jobStore.set(id)
 function setBusy(value) {
   busy = value
   document.querySelector('#job-progress').hidden = !value
-  document.querySelectorAll('button, input, select').forEach((control) => { control.disabled = value || (mobile.matches && Boolean(control.closest('[data-desktop-only]'))) })
+  const mismatch = walletMismatch(walletState.selected, lastStatus)
+  document.querySelectorAll('button, input, select').forEach((control) => { control.disabled = value || (mobile.matches && Boolean(control.closest('[data-desktop-only]'))) || (Boolean(mismatch) && Boolean(control.closest('[data-wallet-guard]'))) })
+  document.querySelector('#wallet-choice').disabled = value || !walletState.wallets.length
+  document.querySelector('#wallet-connect').disabled = value || !walletState.wallets.length
+
 }
 async function follow(id) {
   setBusy(true); reconnect.hidden = true; state.textContent = 'RUNNING'
@@ -32,6 +37,8 @@ async function follow(id) {
       if (job.state === 'running') state.textContent = jobStage(job)
       if (job.state !== 'running') {
         if (job.state === 'done' && job.action === 'status') showStatus(job.output)
+        if (job.state === 'done' && job.action === 'track') showOrders(job.output)
+        if (job.state === 'done' && ['blockers', 'cleanup-preview'].includes(job.action)) showBlockers(job.output)
         if (job.state === 'done' && job.action === 'prepare-admission') {
           const prepared = preparedBatch(job.output)
           if (prepared !== null) document.querySelector('#preparation-state').textContent = `Prepared for batch ${prepared}. Refresh status before submitting.`
@@ -55,8 +62,11 @@ async function follow(id) {
 }
 async function run(input) {
   if (busy) return
-  if (mobile.matches && desktopOnly.has(input.action)) { output.textContent = 'Use a desktop to run this action.'; state.textContent = 'DESKTOP ONLY'; return }
   if (savedJob()) { await follow(savedJob()); return }
+  const guarded = new Set(['prepare-admission', 'preflight', 'commit', 'deposit', 'withdraw', 'cleanup', 'resume-admission', 'backup-export', 'backup-import'])
+  const mismatch = walletMismatch(walletState.selected, lastStatus)
+  if (mismatch && guarded.has(input.action)) { output.textContent = mismatch; state.textContent = 'ACCOUNT CHECK'; return }
+  if (mobile.matches && desktopOnly.has(input.action)) { output.textContent = 'Use a desktop to run this action.'; state.textContent = 'DESKTOP ONLY'; return }
   setBusy(true); state.textContent = 'STARTING'; output.textContent = `Starting ${input.action} through the local client…`
   try {
     const response = await fetch('/api/trade', { method: 'POST', headers: { 'content-type': 'application/json', 'x-blindfold-request': '1' }, body: JSON.stringify(input) })
@@ -71,10 +81,39 @@ async function run(input) {
   } catch (e) { output.textContent = e.message; state.textContent = 'FAILED' }
   finally { setBusy(false) }
 }
+function showBlockers(text) {
+  const rows = parseBlockers(text)
+  if (rows === null) return
+  const list = document.querySelector('#blocker-list'); list.replaceChildren()
+  document.querySelector('#blockers-message').textContent = rows.length ? 'These commitments are holding withdrawals.' : 'No commitments currently block withdrawal.'
+  for (const row of rows) {
+    const item = document.createElement('li')
+    const title = document.createElement('strong'); title.textContent = `Order #${row.id} · batch ${row.batch}`
+    const action = document.createElement('span'); action.className = 'order-state'; action.textContent = row.action
+    const reason = document.createElement('p'); reason.textContent = row.reason
+    item.append(title, action, reason); list.append(item)
+  }
+}
+function showOrders(text) {
+  const rows = parseTrack(text)
+  if (rows === null) return
+  const list = document.querySelector('#order-list'); list.replaceChildren()
+  document.querySelector('#orders-message').textContent = rows.length ? 'Latest status from the settlement contract.' : 'No commitments found for this account.'
+  for (const row of rows) {
+    const item = document.createElement('li')
+    const title = document.createElement('strong'); title.textContent = `Order #${row.id} · batch ${row.batch}`
+    const state = document.createElement('span'); state.className = 'order-state'; state.textContent = row.state
+    const detail = document.createElement('p'); detail.textContent = row.detail
+    item.append(title, state, detail); list.append(item)
+  }
+}
 function showStatus(text) {
   const parsed = parseStatus(text)
   if (!parsed) return
+  lastStatus = parsed
+  renderWallet(walletState)
   document.querySelector('#account-address').textContent = parsed.account
+  document.querySelector('#network-pair').textContent = [parsed.network, parsed.pair].filter(Boolean).join(' · ') || 'Network and pair not reported'
   document.querySelector('#batch-status').textContent = parsed.batch
   document.querySelector('#preparation-state').textContent = parsed.preparation ?? 'Preparation is not required by this deployment'
   const current = parsed.batch.match(/^batch (\d+) /)
@@ -110,6 +149,26 @@ document.querySelector('#funds').addEventListener('submit', (event) => {
 })
 document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => run({ action: button.dataset.action })))
 reconnect.addEventListener('click', () => { const id = savedJob(); if (id) follow(id) })
+function renderWallet(value) {
+  walletState = value
+  const select = document.querySelector('#wallet-choice'), previous = select.value
+  select.replaceChildren()
+  if (!value.wallets.length) { const option = document.createElement('option'); option.value = ''; option.textContent = 'No browser wallet detected'; select.append(option) }
+  for (const wallet of value.wallets) { const option = document.createElement('option'); option.value = wallet.id; option.textContent = wallet.name; select.append(option) }
+  if (value.wallets.some((wallet) => wallet.id === previous)) select.value = previous
+  const selected = value.selected, mismatch = walletMismatch(selected, lastStatus)
+  document.querySelector('#wallet-message').textContent = selected
+    ? `${selected.name}: ${selected.account} · chain ${BigInt(selected.chainId)}. ${mismatch ?? 'Account and network match.'} Read-only: the CLI signs transactions; the browser wallet does not.`
+    : 'The CLI signs transactions with its configured account. Browser wallets do not sign in this version.'
+  document.querySelector('#wallet-disconnect').hidden = !selected
+  setBusy(busy)
+}
+const walletView = createWalletView(window, renderWallet)
+document.querySelector('#wallet-connect').addEventListener('click', async () => {
+  try { await walletView.connect(document.querySelector('#wallet-choice').value) }
+  catch (e) { document.querySelector('#wallet-message').textContent = `Could not view wallet: ${e.message}` }
+})
+document.querySelector('#wallet-disconnect').addEventListener('click', () => walletView.disconnect())
 mobile.addEventListener('change', () => setBusy(busy))
 setBusy(false)
 if (savedJob()) follow(savedJob())

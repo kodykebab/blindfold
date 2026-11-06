@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { parseStatus } from './status.mjs'
+import { parseStatus, parseTrack, parseBlockers } from './status.mjs'
 
 const enabled = process.env.WEB_E2E === '1'
 const testKeys = { PRIVATE_KEY: '', MNEMONIC: 'test test test test test test test test test test test junk' }
@@ -55,6 +55,12 @@ test('real CLI backup exports a committed order and restores it to another local
     assert.equal(parsed.rows.length, 2)
     assert.equal((await original.get(status.id)).state, 'done', 'a new page can recover an existing non-secret job result')
     assert.match(parsed.open, /open commitments: 1/)
+    const tracked = await original.run({ action: 'track' })
+    assert.equal(tracked.state, 'done', tracked.output)
+    assert.equal(parseTrack(tracked.output)?.[0].state, 'committed')
+    const blockers = await original.run({ action: 'blockers' })
+    assert.equal(blockers.state, 'done', blockers.output)
+    assert.equal(parseBlockers(blockers.output)?.[0].state, 'committed')
     const exportJob = await original.run({ action: 'backup-export' })
     assert.equal(exportJob.state, 'done', exportJob.output)
     const backup = JSON.parse(exportJob.backup)
