@@ -35,7 +35,8 @@ createServer(async (req, res) => {
   const path = url.pathname === '/' ? '/index.html' : url.pathname === '/trade' ? '/trade.html' : url.pathname
   if (req.method === 'GET' && pages.has(path)) {
     const type = path.endsWith('.css') ? 'text/css' : path.endsWith('.mjs') ? 'text/javascript' : 'text/html'
-    res.writeHead(200, { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); return res.end(pages.get(path))
+    // Never framed: a hidden frame of /trade could be clicked into confirming or withdrawing (same-origin requests).
+    res.writeHead(200, { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'" }); return res.end(pages.get(path))
   }
   res.writeHead(404).end()
 }).listen(PORT, '127.0.0.1', () => console.log(`Blindfold on http://127.0.0.1:${PORT}`))

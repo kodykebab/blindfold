@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sweepStale } from '../../packages/client/sweep.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const number = (v) => typeof v === 'string' && /^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/.test(v) && v.length <= 80
@@ -44,6 +45,7 @@ export function createJobs({ start = (args) => spawn(process.execPath, ['package
           if (typeof input.backup !== 'string' || Buffer.byteLength(input.backup) > 1_000_000) throw Error('Invalid or oversized backup')
           try { const parsed = JSON.parse(input.backup); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw Error() } catch { throw Error('Backup must be a JSON object') }
         }
+        sweepStale('blindfold-web-backup-') // a server killed mid-backup skips the cleanup in finish()
         dir = mkdtempSync(join(tmpdir(), 'blindfold-web-backup-'))
         const file = join(dir, 'state.json')
         try {
