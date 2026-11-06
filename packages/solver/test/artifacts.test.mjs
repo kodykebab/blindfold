@@ -15,3 +15,13 @@ test('fresh multi-compiler Foundry artifacts resolve without a stale unversioned
     assert.equal(artifactPath(root, 'BlindfoldSettlement'), join(dir, 'BlindfoldSettlement.0.8.26.json'))
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('interfaces can be resolved from a shared source file', () => {
+  const root = mkdtempSync(join(tmpdir(), 'blindfold-interface-test-'))
+  const dir = join(root, 'IExternalMarket.sol')
+  mkdirSync(dir)
+  try {
+    writeFileSync(join(dir, 'IV3Pool.0.8.26.json'), '{}')
+    assert.equal(artifactPath(root, 'IV3Pool', 'IExternalMarket'), join(dir, 'IV3Pool.0.8.26.json'))
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

@@ -78,7 +78,8 @@ async function simulate(b, priceX96, marginal, blockNumber, peer = false, extern
 }
 
 async function settleBatch({ b, ids }) {
-  const { number: blockNumber } = await pub.getBlock()
+  const searchStarted = performance.now()
+  const { number: blockNumber, timestamp } = await pub.getBlock()
   const orders = await Promise.all(ids.map(async (id) => ({ id, ...(await read('getOrder', [id], blockNumber)) })))
   const [poolX96, tol, liquidity] = await Promise.all([
     read('poolPriceX96', [], blockNumber), read('toleranceBps', [], blockNumber),
@@ -89,13 +90,17 @@ async function settleBatch({ b, ids }) {
   // A configured deployment never substitutes the sealed pool's stored price
   // when external reference validation fails.
   const reference = configured ? await read('referencePriceX96', [b], blockNumber) : poolX96
+  const externalDeadline = configured
+    ? searchStarted + Math.max(0, Number((await read('settleCloses', [b], blockNumber)) - timestamp) * 1000 - 2000)
+    : Infinity
   let sol = liquidity === 0n && (!hasExternal || configured)
     ? await solvePeer({ orders, priceX96: reference, simulate: (m) => simulate(b, reference, m, blockNumber, true) })
     : null
   if (!sol && configured) sol = await solveExternal({
-    referenceX96: reference,
+    referenceX96: reference, orders,
+    deadlineMs: externalDeadline,
     deviationBps: Number(await read('externalPriceDeviationBps', [], blockNumber)),
-    simulate: (p) => simulate(b, p, undefined, blockNumber, false, true),
+    simulate: (p, m) => simulate(b, p, m, blockNumber, false, true),
   })
   if (!sol && !configured && liquidity !== 0n) sol = await solve({
     simulate: (p, m) => simulate(b, p, m, blockNumber), poolX96, toleranceBps: Number(tol), orders, marginal: hasMarginal,
@@ -107,6 +112,7 @@ async function settleBatch({ b, ids }) {
   const args = sol.peer ? [b, sol.peer.id, sol.peer.amountIn] : sol.marginal ? [b, sol.priceX96, sol.marginal.id, sol.marginal.amountIn] : [b, sol.priceX96]
   const fresh = await simulate(b, sol.priceX96, sol.peer ?? sol.marginal, undefined, Boolean(sol.peer), Boolean(sol.external))
   if (!fresh.ok) throw new Error(`batch ${b}: candidate became stale; retry on next poll`)
+  if (sol.external && performance.now() >= externalDeadline) throw new Error(`batch ${b}: external submission deadline reached`)
   const hash = await wallet.writeContract({ address, abi, functionName: sol.peer ? 'settlePeer' : sol.external ? 'settleExternal' : 'settle', args })
   const receipt = await pub.waitForTransactionReceipt({ hash })
   if (receipt.status !== 'success') throw new Error(`batch ${b}: settle tx ${hash} reverted`)

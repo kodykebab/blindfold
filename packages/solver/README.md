@@ -7,7 +7,7 @@ validated reference ending at the batch reveal deadline. With zero active sealed
 liquidity it first tries a peer-only crossing at that reference, with price
 priority and a common fraction at the equal-limit boundary. Otherwise it searches
 the external band in one-basis-point steps, closest to the reference first, and
-simulates full fills through the public-pool route. It reports the chosen route.
+simulates full fills, then proportional boundary groups, through the public-pool route. It reports the chosen route.
 Invalid external reference data aborts the batch attempt, without a stored-price
 fallback. Unconfigured deployments use the original sealed AMM search when they
 have active liquidity. Older contract ABIs retain their previous peer behavior.
@@ -34,3 +34,43 @@ SOLVER_E2E=1 node --test test/integration.test.mjs
 ```
 
 For integration review before the contract PR is merged, `CONTRACTS_DIR` may point to a separately built checkout containing that implementation. No ABI is copied into this package. The test-only factory supplies its own creation-code hash so CREATE2 address mining uses the exact compiler output deployed by the factory.
+
+## External partial fills and bounded search
+
+After full-fill candidates fail, the external search tries representative orders
+for distinct same-side limit groups. Halving seeks an executable fraction;
+bisection refines that bracket. Every amount follows the contract's price priority,
+equal-limit allocation and rounded-up minimum-output rules. Exact order-limit
+edges supplement the one-basis-point price grid. The solver skips zero-fill
+candidates, caps external simulations at 4,096 and stops before the batch deadline
+with two seconds reserved for submission. A slow successful simulation that
+finishes after that deadline is discarded.
+
+The search is a bounded heuristic, not a maximum-volume or infeasibility proof.
+Disconnected executable fractions may remain undiscovered. The integration test
+covers capacity-limited groups in both directions, including CLI submission,
+actual proportional input amounts and user minimum outputs.
+
+## Read-only Ethereum market measurements
+
+Build the contract artifacts, then run:
+
+```bash
+CONTRACTS_DIR=/path/to/contracts node packages/solver/benchmark-market.mjs > /tmp/market.json
+```
+
+The sampler authenticates the network and resolves the USDC/WETH 500-fee pool from
+the canonical factory. It reads 13 blocks spaced 600 blocks apart by default;
+`BLOCK_STEP=8` samples recent history on RPCs without archive access. `BLOCKS`
+accepts explicit comma-separated block numbers for reproduction, and `ETH_RPC`
+selects the endpoint. Any failed sample produces an error entry and nonzero exit.
+Results contain observation age, harmonic liquidity, approximate spot/TWAP
+deviation and aggregate read latency. They do not measure transaction simulation,
+proving, submission or inclusion latency, and do not certify oracle security.
+
+
+A recorded run is in [benchmarks/ethereum-26353945.json](benchmarks/ethereum-26353945.json).
+Its 13 samples cover blocks 26,353,849–26,353,945: observation ages 0–84 seconds,
+harmonic liquidity 1.663–1.687 × 10^18, approximate spot/TWAP deviations 4.34–12.52
+basis points and aggregate RPC read latency 545–760 ms per sample. This is a
+96-block sample, not a volatile-period or day-long calibration.
