@@ -16,6 +16,7 @@ import { balances, deadlines, exitPlan, fillDescription, isOpen, preflight, trac
 import { exportState, importState, loadState, parseState, saveCommitment, validateState, writeState, withStateLock } from './state.mjs'
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { confirmTx, confirmationsFor, describeOutcome } from './tx.mjs'
+import { errorText } from './rpc-error.mjs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
 
@@ -394,4 +395,4 @@ try {
   await validateDeployment()
   await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())
 }
-catch (e) { console.error(`client: ${e.shortMessage ?? e.message}`); process.exitCode = 1 }
+catch (e) { console.error(`client: ${errorText(e)}`); process.exitCode = 1 }

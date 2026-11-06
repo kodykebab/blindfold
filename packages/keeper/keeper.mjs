@@ -8,6 +8,7 @@ import { createPublicClient, createWalletClient, defineChain, http } from 'viem'
 import { mnemonicToAccount, privateKeyToAccount } from 'viem/accounts'
 // shortcut: reuses the client's helpers in place, so packages/client must be installed too; publish them as a package if a third consumer appears
 import { TEST_MNEMONIC, decrypt, drandClient, loadAbi, loadDeployment, orderHash } from '../client/lib.mjs'
+import { errorText } from '../client/rpc-error.mjs'
 import { canSpend, due, lostRace, opened } from './work.mjs'
 
 const E = process.env
@@ -72,7 +73,7 @@ async function cycle() {
       st[{ reveal: 'revealed', slash: 'slashed', expire: 'expired' }[kind]]++
     } catch (e) {
       if (lostRace(e)) st.lostRace++
-      else st.errors.push(`${kind} ${args[0]}: ${e.shortMessage ?? e.message}`)
+      else st.errors.push(`${kind} ${args[0]}: ${errorText(e)}`)
     }
   }
 
@@ -104,11 +105,11 @@ async function cycle() {
 }
 
 if (once) {
-  const st = await cycle().catch((e) => ({ errors: [e.shortMessage ?? e.message] }))
+  const st = await cycle().catch((e) => ({ errors: [errorText(e)] }))
   if (st.errors.length) console.error(`keeper: ${st.errors.join('; ')}`)
   process.exit(st.errors.length ? 1 : 0)
 }
 for (;;) {
-  await cycle().catch((e) => console.error(`keeper: ${e.shortMessage ?? e.message}`)) // RPC hiccup: try again next poll
+  await cycle().catch((e) => console.error(`keeper: ${errorText(e)}`)) // RPC hiccup: try again next poll
   await new Promise((r) => setTimeout(r, POLL_MS))
 }
