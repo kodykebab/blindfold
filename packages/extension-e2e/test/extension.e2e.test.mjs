@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseEther } from 'viem'
-import { startChain, user, DEPOSIT, Q96 } from '../lib/chain.mjs'
+import { startChain, user, DEPOSIT } from '../lib/chain.mjs'
 import { launch, stopBridge, EXTENSION_DIST } from '../lib/browser.mjs'
 import { RDNS } from '../lib/anvil-wallet.mjs'
 import { call, onboard, openApp, run, storageDump, until, DRAND, PASSPHRASE } from '../lib/extension.mjs'
@@ -152,7 +152,7 @@ test('E2: commit, reveal, settle and withdraw without proofs; no plaintext order
   assert.match(JSON.stringify((await run(app, 'track')).result), /revealed/) // the extension revealed its own saved order
   await c.write(S(), 'BlindfoldSettlement', 'reveal', [1n, theirs.order, theirs.salt], user(1))
   await c.warp(await readS('revealCloses', [batch]))
-  await c.write(S(), 'BlindfoldSettlement', 'settle', [batch, Q96], user(1))
+  await c.write(S(), 'BlindfoldSettlement', 'settlePeer', [batch, 0n, parseEther('10')], user(1))
 
   r = await run(app, 'track')
   assert.equal(r.state, 'done', r.error)

@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseEther } from 'viem'
-import { startChain, user, DEPOSIT, Q96 } from '../lib/chain.mjs'
+import { startChain, user, DEPOSIT } from '../lib/chain.mjs'
 
 test('harness: deploy, commit, reveal, settle at price 1 and withdraw without the extension', { skip: process.env.EXT_E2E !== '1', timeout: 120_000 }, async () => {
   const c = await startChain()
@@ -30,7 +30,7 @@ test('harness: deploy, commit, reveal, settle at price 1 and withdraw without th
     await c.warp(await c.read(S, 'BlindfoldSettlement', 'revealOpens', [b]))
     for (const [id, { order, salt }] of orders.entries()) await c.write(S, 'BlindfoldSettlement', 'reveal', [BigInt(id), order, salt], user(1))
     await c.warp(await c.read(S, 'BlindfoldSettlement', 'revealCloses', [b]))
-    await c.write(S, 'BlindfoldSettlement', 'settle', [b, Q96], user(1))
+    await c.write(S, 'BlindfoldSettlement', 'settlePeer', [b, 0n, parseEther('10')], user(1))
     assert.equal(await c.read(S, 'BlindfoldSettlement', 'finalized', [b]), true)
     // seller got 10 token1, buyer 10 token0; both withdraw
     for (const [i, token] of [[10, dep.token1], [11, dep.token0]]) {

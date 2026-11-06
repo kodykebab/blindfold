@@ -32,7 +32,7 @@ function artifact(name) {
 export const abi = (name) => artifact(name).abi
 
 /** forge build, unless the artifacts are there; the team lock keeps two agents from building at once. */
-export async function ensureBuilt(names = ['MockERC20', 'BlindfoldVault', 'BlindfoldSettlement', 'PoolManager']) {
+export async function ensureBuilt(names = ['MockERC20', 'BlindfoldVault', 'BlindfoldSettlement', 'PoolManager', 'MockExternalMarket']) {
   // forge test can overwrite helper artifacts with Foundry-only dynamic linking bytecode. These cannot be
   // deployed on anvil even when the artifact exists (AdmissionPoolFactory.deployHook calls the Vm address).
   const deployable = () => names.every((n) => existsSync(join(OUT, `${n}.sol`))
@@ -57,7 +57,7 @@ export async function ensureBuilt(names = ['MockERC20', 'BlindfoldVault', 'Blind
  * Returns the deployment plus helpers; dep is what the extension imports (D5 shape, client chain.mjs).
  */
 export async function startChain({ admission, schedule = {}, timestamp, timestampInterval, dir = join(fileURLToPath(new URL('..', import.meta.url)), '.chain') } = {}) {
-  await ensureBuilt(admission ? ['MockERC20', 'AdmissionVault', 'AdmittedSettlement', 'PoolManager', 'AdmissionPoolFactory'] : undefined)
+  await ensureBuilt(admission ? ['MockERC20', 'AdmissionVault', 'AdmittedSettlement', 'PoolManager', 'AdmissionPoolFactory', 'MockExternalMarket'] : undefined)
   // Refuse an occupied port before sending any deployment transaction to an unrelated chain.
   await new Promise((resolve, reject) => {
     const probe = createServer()
@@ -126,6 +126,9 @@ export async function startChain({ admission, schedule = {}, timestamp, timestam
     const pool = { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks }
     await write(manager, 'PoolManager', 'initialize', [pool, Q96]) // sqrtPriceX96 = 2^96: price 1
     await write(settlement, contract, 'initialize', [pool])
+    // Peer settlement uses the same fixed reference-price fixture as the client harness.
+    const market = await deploy('MockExternalMarket', [settlement, token0, token1])
+    await write(settlement, contract, 'configureExternal', [market])
 
     const dep = {
       chainId: 31337, deployBlock: Number(deployBlock), mode: 'local', rpc: RPC, vault, settlement, token0, token1, depositToken: token1,
