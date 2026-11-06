@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import { Test } from "forge-std/Test.sol";
-import { Context } from "swap-vm/src/libs/VM.sol";
-import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
-import { SealedClearing } from "../../src/swapvm/SealedClearing.sol";
+import {Test} from "forge-std/Test.sol";
+import {Context} from "swap-vm/src/libs/VM.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SealedClearing} from "../../src/swapvm/SealedClearing.sol";
 
 /// Runs the instruction on a bare Context; `this` plays the settlement (taker and price source).
 contract SealedClearingHarness is SealedClearing {
-    function run(bool exactIn, uint256 amountIn, uint256 amountOut, bytes calldata args)
+    function run(bool exactIn, uint256 amountIn, uint256 amountOut, bytes calldata args, bool reverse)
         external
         view
         returns (uint256, uint256)
     {
         Context memory ctx;
         ctx.query.taker = msg.sender;
+        ctx.query.tokenIn = reverse ? address(2) : address(1);
+        ctx.query.tokenOut = reverse ? address(1) : address(2);
         ctx.query.isExactIn = exactIn;
         ctx.swap.amountIn = amountIn;
         ctx.swap.amountOut = amountOut;
@@ -29,7 +31,8 @@ contract SealedClearingMathTest is Test {
     SealedClearingHarness h;
     uint256 price;
 
-    function activeClearingPriceX96(address, address) external view returns (uint256) {
+    function activeClearingPriceX96(address tokenIn, address tokenOut) external view returns (uint256) {
+        require(tokenIn == address(1) && tokenOut == address(2), "must use canonical price");
         return price;
     }
 
@@ -38,7 +41,7 @@ contract SealedClearingMathTest is Test {
     }
 
     function _run(bool exactIn, uint256 amountIn, uint256 amountOut) internal view returns (uint256, uint256) {
-        return h.run(exactIn, amountIn, amountOut, abi.encodePacked(address(this)));
+        return h.run(exactIn, amountIn, amountOut, abi.encodePacked(address(this)), false);
     }
 
     /// The old `(amountOut << 96)` dropped high bits: 2^170 out at price 1 quoted an input of 0.
@@ -76,5 +79,21 @@ contract SealedClearingMathTest is Test {
             // rounded against the taker: what it pays always covers the output at the clearing price
             assertGe(Math.mulDiv(inp, price, Q96, Math.Rounding.Ceil), amount);
         }
+    }
+
+    function test_reversePriceDoesNotLoseOneWeiThroughReciprocalRounding() public {
+        price = 3 * Q96;
+        (, uint256 out) = h.run(true, 3e18, 0, abi.encodePacked(address(this)), true);
+        assertEq(out, 1e18);
+        (uint256 inp,) = h.run(false, 0, 1e18, abi.encodePacked(address(this)), true);
+        assertEq(inp, 3e18);
+    }
+
+    function testFuzz_reverseMatchesSettlementDivision(uint128 amount, uint128 priceSeed) public {
+        price = bound(priceSeed, 1, type(uint128).max);
+        (, uint256 out) = h.run(true, amount, 0, abi.encodePacked(address(this)), true);
+        assertEq(out, Math.mulDiv(amount, Q96, price));
+        (uint256 inp,) = h.run(false, 0, amount, abi.encodePacked(address(this)), true);
+        assertEq(inp, Math.mulDiv(amount, price, Q96, Math.Rounding.Ceil));
     }
 }
