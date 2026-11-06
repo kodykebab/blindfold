@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
+import {BlindfoldVault} from "../../src/BlindfoldVault.sol";
 import "forge-std/Test.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {AdmissionVault} from "../../src/admission/AdmissionVault.sol";
@@ -35,7 +36,7 @@ contract AdmissionVaultTest is Test {
         token.mint(address(this), 100);
         token.approve(address(vault), 100);
         token.setTax(true);
-        vm.expectRevert(AdmissionVault.InexactTransfer.selector);
+        vm.expectRevert(BlindfoldVault.TokenTransferFailed.selector); // the base vault checks exact transfers first (#58)
         vault.deposit(address(token), 10);
         assertEq(vault.balanceOf(address(this), address(token)), 0);
         assertEq(token.balanceOf(address(vault)), 0);
@@ -43,7 +44,7 @@ contract AdmissionVaultTest is Test {
         vault.deposit(address(token), 10);
         assertEq(vault.freeBalance(address(this), address(token)), 10);
         token.setTax(true);
-        vm.expectRevert(AdmissionVault.InexactTransfer.selector);
+        vm.expectRevert(BlindfoldVault.TokenTransferFailed.selector); // the base vault checks exact transfers first (#58)
         vault.withdraw(address(token), 5);
         assertEq(vault.freeBalance(address(this), address(token)), 10);
         assertEq(token.balanceOf(address(vault)), 10);

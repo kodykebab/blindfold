@@ -21,7 +21,7 @@ Validation on the integrated source: 215 Foundry tests including Unichain forks 
 
 The enforced deployment uses `AdmissionVault` and `AdmittedSettlement`, with immutable preparation and online verifier addresses. It reuses the existing commitment, reveal, settlement, expiry and withdrawal lifecycle. The fixed token pair checks actual transfer receipts; acceptance binds both proofs to the caller, deployment, current round, root and post-fee funding capacity. The original unchecked settlement remains the explicit off-mode deployment.
 
-The client generates proofs locally, maintains cumulative totals and blinding, saves pending transitions before sending, and checks the chain root before another append. `resume-admission` reconciles uncertain inclusion; exports include the private opening. The reproducible local gate is `bash packages/proof-bench/check-admission.sh` after normal dependency setup. It uses generated development parameters, recorded quicknet data, an isolated Anvil chain and 900-second batches.
+The client generates proofs locally, maintains cumulative totals and blinding, saves pending transitions before sending, and checks the chain root before another append. `resume-admission` reconciles uncertain inclusion; exports include the private opening. The reproducible local gate is `bash packages/proof-bench/check-admission.sh` after normal dependency setup. It uses generated development parameters, recorded quicknet data, an isolated Anvil chain and 300-second development batches.
 
 The admission gate has passed with freshly generated proof pairs, independent recorded-drand decryption, interrupted submission/resume, export/restore, reveal, settlement, withdrawal and release. Full Foundry validation passed 227 tests with configured forks and 4,096 fuzz runs; the Go circuit suite and affected client regressions passed.
 
@@ -40,6 +40,24 @@ The remaining review queue includes the newly opened multi-token PR #58 after it
 The clean-clone auction target is deploy → fund → generate local proofs → admit → reveal → settle (including partial fills) → verify balances → cleanup → withdraw. Exercise service outage and expiry recovery separately. The Court target is receipt → sandwich evidence → claim → claim window → collect. Keep time-travel fixtures separate from the wall-clock keeper chain.
 
 Run full Foundry and affected lane checks on the integrated tree. Include relevant fork/fuzz cases, model comparisons, actual proof-bound admission, independent decryption, client/keeper and solver CLI execution, and Court gates. Record offline and network-dependent results separately. Use generated artifacts and deployment manifests throughout.
+
+### Product delivery issues
+
+[Completion tracker #67](https://github.com/kodykebab/blindfold/issues/67) links the complete remaining backlog and its release acceptance evidence. Admission and cumulative local state landed in [PR #59](https://github.com/kodykebab/blindfold/pull/59); the following delivery work builds on that implementation.
+
+| Issue | Delivery outcome | Owner lane | Ordering |
+|---|---|---|---|
+| [#60](https://github.com/kodykebab/blindfold/issues/60) | Measured advance preparation and supported-device timing | Kritarth + Khush | First; coordinates with #31 |
+| [#61](https://github.com/kodykebab/blindfold/issues/61) | Authenticated production setup and parameter distribution | Kritarth | After frozen-source review; before real-funds deployment |
+| [#62](https://github.com/kodykebab/blindfold/issues/62) | Browser trading, tracking, cleanup and withdrawal | Khush | After proving/device decision; reuse #16/#19 |
+| [#63](https://github.com/kodykebab/blindfold/issues/63) | Finality, transaction replacement and device restoration | Khush + Kritarth | Alongside browser integration; reuse existing private state |
+| [#64](https://github.com/kodykebab/blindfold/issues/64) | Clean-clone actual-service E2E and CI | All lanes | Integrate solver/keeper; then browser and separate Court gates |
+| [#65](https://github.com/kodykebab/blindfold/issues/65) | Verified deployment and operated release | All lanes | After timing, config, review and production parameter gates |
+| [#66](https://github.com/kodykebab/blindfold/issues/66) | Independent review and final release handoff | All lanes | Review before setup/deployment; final handoff after staging |
+
+Keep existing issues authoritative: clearing/execution #7/#12/#18/#19/#30; client flow/exit #10/#16; keeper/timing #13/#14/#15/#31; domains/config #23/#24; integrations #25/#26; Court #11/#20/#21/#22/#27/#32; documentation #28. Routing #43 and global auctions #57 remain separate verification scopes with their existing PR stacks. The tracker links all of these rather than duplicating their implementation tasks.
+
+Complete the pair-auction journey with actual keeper/solver services, partial fills, supported outage recovery and browser acceptance. Court must independently demonstrate coverage through collection. Broader routing/global-auction readiness does not follow from the pair-auction gate. New deployment, recovery or custody architecture still requires an explicit scoped decision.
 
 ### Product completion milestones
 
@@ -108,7 +126,7 @@ Additive changes only (new key, event, overload, optional attribute, CLI flag). 
 
 Admission deployment metadata: the optional `admission` object contains `manifestSha256`, `preparationVerifier` and `onlineVerifier`. Existing `admission: "off"` manifests remain readable. `admissionState(owner)` returns `(uint64 batch, bytes32 root, uint256 step)`; a fully closed account returns zero. `FundingAdvanced(owner,batchId,step,root)` accompanies accepted commitments. The opaque proof is `abi.encode(bytes preparationSeal, bytes preparationJournal, bytes onlineSeal, bytes onlineJournal)`.
 
-Local proving configuration: `ADMISSION_PROVER` defaults to `packages/proof-bench/results/local-prover`; `ADMISSION_PARAMS` defaults to `packages/proof-bench/results/admission-params`. `ADMISSION_MANIFEST_SHA256` pins generated parameters for the integration test; ordinary CLI calls read that pin from deployment metadata. `setup-local`, `fixture-local` and `prove-local` are additive commands on the circuit tool. Fixture integers may be decimal strings; historical numeric fixtures remain accepted.
+Local proving configuration: `ADMISSION_PROVER` defaults to `packages/proof-bench/results/local-prover`; `ADMISSION_PARAMS` defaults to `packages/proof-bench/results/admission-params`. `ADMISSION_MANIFEST_SHA256` pins generated parameters for the integration test; ordinary CLI calls read that pin from deployment metadata. `setup-local`, `fixture-local` and `prove-local` are additive commands on the circuit tool. Fixture integers may be decimal strings; historical numeric fixtures remain accepted. `prepare-fixture-local` adds an order-independent `{preparation,fixture}` response; `fixture-local` accepts optional `preparation` material. `prove-local` adds timings, peak RSS and Go version alongside the existing seal/journal. Client `prepare-admission <batch-id>` saves one preparation in the existing locked state; `commit` consumes it before encryption. Ready preparations are omitted from export/import. No contract ABI or circuit statement changes. `ADMISSION_MIN_LEAD_SECONDS` is an optional positive integer overriding native-helper preflight: defaults are 120 seconds with a ready preparation and 180 seconds for inline proofs.
 
 Client account selection: `CLIENT_ACCOUNT_INDEX` selects the local Anvil account (default 10). Existing numeric `USER` values remain supported; ordinary OS usernames do not override the default. `PRIVATE_KEY` continues to take precedence.
 
@@ -117,10 +135,15 @@ Client account selection: `CLIENT_ACCOUNT_INDEX` selects the local Anvil account
 |---|---|---|---|
 | Existing ABIs and events | Kritarth | everyone | As in [HANDOFF.md](HANDOFF.md#interfaces-to-build-against). Read ABIs from `contracts/out/` after `forge build`; never hand-copy |
 | R1 settle overload | Kritarth | solver | `settle(uint64 batchId, uint256 priceX96, uint256 marginalId, uint128 marginalAmountIn)`. `marginalId` identifies a funded representative; every same-side order with the same exact limit ratio receives the floored proportional input; if its output would violate the ceil-rounded minimum, reduce that input to a multiple of `amountIn / gcd(amountIn, minAmountOut)` instead. Zero-output allocations with zero minimum stay unfilled. Eligible better same-side limits fill fully; worse limits do not fill; opposing orders use the existing quote rule. Partial minimum output rounds up. `settle(b, p)` stays. `Filled.amountIn` = the actual filled amount. See REVIEW.md S1 implementation notes before updating the solver |
+| Peer-only settlement | Kritarth | solver, keeper, indexer | `poolLiquidity() returns (uint128)`; `settlePeer(uint64 batchId, uint256 marginalId, uint128 marginalAmountIn)`. Requires zero active liquidity and derives its price from `referencePriceX96(batchId)`, which validates a configured external market. Missing or invalid oracle data reverts; there is no stored-price fallback. Same price-priority/equal-limit fraction as the partial overload, allowing a full boundary group and zero minimum. Both token budgets must cover payouts. `PeerSettled(batchId, priceX96, rounding0, rounding1)` accompanies existing fill/settlement events; `Filled.amountOut` includes returned rounding surplus. |
+
 | R3 fee | Kritarth | client, UI | `commitFee() view returns (uint256)`, charged in `depositToken` on every commit and admit, never refunded |
 | R2 admission | Kritarth | client, keeper | `admit(uint64 batchId, bytes32 hash, bytes ciphertext, bytes proof) returns (uint256 id)`; `admissionRequired() view returns (bool)`. `proof` is opaque bytes whose encoding Kritarth defines: one seal and journal, or the preparation and online seals and journals ABI-encoded together, after the two-proof split on `main` (`725ab8e`). The client passes it through untouched. `admit` emits the same `Committed` event, so the keeper doesn't change. When `admissionRequired`, `commit` reverts |
+| External market | Kritarth | solver, deployment, indexer | One-shot `configureExternal(IExternalMarket)` before any commitments; `referencePriceX96(uint64)`, `externalPriceDeviationBps()`, `externalMarket()`; `settleExternal(uint64,uint256)` and `settleExternal(uint64,uint256,uint256,uint128)`. Additive `ExternalConfigured` and `ExternalSettled` events. Peer pricing changes require the matching solver update; legacy `settle` now rejects zero active sealed-pool liquidity |
+| General routing | Kritarth | deployment, solver | Configure `UniswapV3Route` through the existing `IExternalMarket` ABI before commitments. Constructor fixes one-to-three authenticated pools and endpoint-sorted token path. `hopCount()`, `path(index)`, `markets(index)` expose configuration; reverse orders traverse it backwards. Orders, proof statements and solver settlement arguments are unchanged |
+| Global auction v1 | Kritarth | solver, client, keeper, deployment | Separate `GlobalAuction` and one shared `BlindfoldVault`; registry of 2–8 tokens; `Order(owner,uint8 tokenIn,uint8 tokenOut,uint128 amountIn,uint128 minAmountOut)`; `admit(uint64,bytes32,bytes,bytes32,bytes32,bytes)`; `reveal(uint256,Order,bytes32)`; `settle(uint64,uint128[],Route[])`; `settleAtPrices(uint64,uint256[8],uint128[],Route[])`; `Route(uint8 input,uint8 output,uint8 market,uint128 amount,uint128 minimum)`; fraction denominator `2^128−1`; global proof domains and two-input online verifier; existing pair ABIs unchanged. Full encoding/lifecycle in ARCHITECTURE.MD §14 |
 | R4 reward | Kritarth | solver | `settleRewardBps() view returns (uint256)`: share of the residual surplus paid to `msg.sender` of `settle` (0 until shipped) |
-| Bonds | Bhoumik | demo-bots, watcher, UI (via Arkiv) | `bond()`, `requestUnbond()`, `unbond()` (delayed); `claim(SandwichCourtVerifier.Claim c, Protected r, bytes sig) returns (uint256 paid)`. EIP-712 `Protected{bytes32 txHash, uint256 chainId, uint64 acceptedAt, uint64 maxBlock, uint256 maxPayout}`; `maxPayout` comes from the tx's own slippage at acceptance |
+| Bonds | Bhoumik | demo-bots, watcher, UI (via Arkiv) | `bond()`, `requestUnbond()`, `unbond()` (delayed); `claim(SandwichCourtVerifier.Claim c, Protected r, bytes sig, bytes poolKey) returns (bytes32 incident)` registers a claim; `collect(bytes32 txHash) returns (uint256 payout)` pays it once the incident's `claimWindow` closes; views `incidents(id)`, `claims(txHash)`, `shareOf(txHash)`, `reservedOf(rpc)`. `receiptDigest(Protected) view returns (bytes32)` is what the RPC signs. EIP-712 `Protected{bytes32 txHash, uint256 chainId, uint64 acceptedAt, uint64 maxBlock, uint256 maxPayout, address beneficiary}`; `maxPayout` comes from the tx's own slippage at acceptance; payouts go to `beneficiary`, not the tx signer, and `acceptedAt` (unix seconds) must not be after the sandwich block (S15, #21). `poolKey` is `abi.encode(token0, token1, fee)` for v3 and `abi.encode(PoolKey)` for v4; the registry checks it against the canonical v3 factory or v4 PoolManager, and the pool must be one the deployer listed in `Config.pools` (`COURT_POOLS` in `DeployCourt`: a v3 pool address left-padded to 32 bytes, or a v4 PoolId; none by default) with a static fee, else `UnsupportedPool`. Claims on the same front-run (chain, block, pool, front tx and its Swap log) form one incident, and each back swap can close only one incident (`BackLegReused`). The budget is `budgetFor(profit, frontIn, fee)` = `min(profit, frontIn * fee / 1e6)`: the attacker's profit, capped by the swap fee its front leg paid, so sandwiching yourself never pays; a zero budget reverts `ZeroBudget` (R8, #32). Each claim's weight is `min(maxPayout, budget)`, and after the window it collects `budget * weight / totalWeight`, or its whole weight if the weights fit (S14, #20). Profit counts only in ETH/WETH; other profit tokens revert `UnvaluedProfit` and stay claimable. The budget rule is also the free function `feeCappedBudget` in `BondRegistry.sol`; budgets are capped at 2^128 − 1 wei (S17, #23). The constructor reverts `InvalidConfig(field)` for a config that can't work: no verifier code, `sourceChainId` 0, another chain to judge without the verifier's L1 anchor, no WETH, `claimWindow` 0 or above 2^32 − 1 s, `unbondDelay` under `EVIDENCE_TIME` (8191 × 12 s ≈ 27.3 h, how long a sandwich stays provable) or above 2^32 − 1 s, or no (or a zero) pool (S18, #24). `DeployCourt` sets the window from `CLAIM_WINDOW` (default 10 minutes), the delay from `UNBOND_DELAY` (default 2 days), and needs `COURT_POOLS` |
 
 Settlement timing: new deployments require `0 < settleLength <= floor(batchLength / 3) * 3`. This accounts for drand round quantization and ensures `settleCloses(b) <= revealCloses(b + 1)`. The former 30-second cadence / 60-second settlement configuration is rejected; use a 30-second settlement window or increase cadence. No predecessor-finalization cursor is needed.
 
@@ -129,20 +152,31 @@ Settlement timing: new deployments require `0 < settleLength <= floor(batchLengt
 |---|---|---|---|
 | `deployments/blindfold.local.json` | Kritarth | Khush, Bhoumik | `{chainId, deployBlock, mode: "local"\|"fork", vault, settlement, hook, poolManager, token0, token1, depositToken, admission: "off"\|"mock"\|"real", admissionVerifier, admissionImageId, aquaRouter}`. Keys not shipped yet are `null` |
 | `deployments/court.local.json` | Bhoumik | Khush | `{chainId, deployBlock, verifier, bondRegistry, rpcSigner}` |
+| `deployments/demo.local.json` | Bhoumik | `scripts/court-demo.sh` | `{chainId, deployBlock, poolManager, token, router, bot, poolKey, poolId}`: the demo-bots pool (currency0 = native ETH) |
 | Prover CLI | Kritarth | client | `admission-prover prepare <prep.json> <state.json>`, then `admission-prover admit <in.json> <state.json> <out.json>`.<br>**Prepare** needs only `{chainId, settlement, owner, batch, round}`, so it can run before the order is chosen. It covers the key-wrapper proof (the `prepared` host on `main` splits this out).<br>**Admit** in: `{order: {owner, zeroForOne, amountIn, minAmountOut}, salt, step, prev: {total0, total1, blinding}, budget0, budget1}`. Out: `{ciphertext, hash, proof, next: {total0, total1, blinding}, root}`, where `proof` is the hex of the opaque `admit` bytes. It encrypts too, because the proofs need the tlock randomness.<br>`--mock` on either step returns seals that RISC Zero's `RiscZeroMockVerifier` accepts. The binary name is Kritarth's call; the subcommands and JSON are the seam. The client keeps its own fake until the CLI ships |
 | Arkiv entities | Khush (`arkiv/schema.md`) | solver: `blindfold.batch`; watcher: `court.verdict`, `court.rpc`, `court.suspect`; client: `blindfold.commitment`; UI reads all | The table in [CONTEXT.md](CONTEXT.md#arkiv-entities), plus `court.suspect` `{victimTx, block, pool, reason}`. Attribute names exactly as written |
 | `packages/arkiv` | Khush | every package | `put(type, attrs, {expiresIn})`, `query(type, where)`. `ARKIV=off` stores to `.arkiv-local/<type>.jsonl`. Until it ships, consumers append to that same file themselves |
-| Package CLIs (used by `scripts/e2e.sh`) | each owner | Bhoumik (e2e), everyone | `npm test` = offline unit tests. `npm start` = long-running service. `npm start -- --once` = do all work that is due now, then exit 0. Plus `client`: `npm start -- commit-many --users 10-19 [--bad]`; `demo-bots`: `npm start -- leak-and-sandwich` |
+| Package CLIs (used by `scripts/e2e.sh`) | each owner | Bhoumik (e2e), everyone | `npm test` = offline unit tests. `npm start` = long-running service. `npm start -- --once` = do all work that is due now, then exit 0. Plus `client`: `npm start -- commit-many --users 10-19 [--bad]`; `demo-bots`: `npm start -- setup`, then (after `DeployCourt` lists its pool) `npm start -- leak-and-sandwich` |
 | Anvil accounts | — | everyone | 0 deployer · 1 keeper · 2 solver · 3 watcher · 4 leaky-RPC signer · 5 sandwich bot · 10–19 users. Separate accounts so bots never collide on nonces |
 | Ports | — | everyone | anvil `8545` · leaky RPC `8546` · app `3000` |
 
-### Env vars (all have local defaults)
+### Env vars (local defaults where applicable)
 | Var | Default | Read by | Meaning |
 |---|---|---|---|
 | `RPC_URL` | `http://127.0.0.1:8545` | every package | Chain to talk to |
+| `GLOBAL_AUCTION` / `BATCH` | required address / latest live settlement window | global CLI | Select versioned global deployment and optionally a batch |
+| `SUBMIT` / `PRIVATE_KEY` | simulation only / none | global CLI | `SUBMIT=1` sends transactions; signing key comes from local environment |
+| `CONFIG_FILE` / `DEPLOYMENT_OUT` | none / no file | global deploy/discover | Explicit pool graph or deployment manifest; optional non-overwriting deployment output |
+| `STATE_FILE` / `PREPARATION_PROOF` / `ONLINE_PROOF` | none | global admit | Private global state and the two proof exports |
+| `ORDER_FILE` / `COMMIT_ID` | none | global reveal/slash | Decrypted order/salt and commitment identifier |
+| `CIRCUIT_KEYS` / `CIRCUIT_SETUP` / `CIRCUIT_OUTPUT` | ephemeral benchmark / load existing keys / no export | circuit CLI | Explicit reusable key directory; `CIRCUIT_SETUP=1` creates development keys; exports go under ignored results |
+| `RUN_GLOBAL_INTEGRATION` / `GLOBAL_FORK_BLOCK` | offline tests / latest block | global tests | Enable owned-Anvil CLI integration; optional pinned Ethereum fork block |
 | `ARKIV` | `off` | every package | `off` = local JSONL files; `testnet` = Arkiv testnet (needs the team key in `.env`) |
 | `ADMISSION` | `off` | deploy script, client | `off` = plain `commit`; `mock` = `admit` with the mock verifier; `real` = Groth16 |
 | `TOLERANCE_BPS` / `COMMIT_FEE` / `SETTLE_REWARD_BPS` | `100` / `1e17` / `0` | `DeployBlindfold.s.sol` | Lets Bhoumik apply the R4 measurements without a code change |
+| `RECEIPTS` | demo-bots: `packages/demo-bots/.demo/receipts.jsonl`; watcher: unset | demo-bots, court-watcher | JSON lines of signed `Protected` receipts. The leaky RPC appends to it; when set, the watcher claims and collects for the victims it lists (unset: the watcher only proves) |
+| `COURT_RPC` / `COURT_DEPLOYMENT` / `WATCHER_KEY` | `ETH_RPC` / `deployments/court.local.json` / anvil account 3 | court-watcher | Where the watcher sends `claim` and `collect`, and as whom |
+| `LEAKY_PORT` / `VICTIM_IN` / `SLIPPAGE_BPS` / `BOT_ETH` | `8546` / 10 ETH / `300` / 100 ETH | demo-bots | The leaky RPC's port, the victim's swap and slippage, the bot contract's ETH |
 
 ---
 
@@ -168,7 +202,7 @@ forge script script/DeployCourt.s.sol     --rpc-url http://127.0.0.1:8545 --broa
 ## Already done
 - **Contracts:** vault, commit, anyone-reveal, slashing, padding orders; verified settle on the sealed v4 pool (local and Unichain fork); `SealedClearing` + router; Court verifier on live mainnet sandwiches.
 - **Off-chain tools:** sandwich finder and proof builder; admission-proof prototype (`packages/proof-bench`) and private funding model (`ReservationModel.t.sol`).
-- **Tests:** `forge test` 89/89.
+- **Tests:** `forge test` 155/155.
 
 ---
 
@@ -222,7 +256,7 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
   - **Check:** the output admits on a local deploy with `ADMISSION=mock`.
 
 ### Bhoumik
-- [ ] **`BondRegistry.sol` + tests (R8)** · Needs: nothing (the verifier exists).
+- [x] **`BondRegistry.sol` + tests (R8)** · Needs: nothing (the verifier exists).
   - **The frozen ABI:** `bond`, a delayed `unbond`, and `claim`.
   - **`claim` requires:**
     - `verdict.victimTxHash == r.txHash`;
@@ -235,11 +269,11 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
   - **Check (offline):** `forge test --match-path 'test/court/*'` with a test RPC key signing receipts for the `v3.json`/`v4.json` fixtures. Include:
     - a self-sandwich case that pays no more than `maxPayout`;
     - a replay that reverts.
-- [ ] **`DeployCourt.s.sol`** · Needs: own BondRegistry.
+- [x] **`DeployCourt.s.sol`** · Needs: own BondRegistry.
   - **Deploys:** the verifier (`l1Block = address(0)` locally) and `BondRegistry`, with account 4 bonded.
   - **Output:** writes `deployments/court.local.json`.
   - **Check:** both modes → `cast call <bondRegistry> ...` shows the bond.
-- [ ] **`packages/solver` v1 (R4)** · Needs: nothing (fake RPC).
+- [x] **`packages/solver` v1 (R4)** · Needs: nothing (fake RPC).
   - **Discovery:** reads `blindfold.local.json` and finds settleable batches from the schedule views and `Revealed` events.
   - **Pricing:**
     - finds the feasible band `[lo, hi]` with `eth_call`;
@@ -247,10 +281,10 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
     - uses the R1 overload when no price fills everyone fully.
   - **Modes:** `npm start` and `--once`.
   - **Check:** `npm test` against a fake RPC with a known band, including a poison case.
-- [ ] **court-watcher configurable** · Needs: nothing.
+- [x] **court-watcher configurable** · Needs: nothing.
   - **What:** `ETH_RPC` and `V4_POOL_MANAGER` env vars (today `lib.mjs` hardcodes Ethereum mainnet's), so it can scan the local chain.
   - **Check:** `N=300 node find.mjs` still finds mainnet sandwiches with the defaults.
-- [ ] **`scripts/check.sh`** · Needs: nothing.
+- [x] **`scripts/check.sh`** · Needs: nothing.
   - **What it runs:**
     - `forge test`;
     - `npm test` in every `packages/*` that has a `package.json` (auto-discovered, so nobody else edits the script);
@@ -338,11 +372,20 @@ Swap the fakes for the real pieces. Every `Needs:` below is either Phase 1 work 
     - a recommended `TOLERANCE_BPS`/`SETTLE_REWARD_BPS`, applied through the deploy env vars (no Kritarth code change).
 - [ ] **Malicious-solver script** · Needs: Kritarth's P1 deploy and `SeedBatch`.
   - **What:** a price outside the band reverts (demo step 4).
-- [ ] **`packages/demo-bots`** · Needs: own P1 `DeployCourt`.
+- [x] **`packages/demo-bots`** · Needs: own P1 `DeployCourt`.
   - **Leaky RPC:** a "protected" RPC on `:8546`. It signs `Protected` with `maxPayout` taken from the tx's slippage, then leaks the tx.
-  - **Sandwich bot:** works on a normal (no-hook) v4 pool it deploys itself. It uses `token0`/`token1` from `blindfold.local.json` if present, and its own tokens otherwise.
+  - **Sandwich bot:** works on a normal (no-hook) v4 pool it deploys itself. It uses its own ETH/DEMO pool, not `blindfold.local.json`'s tokens: Court values profit only in ETH or WETH.
   - **Command:** `npm start -- leak-and-sandwich`.
 - [ ] **Watcher service** · Needs: own BondRegistry and demo-bots; Khush's P1 `packages/arkiv`.
+  - **Done for S16 (#22):** `npm start` in `packages/court-watcher` (`watch.mjs` + `watcher.mjs`):
+    - confirmed blocks only, a bounded range per tick, with bounded concurrency and RPC timeouts;
+    - state saved atomically (`.watcher/state.json`), a bounded overlap rescanned on restart, discoveries de-duplicated;
+    - reorgs detected from recent block hashes, with receipts checked against the hashed block;
+    - proving (`prove.mjs`, child process, time-limited) kept separate from discovery, with retries and a per-tick limit;
+    - submission outcomes tracked once a submitter is plugged in;
+    - the L1 anchor read from one Base block.
+  - **Done for S21 (#27):** submitting through `BondRegistry.claim`, then `collect` after the claim window, for victims with a receipt (`RECEIPTS`).
+  - **Left for this item:** the Arkiv writes.
   - **Pipeline:** new block → sandwich of a receipted tx → claim (BLOCKHASH path on anvil, AGENTS.md gotcha 5) → `BondRegistry.claim`.
   - **Writes:** `court.verdict` and `court.rpc`.
   - **R9:** near-misses go out as `court.suspect`, with no payout.

@@ -1,16 +1,19 @@
 // Shared helpers: JSON-RPC, header/receipt RLP encoding, trie proofs, Swap log parsing.
 import { Trie } from '@ethereumjs/trie'
 import { hexToBytes, bytesToHex } from '@ethereumjs/util'
-import { toRlp, keccak256, numberToHex } from 'viem'
+import { toRlp, keccak256, numberToHex, toFunctionSelector } from 'viem'
 
 export const ETH_RPC = process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com'
 export const BASE_RPC = process.env.BASE_RPC || 'https://mainnet.base.org'
 
 export const V3_SWAP = keccak256(new TextEncoder().encode('Swap(address,address,int256,int256,uint160,uint128,int24)'))
 export const V4_SWAP = keccak256(new TextEncoder().encode('Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)'))
-export const V4_POOL_MANAGER = '0x000000000004444c5dc75cb358380d2e3de08a90' // Ethereum mainnet
+// Ethereum mainnet's by default; set V4_POOL_MANAGER (and ETH_RPC) to scan another chain, e.g. a local Unichain fork
+export const V4_POOL_MANAGER = (process.env.V4_POOL_MANAGER || '0x000000000004444c5dc75cb358380d2e3de08a90').toLowerCase()
 export const HISTORY = '0x0000f90827f1c53a10cb7a02335b175320002935' // EIP-2935
 export const HISTORY_WINDOW = 8191n
+export const L1_BLOCK = '0x4200000000000000000000000000000000000015' // OP-stack L1 attributes predeploy
+const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS || 15_000)
 
 let id = 0
 export async function rpc(url, method, params = [], tries = 5) {
@@ -20,6 +23,7 @@ export async function rpc(url, method, params = [], tries = 5) {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }),
+        signal: AbortSignal.timeout(RPC_TIMEOUT_MS), // a hung RPC fails the call instead of stalling the watcher
       })
       const j = await res.json()
       if (j.error) throw new Error(`${method}: ${JSON.stringify(j.error)}`)
@@ -29,6 +33,17 @@ export async function rpc(url, method, params = [], tries = 5) {
       await new Promise((r) => setTimeout(r, 500 * 2 ** t))
     }
   }
+}
+
+/**
+ * The L1 block Base's L1Block predeploy reports, with number and hash read at one Base block. Two reads at
+ * 'latest' can straddle a Base block and pair one L1 block's number with another's hash.
+ */
+export async function l1Anchor(call = (method, params) => rpc(BASE_RPC, method, params)) {
+  const at = await call('eth_blockNumber', [])
+  const read = (sig) => call('eth_call', [{ to: L1_BLOCK, data: toFunctionSelector(sig) }, at])
+  const [number, hash] = await Promise.all([read('number()'), read('hash()')])
+  return { number: BigInt(number), hash: '0x' + hash.slice(-64), baseBlock: BigInt(at) }
 }
 
 /** RLP quantity: minimal big-endian, zero = empty string. */
@@ -106,15 +121,15 @@ export function swapLogs(receipts) {
       if (t0 === V3_SWAP && l.topics.length >= 3) {
         out.push({
           v4: false, pool: l.address.toLowerCase(), poolId: '0x' + '00'.repeat(32),
-          txIndex: Number(r.transactionIndex), logIndex, from: r.from.toLowerCase(),
-          trader: '0x' + l.topics[2].slice(26),
+          txIndex: Number(r.transactionIndex), txHash: r.transactionHash, logIndex, from: r.from.toLowerCase(),
+          caller: '0x' + l.topics[1].slice(26), // v3 `sender`: the contract that called the pool
           a0: signed('0x' + l.data.slice(2, 66), 256), a1: signed('0x' + l.data.slice(66, 130), 256),
         })
       } else if (t0 === V4_SWAP && l.address.toLowerCase() === V4_POOL_MANAGER && l.topics.length >= 3) {
         out.push({
           v4: true, pool: V4_POOL_MANAGER, poolId: l.topics[1],
-          txIndex: Number(r.transactionIndex), logIndex, from: r.from.toLowerCase(),
-          trader: '0x' + l.topics[2].slice(26),
+          txIndex: Number(r.transactionIndex), txHash: r.transactionHash, logIndex, from: r.from.toLowerCase(),
+          caller: '0x' + l.topics[2].slice(26), // v4 `sender`: the contract that called the PoolManager
           a0: -signed('0x' + l.data.slice(2, 66), 256), a1: -signed('0x' + l.data.slice(66, 130), 256),
         })
       }
@@ -136,17 +151,18 @@ export function findSandwiches(swaps, closeBps = 100n) {
     for (let a = 0; a < list.length; a++) for (let c = a + 1; c < list.length; c++) {
       const f = list[a], b = list[c]
       if (b.txIndex <= f.txIndex + 1) continue
-      if (f.from !== b.from || f.trader !== b.trader) continue
+      if (f.from !== b.from || f.caller !== b.caller) continue // one signer, one contract making both legs
       const z = f.a0 > 0n
       if ((b.a0 > 0n) === z) continue
       const bought = -(z ? f.a1 : f.a0), sold = z ? b.a1 : b.a0
       const diff = bought > sold ? bought - sold : sold - bought
       if (bought <= 0n || diff * 10000n > bought * closeBps) continue
-      const profit = -(z ? b.a0 : b.a1) - (z ? f.a0 : f.a1)
-      if (profit <= 0n) continue
+      const spent = z ? f.a0 : f.a1
+      const profit = -(z ? b.a0 : b.a1) - spent
+      if (spent <= 0n || profit <= 0n) continue
       for (const v of list) {
         if (v.txIndex <= f.txIndex || v.txIndex >= b.txIndex) continue
-        if ((v.a0 > 0n) !== z || v.from === f.from || v.trader === f.trader) continue
+        if ((v.a0 > 0n) !== z || v.from === f.from) continue // any route: a shared router is not the trader
         found.push({ front: f, victim: v, back: b, profit, profitInToken0: z })
         break
       }

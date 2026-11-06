@@ -1,0 +1,1 @@
+{"name":"@blindfold/global-auction","private":true,"type":"module","scripts":{"start":"node cli.mjs","test":"node --test"},"dependencies":{"viem":"2.57.16"}}

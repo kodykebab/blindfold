@@ -13,7 +13,7 @@ Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each
 | R5 | Just-in-time liquidity takes the LP surplus; removing liquidity blocks settlement | Medium | From code | Kritarth |
 | R6 | Admission proofs limit an account to every other batch; proving time is unmeasured | Medium | From code | Kritarth |
 | R7 | Remaining trust in the sequencer and timestamps; the safety margin is 4–6 s, not ≥6 s | Medium | From code | Kritarth |
-| R8 | Court bonds can be drained by sandwiching yourself | High | From code | Bhoumik |
+| R8 | Court bonds can be drained by sandwiching yourself | High | Fixed in `BondRegistry` | Bhoumik |
 | R9 | Real sandwichers can easily slip past the Court predicate | Medium | From code | Bhoumik |
 | R10 | A commit into the next batch can unfund the account's own open order | Medium | Proven | Unassigned |
 | R11 | One order larger than the pool's depth makes every price revert | Medium | Proven | Unassigned |
@@ -54,6 +54,8 @@ No price is consistent with both, every `settle` reverts, and the batch expires.
 - **Limits:** output rounds down at the uniform price; the proportional minimum rounds up. An invalid nonzero partial fill reverts the whole settlement. The representative's limit price must be within the configured tolerance on the executable side of the clearing price.
 - **Remainder:** unfilled input stays in the owner's vault balance and unlocks. Events report actual input and output.
 - **Verification:** see the S1 implementation notes below. This resolves the reproduced case without claiming universal feasibility or a unique solver price.
+
+**How common:** in the solver's randomized model test (`packages/solver/test/price.test.mjs`: up to 12 random orders against a pool with linear price impact), 49 of 300 batches had no price at which every order fills fully. With a marginal partial fill, all 49 settled.
 
 ## R2. The commit-reveal free option is still open
 
@@ -112,6 +114,8 @@ CONTEXT.md's claim that "the solver chooses nothing else" does not hold.
 2. Pay the settler an explicit, small reward from the surplus, so honest settling pays and extraction isn't the business model.
 3. Our solver settles at the feasible price closest to the post-swap marginal price, not the first one it finds.
 
+**Status:** fix 3 is done. `packages/solver` finds the accepted band and settles at its midpoint; on a local deployment of the standard two-sided batch it settled at 0.9862, mid-band. Fixes 1 and 2 (tolerance, settler reward) are still open.
+
 ## R5. Just-in-time liquidity takes the LP surplus; removing liquidity blocks settlement
 **Where:** `SealedPoolHook` blocks only swaps ([`:12`](contracts/src/SealedPoolHook.sol#L12), [`:25`](contracts/src/SealedPoolHook.sol#L25)); the surplus goes through `manager.donate` to whoever is in range at that moment ([`BlindfoldSettlement.sol:260`](contracts/src/BlindfoldSettlement.sol#L260)).
 
@@ -123,27 +127,35 @@ CONTEXT.md's claim that "the solver chooses nothing else" does not hold.
 
 ## R6. Admission proofs limit an account to every other batch; proving time is unmeasured
 
-**Local integration measurement:** the first two-order admission/resume/export/release test completed in about 217 seconds, including fresh preparation and online proofs for both orders, parameter loading and transactions. This is not a per-proof timing sample. The current CLI generates both proofs sequentially during submission, using a 900-second batch in the integration fixture. Advance preparation, realistic latency budgets and validation against the intended production batch duration remain part of R6; passing this gate does not demonstrate a 30-second user flow.
+**Advance preparation (#60):** the native desktop helper now supports `prepare-admission <batch-id>` before order selection. It binds the ready key to the account, chain, settlement, batch, round and parameter manifest, consumes it durably before online encryption, and keeps completed submissions in the existing resume path. Ready keys are excluded from exports. The final fresh-proof gate passed in about 216 seconds with 300-second development batches, advance preparation through the real CLI, independent decryption, pending resume, repeated submission checks, failed preparation, network mismatch, deadline refusal, settlement, withdrawal and release. Two intermediate runs were cancelled after system sleep; the final run used a temporary idle-sleep assertion. The earlier 217-second two-order run measured the previous inline path as a whole, not per-proof latency. Desktop local helper is the selected first delivery target; browser/mobile proving is outside this increment. Production timing, representative device coverage, truly cold-disk loading and network inclusion tails remain separate evidence gates; these local samples do not demonstrate a 30-second flow.
+
+**Desktop samples (2026-11-06):** Apple M5, 10 logical CPUs, 16 GiB RAM, Darwin 25.4.0 arm64, Node 22.23.2, Go 1.27.1. Three fresh-process samples using the unchanged circuits and existing development parameters:
+
+| Phase | Total wall time | Parameter hashing/loading | Proof generation | Maximum process RSS |
+|---|---|---|---|---|
+| Advance preparation | 52.62–55.23 s | 43.17–45.50 s | 9.27–9.76 s | 4.52 GB |
+| Online order | 46.30–47.95 s | 40.77–42.19 s | 5.44–5.65 s | 4.20 GB |
+
+Native verification took 1.4–1.9 ms. Total times include process/fixture overhead. Each prover starts cold, while OS file-cache state is uncontrolled; these are not guaranteed cold-disk samples, a warm resident-worker benchmark or p95 estimates. No concurrent full-suite or other real-proof workload ran during the three samples. The raw ignored artifact is `packages/proof-bench/results/advance-preparation-measurements.json`; regenerate with `node packages/proof-bench/measure-admission.mjs 3` after building the local prover. The JSON records circuit/key hashes, executable SHA-256, source revision/diff identity and device metadata. Manifest SHA-256: `30086f2d95054c64aaeeee08ddff7bc91eda4ebbff6f2583303b637cebeaf688`; prover SHA-256: `0e068868c8558f58eb26837eb05b8b27347df7b6000c4284f00ca9188fd18ead`.
+
+The desktop development policy uses 300-second batches with preflight lead times of 120 seconds for prepared orders and 180 seconds for inline pairs. `ADMISSION_MIN_LEAD_SECONDS` allows a measured desktop to choose a different margin. The client still refuses submission after its deadline. Real-network inclusion tails, sequencer/wall-clock behavior under #31 and additional desktop measurements are required before a production timing claim. Browser/mobile proving and persistent parameter workers are separate scope decisions.
 
 **Where:** [`ReservationModel.t.sol`](contracts/test/ReservationModel.t.sol): `activeBatch` and `step == openCommitments`; [ARCHITECTURE.MD §5](ARCHITECTURE.MD).
 
 **Problem:**
 - **Throughput:** an account can't admit into a new batch until all its earlier commitments close. Batch b's orders close at the earliest when its settle window opens (`revealCloses(b)`), which is the moment batch b+1's commit window ends. So an account trades every other batch at best, and every fourth if settlement is late or the batch expires. The pricing design relies on arbitrageurs, who would need many accounts.
-- **Proving time:** the [proof-bench README](packages/proof-bench/README.md) has no completed end-to-end proving time yet. If proving takes longer than the 30-second commit window, users must fix their order before the batch opens, which ages it.
+- **Proving time:** the native helper samples above exceed a 30-second commit window even after advance preparation. Preparation avoids fixing the order early, but online parameter loading, proving and transaction inclusion still need a measured window.
 
-**In progress:** `main` @ `6b58167` splits the proof in two:
+**Historical split prototype:** `main` @ `6b58167` split the proof in two:
 - a **preparation** proof of the tlock key wrapper, which needs only the round and context, so it can run before the order is chosen;
 - an **online** proof of the payload and funding, per order.
 
-Both are bound together (see the [proof-bench README](packages/proof-bench/README.md#prepared-keys-and-online-admission)), so only the online proof has to fit the commit window. Its end-to-end time is still unmeasured.
+Both are bound together (see the [proof-bench README](packages/proof-bench/README.md#prepared-keys-and-online-admission)), so only the online path has to fit the commit window. The selected direct-Groth16 implementation is now measured above; the historical zkVM path is a separate prototype.
 
-**Fix:**
-- **Measure first:** execute, prove, wrap with Groth16, and verify onchain, end to end on a laptop, for both guest variants, timing the preparation and online proofs separately.
-- **Then pick a mode and write it in ARCHITECTURE.MD:**
-  - prove inside the window, if fast enough;
-  - precompute for batch b+2, accepting an older order;
-  - or batch-length guidance.
-- **Optional:** let a new admission chain from a root that already reflects the previous batch's settled totals, so an account can enter consecutive batches.
+**Remaining gates:**
+- Measure loading, proving, peak memory and submission/inclusion across the supported desktop configurations, explicitly separating process-cold, filesystem-cache and any resident-worker conditions.
+- Validate production batch timing with #31's sequencer/drand assumptions and representative inclusion tails; development margins are not production guarantees.
+- Keep any change to the one-active-batch throughput rule separate from this advance-preparation implementation.
 
 ## R7. Remaining trust in the sequencer and timestamps
 **Where:** `targetRound` ([`BatchAuction.sol:111`](contracts/src/BatchAuction.sol#L111)); the use of `block.timestamp` throughout.
@@ -162,13 +174,15 @@ Both are bound together (see the [proof-bench README](packages/proof-bench/READM
 - **In the docs:** list the sequencer as a remaining trust assumption next to drand.
 
 ## R8. Court bonds can be drained by sandwiching yourself
-**Where:** `SandwichCourtVerifier.verify` requires only that the victim and attacker addresses differ ([`:128`](contracts/src/court/SandwichCourtVerifier.sol#L128)); the planned payout `max(profit, minPenalty) + gas` (CONTEXT.md "Court design").
+**Where:** `SandwichCourtVerifier.verify` requires only that the victim and attacker addresses differ ([`:129`](contracts/src/court/SandwichCourtVerifier.sol#L129)); the planned payout `max(profit, minPenalty) + gas` (CONTEXT.md "Court design").
 
 **Problem:** Court proves that a sandwich happened, not that the RPC leaked it.
 1. Someone with two wallets gets a `Protected` receipt for their own transaction.
 2. They send the same transaction to their own bot, sandwich it, and claim from the RPC's bond.
 3. Their wallets' gains and losses cancel except for pool fees, so the payout is profit. They pick the "profit" themselves by giving the victim transaction wide slippage.
 4. The `minPenalty` floor makes even tiny self-sandwiches pay.
+
+**Status:** fixed in [`BondRegistry.sol`](contracts/src/court/BondRegistry.sol): the cap, no floor, once per tx, the unbond delay and chain binding are all tested against the mainnet fixtures. While building it, a related gap turned up: `verify` accepts Swap-shaped logs from whatever `c.pool` the claim names, so a contract emitting fake Swap events could fake a sandwich. BondRegistry pins the pool to the canonical v3 factory (CREATE2) or the v4 PoolManager. **Self-sandwich economics (#32):** the receipt cap alone didn't stop it, because the coalition picks the victim's slippage and so the "profit". An incident's budget is now `min(profit, front leg's swap fee)`: reaching the same holdings through front, victim and back costs at least the extra legs' fees more than one direct trade (pool state is path-independent and fees leave the curve), so the payout never covers the cost. That needs the fees to go to someone else, so only deployer-listed pools with a static fee are covered (anyone can create a pool and be its only LP), zero-fee pools pay nothing, and each front and back swap belongs to one incident (otherwise three small fronts closed by one back would be paid three fees for one round trip; the fuzzer found exactly that). `test/court/SelfSandwich.t.sol` runs it on a real v4 PoolManager: across fee tiers, one to three fronts and backs, and victim sizes up to the pool's depth, the extra cost always exceeds the payout (at least 1.3× in a 300-run sample). On the 36 sandwiches found in 800 Ethereum blocks up to 26353989, the fee cap binds in most, so coverage is a fraction of the attacker's profit. **Still open:** a coalition that supplies most of a listed pool's in-range liquidity just for the sandwich (JIT) recovers most of the fees, and then the payout does exceed its cost (`test_jitLiquidity_breaksTheBound`); `maxPayout` and the bond are the only limits there. **Remaining limit:** profit is valued only in ETH/WETH. The v3 fixture's attacker profits in USDT, so that claim reverts unpaid; paying it needs a price, for example the front leg's own execution price, which `Verdict` doesn't expose yet.
 
 **Fix:** design `BondRegistry` so that sandwiching yourself never pays.
 - **Cap from the receipt:** the RPC writes `maxPayout` into the receipt, derived from the transaction's own slippage when it accepted it (quoted output minus `minAmountOut`). Pay `min(valued profit, maxPayout)`.
@@ -180,11 +194,11 @@ Both are bound together (see the [proof-bench README](packages/proof-bench/READM
 - **Docs:** ARCHITECTURE.MD §10 already says "payout caps"; update CONTEXT.md, which still has the old formula.
 
 ## R9. Real sandwichers can easily slip past the Court predicate
-**Where:** same signer for front and back ([`:127`](contracts/src/court/SandwichCourtVerifier.sol#L127)), same `trader` field ([`:253`](contracts/src/court/SandwichCourtVerifier.sol#L253)), back leg within 1% of the front ([`:259`](contracts/src/court/SandwichCourtVerifier.sol#L259)).
+**Where:** same signer for front and back ([`:129`](contracts/src/court/SandwichCourtVerifier.sol#L129)), same pool caller for both legs ([`:263`](contracts/src/court/SandwichCourtVerifier.sol#L263); since S5 it's the contract that made the swap, not the v3 recipient), back leg within 1% of the front ([`:269`](contracts/src/court/SandwichCourtVerifier.sol#L269)).
 
 **Problem:** any of these escapes Court:
 - signing front and back with two wallets;
-- using two recipient contracts;
+- making the two legs from two different contracts;
 - leaving 2% of the position open.
 
 As written, Court catches only naive bots. Loosening the predicate invites false claims, and those feed straight into R8.
@@ -239,7 +253,6 @@ As written, Court catches only naive bots. Loosening the predicate invites false
   - "≥6 s margin" (R7);
   - "the solver chooses nothing else" (R4);
   - the free option is killed (R2);
-  - `max(profit, minPenalty)` (R8).
 
 ## Appendix: reproduction tests
 Save as `contracts/test/ReviewPoC.t.sol` and run `forge test --match-contract ReviewPoC -vv`. Each test passes while its flaw exists. Once a fix lands, flip its assertions into a regression test. Don't commit this file as-is: it asserts the bugs.
@@ -601,11 +614,15 @@ Separate discovery from expensive proof construction. Test restart, duplicate di
 
 ### S17. Token and arithmetic domains
 
+**Integration (auction side):** the admitted deployment accepts only its fixed pair and checks exact received and sent amounts (`AdmissionVault`). The base `BlindfoldVault` accepts any token; once #58 lands it also checks exact transfers. Bounds: order amounts are `uint128`, a batch holds at most 64 orders, deposits and fees are at most `uint128`, and `toleranceBps <= BPS` keeps the marginal-price products within 256 bits for every v4 price. The residual swap checks the signs of v4's deltas before casting them. `SealedClearing` (Aqua) quotes with 512-bit intermediates; it previously truncated high bits in `amountOut << 96`. `ConfigValidation.t.sol` and `swapvm/SealedClearingMath.t.sol` test these bounds and the unsupported-asset rejection. Fee-on-transfer and rebasing tokens remain unsupported. Court's part is tracked separately.
+
 Restrict the initial deployment to a supported token pair and transfer behavior. Reject unsupported deposits. For ordinary supported ERC-20s, verify received amounts match credited amounts; fee-on-transfer and rebasing support are separate scope.
 
 Define shared bounds for individual inputs, aggregate residuals, v4 signed deltas, prices, and quotes. Use full-precision arithmetic wherever that domain requires it, including Aqua if retained. Test boundary values and token behavior rather than assuming every ERC-20 acts identically.
 
 ### S18. Configuration validation
+
+**Integration (auction side):** constructors reject misaligned or overlapping schedules (R7/S2), an empty reveal window, a vault or deposit token without code, a zero treasury, a zero or oversized deposit, an oversized fee and a tolerance above 100% (`InvalidAuctionConfig(field)`). `initialize` requires two ERC-20 currencies in order, one of them the deposit token, and runs once, for the admin only. The admitted deployment also requires verifier and PoolManager code, a nonzero fee, the vault's pair, this settlement as vault operator, the sealed hook bound to this settlement and manager, and an initialized pool. Before `start`, commits revert and no batch window is open. No deployment script exists on `main` yet, so script-level checks wait for it. Court's part is tracked separately.
 
 Validate meaningful phase durations, admission economics, bounded price tolerance, supported tokens, the expected pool/hook relationship, initialization state, and pre-start behavior.
 
@@ -672,6 +689,62 @@ The fix adds no persisted cursor or predecessor walk. Empty and expired predeces
 
 Validation: 198 passing test executions across ten suites with `forge test --fuzz-runs 4096 -vv`, including local and Unichain ordering regressions, 4,096 schedule fuzz cases, every drand alignment/cadence remainder, invalid and zero windows, and unfinalized/empty predecessors. Inherited mechanism tests are repeated across suites; this count is not 198 distinct scenarios. The case that previously allowed a later batch to change the pool before an earlier settlement now rejects the earlier settlement once the later window opens.
 
+
+### Peer-only matching follow-up to S12 (issue #18)
+
+The user selected peer-only matching first, without mandatory LP lockups. Implemented on `kritarth/peer-clearing`, with consumer integration on `kritarth/peer-solver`, pending shared-seam review. This permits an uneven opposing batch (for example, 100 selling against 50 buying at p=1) to cross 50/50 even when the AMM has no active liquidity.
+
+The initial peer implementation used the stored pool price. The external-market follow-up below replaces it with a validated historical v3 reference; user limits still apply. The mode requires zero active liquidity and conserved budgets for both tokens, and never routes an AMM residual. Zero active liquidity does not establish that all other tick ranges are empty. A one-sided batch still needs an external counterparty; expiration remains available. This implements a liquidity-independent crossing option, not a universal execution guarantee or a committed-capital backstop.
+
+The shared settlement lifecycle and allocation machinery are reused. No persistent queue, liquidity lock, extra collateral, oracle service, or proof input was added. An additive liquidity view and settlement entry point are the only new calls. Rounding is accounted for entirely: surplus goes to output recipients proportionally, with a commitment-ID tie-break for indivisible remainder, and no batch-created balance remains in settlement. Solver selection still has the previously tracked price/quantity-policy limitations; this feature does not claim maximum-volume completeness for all integer cases.
+
+
+Peer-only validation (2026-11-06):
+- `forge test --fuzz-runs 4096 -vv`: 260 passing test executions across twelve suites, including Unichain forks. Inherited suites repeat baseline scenarios; the count is not 260 distinct behaviors.
+- `npm test` in the peer solver: 23 offline tests pass; the opt-in integration test is skipped there and was run separately successfully.
+- The actual CLI runs normal AMM sells/buys, zero-active-liquidity peer crossings in both directions, and one-sided expiry/recovery on a fresh local anvil. Peer executions emit no pool Swap event and leave no new token balances in settlement.
+- Both token rounding-surplus paths, commitment-ID tie-breaking independent of reveal order, bad representatives, both budget deficits, user minimums, active-liquidity rejection, finalization, and window checks pass. Peer accounting fuzz tests run 4,096 cases locally and again on the fork. A 64-order peer batch is included.
+- Local peer candidate search: one simulation, approximately 2 ms in each direction. This excludes setup, state reads, the CLI's fresh pre-send check, submission, and confirmation, and is not a live-network latency claim.
+- The local 64-order settlement call consumed 1,577,677 gas in warm test state. This excludes setup and is not a cold transaction gas estimate. The size check reported 18,513 runtime bytes for the selected build.
+- Touched Solidity files pass formatting checks; both patches pass `git diff --check`.
+
+
+#### External market review gate (S12/S13/S18)
+The Ethereum WETH/USDC implementation adds a fixed-window v3 reference and a
+public-pool residual route; peer execution no longer uses the stored sealed price.
+Production window, liquidity and deviation thresholds still need calibration
+across volatile and quiet periods. Latest observation age is an activity check,
+not proof of an economically fresh or manipulation-resistant price. A single
+pool TWAP can be manipulated; user limits and liquidity checks bound some effects
+but do not establish oracle security.
+
+Public liquidity remains withdrawable and changes before inclusion. Full fills
+are conditional on executable liquidity and user limits, not guaranteed. The
+solver now tries full fills, exact limit-price edges and proportional external
+boundary groups, with simulation and deadline bounds. Its halving/bisection search
+is a heuristic, not an infeasibility or maximum-volume proof. It must be
+benchmarked against a production RPC and the chosen batch deadline. Aqua routing is still a separate integration.
+These changes are unmerged seams pending teammate review and do not integrate
+the parallel admission-proof work.
+
+
+External-market follow-up validation: the solver's capacity-limited Anvil cases
+filled the equal-limit group at 540/270 inputs in both directions. Full-fill
+search took 20/23 simulations (82/62 ms); partial search took 341/411 simulations
+(838/977 ms). These are local timings, not production latency.
+
+The read-only sampler collected 13 Ethereum observations across blocks
+26,353,849–26,353,945: latest observation age 0–84 s, harmonic liquidity
+1.663–1.687 × 10^18, approximate spot/TWAP deviation 4.34–12.52 bps and aggregate
+read latency 545–760 ms. The public endpoint rejected older archive requests with
+HTTP 403 requiring a personal token. Production calibration therefore remains
+open: collect quiet/volatile historical regimes using an archive endpoint and
+measure solver simulations against the actual deployed contract. A 120 s activity
+limit and 100 bps band passed the sampled regime, but this does not justify them
+as production settings. A consistent manipulation of spot and TWAP can pass
+these checks; economic attack cost has not been established. No production
+launch should be inferred from passing these implementation tests.
+
 Executable-lot fallback for the PR #6 dust-companion review: ordinary proportional
 input flooring stays when its output covers the ceil-rounded minimum. Otherwise
 input rounds down to amountIn/gcd(amountIn,minAmountOut); if that is zero the order
@@ -682,3 +755,98 @@ this refinement after strict lot rounding reduced the fixed model corpus's
 rescued count from 49 to 38. Allocation is consequently price-dependent at these
 integer boundaries; solver discretion is not eliminated. The solver and model
 must use the same fallback, and complete clearing remains conditional.
+
+Fork reproducibility: the public Ethereum RPC prunes historical state, including
+previously untouched deployment addresses needed by Foundry. The external-market
+fork now defaults to the latest block, with ETH_FORK_BLOCK selecting a fixed
+block on an archive endpoint or complete cache. Its historical 26,353,874 results
+remain recorded above; a cached successful run is not proof a fresh machine can
+retrieve that old state from the public endpoint.
+
+
+#### General routing scope and validation (issue #43)
+The new adapter supports fixed one-to-three-hop v3 paths for pair-specific
+markets, including reverse execution, composite historical pricing and exact
+balance-delta accounting. This does not deploy a global multi-token auction,
+shared vault, pair registry or automatic route-discovery service. Operators must
+configure and validate each supported pair; users still select its deployment.
+Fee-on-transfer and rebasing token behavior is not supported by the exact-transfer
+checks. Native ETH must be wrapped. Numerical underflow/overflow in a composite
+reference fails closed rather than broadening the supported price domain.
+
+The first Ethereum fixture rejected inactive DAI/WETH and WBTC/WETH 0.3% pools.
+Measured WBTC/WETH observation ages at block 26,354,673 were 12 s (0.01%), 72 s
+(0.05%), 8,664 s (0.3%) and 10,284 s (1%). The 0.05% path passed WBTC/WETH/USDC
+settlement in both directions at block 26,354,676 with mixed 8/18/6 decimals;
+warm settlement calls used 776,676 and 775,620 gas. Fixture thresholds are not
+production calibration. Single-pool oracle manipulation concerns apply to each
+hop as well as the composed price; route availability is not a fill guarantee.
+
+Each hop deploys an instance of the existing market adapter, reusing its callback
+budget and oracle checks. This increases deployment cost versus a shared-library
+implementation, but avoids adding a second callback/payment implementation in
+this change. Route state is immutable after construction. No arbitrary external
+call targets, approvals to aggregators or new recovery lifecycle were introduced.
+
+
+Final routing verification: 372 contract test executions pass with 4,096 runs per
+fuzz test (inherited and compiler-profile duplicates are included), using
+ETH_FORK_BLOCK=26354750 and ROUTING_FORK_BLOCK=26354750 for reproducible success
+cases. The full suite also covers one/two/three hops, reversed internal pairs,
+composite deviation, invalid paths, callback permissions, missing/stale/thin
+history, zero output, rollback, dust conservation and short prefunding masked by
+a donated adapter balance. Latest-state runs separately hit the intended
+freshness rejection; fixed functional fixtures are not an availability promise.
+Final warm two-hop settlement calls at that block used 819,645/819,712 gas.
+Settlement runtime is 22,578 bytes; route runtime is 3,745 bytes (Solc 0.8.26).
+The final solver stack restores all 49 stuck cases in the fixed 300-batch model
+corpus while preserving ceil-rounded user minimums and passing dust/coprime
+regressions. This corpus is not a universal-clearing proof.
+
+### Global auctions and shared custody (issue #57)
+
+Implemented on `kritarth/global-auction` as a versioned extension to #51 and the proof work in #5. Existing pair ABIs remain unchanged. The global deployment has one shared vault operator, a fixed registry of 2–8 tokens, cumulative private per-token funding, mandatory paired admission proofs, atomic cross-pair cycles, proportional equal-limit allocation, and authenticated residual execution. Global fractions use a uint128 denominator to retain unit resolution across the full order-input range. Only allocations failing their rounded minimum fall back to exact lots.
+
+Review must cover the whole custody/clearing/proof boundary together:
+
+- Token configuration is frozen before admission. This is not an unbounded permissionless token registry; adding capacity or changing order encoding requires a versioned circuit/deployment. Fee-on-transfer and rebasing assets are unsupported. Exact transfer checks reject short transfers at entry/exit, but cannot make an externally rebasing asset suitable collateral.
+- A price vector is consistent across pairs but may vary within per-token oracle bands. Relative prices between two non-base tokens can move by the ratio of those bands, not merely one band's percentage. User minima, price priority and token conservation remain enforced. A zero proposed price explicitly excludes all orders involving that token, allowing unrelated healthy markets to settle when an oracle is unavailable.
+- The solver is bounded and does not prove maximum volume or global infeasibility. It enumerates configured routes, constructs price-priority cycle circulations in common value units, and searches individual marginal groups and bounded price adjustments. Circulation supports unequal cross-pair cycles with several partial groups; integer rounding, exact-lot fallbacks and greedy cycle choice can still leave feasible combinations undiscovered. Full simulation is the acceptance boundary. General path discovery uses a supplied pool graph; it is not permissionless onchain pool discovery or a route-splitting optimizer.
+- One owner may have open commitments in only one global batch. Withdrawals are blocked while those commitments remain unresolved. This preserves funding integrity without per-pair public capacity collateral, at the cost of account-level withdrawal friction. New deposits are allowed. Cleanup is permissionless and bounded; settled batches still permit individual unrevealed slashing.
+- Auction deposits, prior balances and adapter donations cannot subsidize a batch deficit. Every external leg spends only measured surplus; all per-token obligations must be covered. Residual rebates are separately observable and can change effective realized prices relative to the nominal uniform-price fill.
+- Generated verifiers must correspond to the reviewed global/preparation circuits and reviewed setup parameters. The included setup command creates development parameters, not a production ceremony. Deployment trusts the chosen immutable verifier/adapter configuration. Independent cryptographic review, production oracle manipulation/liquidity calibration, and consumer review remain deployment gates.
+
+Measured global online relation: 3,723,873 constraints. One saved-key run compiled in 8.92 s, loaded keys in 58.21 s, proved in 7.59 s and verified natively in 0.0021 s. Its verifier source was byte-identical to the preceding proof's verifier. The cold CLI therefore took about 75 s before transaction submission; reporting only the proving time would hide the practical cost. A deployment must select cadence from full-path measurements or separately implement and benchmark a prover that retains keys in memory. Preparation was independently measured at 9.72 s proving, excluding local setup. These are individual local samples, not latency percentiles or a production cadence guarantee.
+
+The real-proof harness accepts a valid global ciphertext/funding proof, reveals the order, executes settlement through the actual shared vault, and withdraws output. It rejects ciphertext/root/budget mutations, proof replay, wrong owner, chain replay and malformed proof encoding. Independent tlock-js decryption verifies the recorded quicknet signature and recomputes the global order/registry/root encodings. Synthetic fixture context is explicit; the fresh preparation CLI generates real random key material and private files instead of using those fixtures for users.
+
+Final implementation verification at `213a4f2` (documentation follows separately): 400 contract test executions across 23 suites, including inherited/profile repetitions and Ethereum/Unichain forks, pass with 4,096 runs per fuzz test. The global CLI passes 23 tests, including eight actual CLI scenarios covering equal/unequal cycles, both routing directions, venue fees, expiry, slashing and deployment. Six Go test groups (including mutation subtests), 14 native Rust tests, 14 clearing-model tests and nine real-proof integration tests pass. Both legacy and global independent decryption checks pass. The new CLI's pinned dependency tree reports zero npm audit findings at verification time.
+
+The final 64-order settlement call uses 7,046,581 gas in the local fixture; full test gas also includes committing/revealing all 64 orders. A real-proof admission call uses 1,136,001 gas in the fixture. GlobalAuction runtime is 23,154 bytes with the tested Solc 0.8.30 artifact; the separate proof integration compiles with 0.8.26. These are fixture/code measurements, not production transaction estimates. Review artifacts under ignored `packages/proof-bench/results/global-review-summary.json` record tool versions, circuit identity and verifier hash. No production deployment or independent security audit is claimed.
+
+## Proportional solver integration (issues #7 and #12)
+
+The `kritarth/solver-proportional` branch extends the solver from Bhoumik's PR #4 and targets that branch for review. It consumes the proportional group semantics introduced by PR #6, without changing the four-argument settlement signature. Exact equal-limit groups share one fraction; the solver respects price priority and rounded-up partial minimums. It probes known limit discontinuities before raw-price bisection and validates returned candidates against the contract.
+
+Search reads and simulations use one block, followed by a fresh simulation before submission. RPC failures propagate, a 4,096-call budget fails explicitly, and an unsuccessful search reports no candidate found rather than asserting mathematical infeasibility. This is not a proof of universal execution: absent liquidity and integer constraints still require expiry, and the existing tolerance leaves price/quantity discretion tracked in issue #30.
+
+Validation on 2026-11-06: 15 offline Node tests pass; the separate integration test passes against a real local PoolManager with the actual CLI. The fixed 300-batch model corpus contains 49 all-or-none gaps and the proportional solver rescues all 49. Integration covers sell and buy groups, then liquidity removal, a nonzero CLI exit, and expiration returning the locked input. The local searches used 13 simulations in 44 ms for sells, 13 in 43 ms for buys, and 139 in 375 ms for the no-liquidity case; these are local search measurements, not live-network or proving latency claims.
+
+The integration uses generated contract artifacts and a test-only CREATE2 factory. Artifact resolution supports fresh Foundry builds with compiler-suffixed filenames. The complete batching/order contract branch passed 198 contract test executions including Unichain forks with 4,096 fuzz runs, separately from the Node checks. Merge requires the solver owner and shared-interface review; the ongoing proof work is unchanged.
+
+
+## Peer-only solver integration (issue #18)
+
+The user selected peer-only matching with no mandatory LP locks. On `kritarth/peer-solver`, the CLI detects the additive `settlePeer` API and reads active liquidity at the same pinned block as its other search inputs. With zero active liquidity it first computes a price-priority crossing locally at the stored pool price, verifies both token budgets and partial minimums, simulates the candidate, and simulates again before submission. It still tries the ordinary AMM search if no peer candidate succeeds, because liquidity can exist beyond the current tick. Deploying this behavior requires the contract on `kritarth/peer-clearing`.
+
+This matches available opposing flow, not absent counterparties. The stored price can be stale; user limits remain enforced. Local integer search is not a proof of maximum-volume completeness. The chosen rounding-surplus policy and additive API are specified in the contract branch's PLAN.md and ARCHITECTURE.MD. No proof inputs, LP lockups, external feeds, or collateral requirements were added.
+
+
+Peer-only validation (2026-11-06):
+- `forge test --fuzz-runs 4096 -vv`: 260 passing test executions across twelve suites, including Unichain forks. Inherited suites repeat baseline scenarios; the count is not 260 distinct behaviors.
+- `npm test` in the peer solver: 23 offline tests pass; the opt-in integration test is skipped there and was run separately successfully.
+- The actual CLI runs normal AMM sells/buys, zero-active-liquidity peer crossings in both directions, and one-sided expiry/recovery on a fresh local anvil. Peer executions emit no pool Swap event and leave no new token balances in settlement.
+- Both token rounding-surplus paths, commitment-ID tie-breaking independent of reveal order, bad representatives, both budget deficits, user minimums, active-liquidity rejection, finalization, and window checks pass. Peer accounting fuzz tests run 4,096 cases locally and again on the fork. A 64-order peer batch is included.
+- Local peer candidate search: one simulation, approximately 2 ms in each direction. This excludes setup, state reads, the CLI's fresh pre-send check, submission, and confirmation, and is not a live-network latency claim.
+- The local 64-order settlement call consumed 1,577,677 gas in warm test state. This excludes setup and is not a cold transaction gas estimate. The size check reported 18,513 runtime bytes for the selected build.
+- Touched Solidity files pass formatting checks; both patches pass `git diff --check`.

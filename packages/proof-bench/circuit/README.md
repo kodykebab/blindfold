@@ -49,6 +49,63 @@ It also reads `../../results/canonical-interop.json`, the public interop fixture
 
 ## Reusable local admission parameters
 
-`go build -o ../results/local-prover .` builds the local tool. `setup-local <new-directory>` compiles both unchanged circuit relations, creates development Groth16 parameters, exports their Solidity verifiers, and writes a versioned SHA-256 manifest. It refuses to overwrite a directory. `prove-local <directory> <manifest-sha256> preparation|online <fixture.json>` validates the pinned files, proves the witness and verifies the result before returning `{seal,journal}` as JSON. `fixture-local` reads a request on stdin and returns the preparation/online fixture with fresh CSPRNG keys, blinding and nonce. New fixture integers are decimal strings to preserve uint128/uint64 values through JavaScript; the reader also accepts historical numeric fixtures.
+`go build -o ../results/local-prover .` builds the local tool. `setup-local <new-directory>` compiles both unchanged circuit relations, creates development Groth16 parameters, exports their Solidity verifiers, and writes a versioned SHA-256 manifest. It refuses to overwrite a directory. `prove-local <directory> <manifest-sha256> preparation|online <fixture.json>` validates the pinned files, proves the witness and verifies the result before returning `{seal,journal,timings,peakRssBytes,goVersion}` as JSON. `fixture-local` reads a request on stdin and returns the preparation/online fixture with fresh CSPRNG keys, blinding and nonce. New fixture integers are decimal strings to preserve uint128/uint64 values through JavaScript; the reader also accepts historical numeric fixtures.
 
 Run `bash packages/proof-bench/check-admission.sh` from the repository root for the real-proof client/contract integration gate. The script rebuilds the tool, reuses the local development parameters, compiles the generated verifier artifacts and runs the isolated Anvil test. The deployment manifest pins the parameter manifest hash. See the client README for private-state export and interrupted-submission commands.
+
+`prepare-fixture-local` accepts the context fields needed for preparation (`chainId`, `settlement`, `owner`, `batch`, `round`) and returns `{preparation,fixture}`. The fixture contains only the preparation statement and private key material. `fixture-local` additionally accepts that `preparation` object to construct the later online witness; it rejects foreign contexts and inconsistent key/wrapper material. The client owns one-time consumption; raw fixture commands are witness constructors, not a persistent key store.
+
+`prove-local` measures parameter hashing/deserialization as `timings.load_s`, witness construction and proving as `prove_s`, and native verification/journal construction as `verify_s`. `peakRssBytes` covers the whole prover process, including parameter loading. Run `node packages/proof-bench/measure-admission.mjs 3` from the root after building the local prover to collect repeated process-cold samples with explicit cache conditions and artifact identities. Measurements and generated artifacts stay in ignored `results/`.
+
+## Global multi-token admission
+
+`GlobalFundingCircuit` and `GlobalOnlineCircuit` implement the separate `blindfold.global.*.v1` domains. The public online statement is 16 static ABI words: domain, preparation digest, eight-token registry hash, step, previous root, next root, eight current budgets, order hash and ciphertext hash. The preparation digest is the same canonical preparation statement used by the pair relation. The global online verifier has two public digest limbs; the original pair online verifier has four and is not interchangeable.
+
+The private relation checks token indices in `[0,7]`, nonempty registry slots, different input/output tokens, positive uint128 input, uint128 minimum, step below 64, the exact global order hash, cumulative funding for every token, and the exact canonical AGE ciphertext. Both versions share the encryption implementation. The global plaintext is `abi.encode(owner, uint8 tokenIn, uint8 tokenOut, uint128 amountIn, uint128 minAmountOut, bytes32 salt)`.
+
+Generate a fresh preparation witness with OS entropy:
+
+```sh
+cargo run --manifest-path ../Cargo.toml --locked --release --bin global-prepare -- context.json private-preparation.json
+```
+
+`context.json` uses `{chain_id, settlement, owner, batch, round}`, with addresses as 20-element byte arrays. The output is private, created with mode 0600 on Unix, and never overwrites an existing file. It contains a fresh AGE key, encryption randomness and hiding blinding. Do not use the checked-in synthetic fixtures for user orders.
+
+Global online input:
+
+```json
+{
+  "preparation": "private-preparation.json",
+  "tokens": ["0x...sorted token0...", "0x...token1..."],
+  "input": 0,
+  "output": 1,
+  "amount": "100",
+  "minimum": "90",
+  "step": 0,
+  "totals": ["0","0","0","0","0","0","0","0"],
+  "budgets": ["1000","1000","0","0","0","0","0","0"],
+  "oldBlind": "0x...32 bytes..."
+}
+```
+
+Read budgets from `GlobalAuction.budgets(owner)`: they already subtract the next admission's deposit and fee. Use the previous accepted state's totals/blinding/step for subsequent orders. Omitted salt receives cryptographic randomness in the CLI. Slots beyond the registry are zero. Preparation paths resolve from the process working directory. An account cannot enter another batch while it has open global commitments.
+
+```sh
+# Explicit local development setup; retain keys for subsequent proofs.
+CIRCUIT_KEYS=../results/global-keys CIRCUIT_SETUP=1 CIRCUIT_OUTPUT=../results/global-first go run . --global-online global-input.json
+# Same circuit identity and verifier, new ciphertext and proof; no setup.
+CIRCUIT_KEYS=../results/global-keys CIRCUIT_OUTPUT=../results/global-next go run . --global-online global-input.json
+# Preparation uses its own keys and output directory.
+CIRCUIT_KEYS=../results/preparation-keys CIRCUIT_SETUP=1 CIRCUIT_OUTPUT=../results/global-preparation go run . --preparation private-preparation.json
+```
+
+Key loading checks the serialized compiled circuit's SHA-256 and mode. Local setup is explicit and refuses a nonempty key directory. `global-state.json` contains the private next reservation state, plaintext/salt and ciphertext; `proof.json` contains the proof/public statement. Use a distinct output directory for each run and consume it only after successful exit. Without `CIRCUIT_KEYS`, the command remains an ephemeral benchmark that creates fresh verifier parameters.
+
+Real-proof integration uses the fixed synthetic preparation context at chain 130, batch 7, round 1000, token addresses `0x1001`–`0x1003`, input 1, output 2, amount 100, minimum 90, explicit zero salt, budgets `[1000,1000,1000,0,0,0,0,0]`. Generate matching preparation and online exports into `results/global-preparation` and `results/global-online`, then run:
+
+```sh
+(cd ../global-evm && forge test --match-contract GlobalAdmissionIntegrationTest -vv)
+node global-interop.mjs ../results/global-online/global-state.json
+```
+
+The integration locates actual auction code at the fixture's bound address, copies constructor state, and exercises actual vault custody. The independent JS check verifies the recorded drand signature, decrypts AGE using tlock-js, and recomputes Solidity order/registry/funding hashes. Production setup and circuit-review gates are recorded in REVIEW.md.
