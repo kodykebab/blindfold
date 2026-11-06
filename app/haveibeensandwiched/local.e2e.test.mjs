@@ -6,7 +6,8 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { parseStatus, parseTrack, parseBlockers } from './status.mjs'
+import { parseStatus } from './status.mjs'
+import { parseTrack as parseTrackJson, parseBlockers as parseBlockersJson } from './orders.mjs'
 
 const enabled = process.env.WEB_E2E === '1'
 const testKeys = { PRIVATE_KEY: '', MNEMONIC: 'test test test test test test test test test test test junk' }
@@ -57,10 +58,10 @@ test('real CLI backup exports a committed order and restores it to another local
     assert.match(parsed.open, /open commitments: 1/)
     const tracked = await original.run({ action: 'track' })
     assert.equal(tracked.state, 'done', tracked.output)
-    assert.equal(parseTrack(tracked.output)?.[0].state, 'committed')
+    assert.equal(parseTrackJson(tracked.output).orders?.[0]?.state, 'committed') // track and blockers answer in JSON
     const blockers = await original.run({ action: 'blockers' })
     assert.equal(blockers.state, 'done', blockers.output)
-    assert.equal(parseBlockers(blockers.output)?.[0].state, 'committed')
+    assert.equal(parseBlockersJson(blockers.output).steps?.[0]?.state, 'committed')
     const exportJob = await original.run({ action: 'backup-export' })
     assert.equal(exportJob.state, 'done', exportJob.output)
     const backup = JSON.parse(exportJob.backup)

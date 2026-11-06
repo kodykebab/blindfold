@@ -6,7 +6,7 @@ import { loadHistory } from './history.mjs'
 import { loadCourt } from './court-view.mjs'
 
 const PORT = Number(process.env.PORT || 3100)
-const pages = new Map(['/index.html', '/trade.html', '/trade.css', '/trade.mjs', '/status.mjs', '/job-store.mjs', '/wallet-view.mjs'].map((p) => [p, readFileSync(new URL(`.${p}`, import.meta.url))]))
+const pages = new Map(['/index.html', '/trade.html', '/trade.css', '/trade.mjs', '/status.mjs', '/job-store.mjs', '/wallet-view.mjs', '/orders.mjs'].map((p) => [p, readFileSync(new URL(`.${p}`, import.meta.url))]))
 const jobs = createJobs()
 const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
 createServer(async (req, res) => {
