@@ -42,6 +42,8 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     error Imbalanced();
     error InvalidMarginalOrder();
     error PartialLimit(uint256 id);
+    error ActiveLiquidity();
+    error PeerUnbalanced(uint256 in0, uint256 out0, uint256 in1, uint256 out1);
 
     event Filled(
         uint64 indexed batchId, uint256 indexed id, address indexed owner, uint256 amountIn, uint256 amountOut
@@ -57,6 +59,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         uint256 donated,
         address solver
     );
+    event PeerSettled(uint64 indexed batchId, uint256 priceX96, uint256 rounding0, uint256 rounding1);
     event Expired(uint64 indexed batchId, uint256 orders);
 
     struct Config {
@@ -133,6 +136,11 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         return FullMath.mulDiv(sqrtP, sqrtP, Q96);
     }
 
+    /// @notice Active pool liquidity, used to identify when peer-only settlement is available.
+    function poolLiquidity() external view returns (uint128) {
+        return manager.getLiquidity(key.toId());
+    }
+
     /// @notice tokenOut per tokenIn (Q96) while a batch is being settled, else 0. Read by SealedClearing.
     function activeClearingPriceX96(address tokenIn, address tokenOut) external view returns (uint256) {
         uint256 p = _activePrice();
@@ -152,7 +160,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
 
     function settle(uint64 batchId, uint256 priceX96) external {
         PartialGroup memory group;
-        _settle(batchId, priceX96, group);
+        _settle(batchId, priceX96, group, false);
     }
 
     /// @notice Share a partial fill across every same-side order with the representative's limit.
@@ -178,10 +186,24 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         } else if (priceX96 > limitPrice || limitPrice - priceX96 > FullMath.mulDiv(priceX96, toleranceBps, BPS)) {
             revert InvalidMarginalOrder();
         }
-        _settle(batchId, priceX96, PartialGroup(referenceOrder, marginalAmountIn));
+        _settle(batchId, priceX96, PartialGroup(referenceOrder, marginalAmountIn), false);
     }
 
-    function _settle(uint64 batchId, uint256 priceX96, PartialGroup memory group) internal {
+    /// @notice Match opposing orders without an AMM swap when there is no active pool liquidity.
+    /// @dev Price is the pool's stored price, not a solver-selected price. The representative
+    ///      defines the same price-priority/proportional group as settle(), but may fill fully
+    ///      or have a zero minimum. Both token budgets must cover all payouts independently.
+    function settlePeer(uint64 batchId, uint256 marginalId, uint128 marginalAmountIn) external {
+        if (manager.getLiquidity(key.toId()) != 0) revert ActiveLiquidity();
+        Order memory ref = orders[marginalId];
+        if (
+            commitments[marginalId].batchId != batchId || ref.amountIn == 0 || marginalAmountIn == 0
+                || marginalAmountIn > ref.amountIn
+        ) revert InvalidMarginalOrder();
+        _settle(batchId, poolPriceX96(), PartialGroup(ref, marginalAmountIn), true);
+    }
+
+    function _settle(uint64 batchId, uint256 priceX96, PartialGroup memory group, bool peer) internal {
         uint256 opens = revealCloses(batchId);
         uint256 closes = opens + settleLength;
         if (block.timestamp < opens || block.timestamp >= closes) {
@@ -195,7 +217,19 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
 
         uint256[] storage ids = batchOrderIds[batchId];
         (Totals memory t, Fill[] memory fills) = _collect(ids, priceX96, group);
-        Residual memory r = _route(t);
+        Residual memory r;
+        if (peer) {
+            if (t.out0 == 0 || t.out1 == 0 || t.in0 < t.out0 || t.in1 < t.out1) {
+                revert PeerUnbalanced(t.in0, t.out0, t.in1, t.out1);
+            }
+            // Uniform-price floor quotes can leave indivisible token units. Return
+            // all of them to output recipients; no value is left in settlement.
+            _returnRounding(ids, fills, t.in0 - t.out0, t.out0, true);
+            _returnRounding(ids, fills, t.in1 - t.out1, t.out1, false);
+            emit PeerSettled(batchId, priceX96, t.in0 - t.out0, t.in1 - t.out1);
+        } else {
+            r = _route(t);
+        }
         _checkMarginal(priceX96);
         _pay(batchId, ids, fills);
 
@@ -266,6 +300,26 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
                 t.out0 += f.amountOut;
             }
         }
+    }
+
+    function _returnRounding(
+        uint256[] storage ids,
+        Fill[] memory fills,
+        uint256 surplus,
+        uint256 totalOutput,
+        bool outputToken0
+    ) internal view {
+        if (surplus == 0) return;
+        uint256 remaining = surplus;
+        uint256 first = type(uint256).max;
+        for (uint256 i; i < ids.length; i++) {
+            if (fills[i].amountIn == 0 || orders[ids[i]].zeroForOne == outputToken0) continue;
+            if (first == type(uint256).max || ids[i] < ids[first]) first = i;
+            uint256 share = FullMath.mulDiv(surplus, fills[i].amountOut, totalOutput);
+            fills[i].amountOut += share;
+            remaining -= share;
+        }
+        fills[first].amountOut += remaining;
     }
 
     function _route(Totals memory t) internal returns (Residual memory r) {

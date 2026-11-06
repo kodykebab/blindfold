@@ -357,3 +357,21 @@ The checked-in Solidity fixture test uses an upstream receipt. Its purpose is ve
 - The tlock patch exposes explicit randomness while retaining upstream encryption and attribution. AGE authentication uses the upstream library.
 
 Primary implementation references: [drand tlock](https://github.com/drand/tlock), [tlock-rs](https://github.com/thibmeu/tlock-rs), [tlock-js](https://github.com/drand/tlock-js), [RISC Zero](https://github.com/risc0/risc0), [RISC Zero Ethereum verifier](https://github.com/risc0/risc0-ethereum), [Uniswap v4 core](https://github.com/Uniswap/v4-core), and [EIP-2935](https://eips.ethereum.org/EIPS/eip-2935).
+
+
+## Peer-only matching when active liquidity is zero
+
+`settlePeer(batchId, marginalId, marginalAmountIn)` crosses opposing funded orders without a pool swap. The contract reads the pool's stored price and requires its active liquidity to be zero. The representative identifies the price-priority boundary: eligible better same-side limits fill fully, equal limits share the input fraction, and worse limits remain unfilled. The boundary fraction may be 100%; zero-minimum orders are supported. Opposing orders retain the ordinary quote rule.
+
+```mermaid
+flowchart LR
+    A[Zero active liquidity] --> B[Stored pool price]
+    B --> C[Price priority and proportional fills]
+    C --> D[Check minimums and both token budgets]
+    D --> E[Distribute rounding surplus]
+    E --> F[Pay traders and unlock unused input]
+```
+
+Each base output is rounded down at the reference price, while its proportional minimum rounds up. Execution requires nonzero opposing payouts and independently sufficient token0 and token1 inputs. Rounding surplus is distributed to recipients of that token in proportion to their base quoted outputs; the smallest commitment ID receives the final indivisible remainder. Actual payouts appear in `Filled`, and `PeerSettled` records the reference price and aggregate rounding surplus. The existing finalization, commitment cleanup, and expiration lifecycle applies.
+
+The solver tries this local crossing first when the liquidity view is zero, validates the candidate onchain, and simulates again before sending. It retains AMM search if no peer candidate succeeds; liquidity can exist beyond the current tick even when active liquidity is zero.

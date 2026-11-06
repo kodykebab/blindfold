@@ -510,3 +510,22 @@ Implemented on `kritarth/batch-ordering`, pending shared timing review and merge
 The fix adds no persisted cursor or predecessor walk. Empty and expired predecessors do not block subsequent batches; owners can still expire their earlier orders to release funds. Existing 30/60 cadence/window configuration is rejected explicitly, and the mechanism fixture now uses 30/30. Operators must select a longer cadence if they need a longer execution window.
 
 Validation: 198 passing test executions across ten suites with `forge test --fuzz-runs 4096 -vv`, including local and Unichain ordering regressions, 4,096 schedule fuzz cases, every drand alignment/cadence remainder, invalid and zero windows, and unfinalized/empty predecessors. Inherited mechanism tests are repeated across suites; this count is not 198 distinct scenarios. The case that previously allowed a later batch to change the pool before an earlier settlement now rejects the earlier settlement once the later window opens.
+
+
+### Peer-only matching follow-up to S12 (issue #18)
+
+The user selected peer-only matching first, without mandatory LP lockups. Implemented on `kritarth/peer-clearing`, with consumer integration on `kritarth/peer-solver`, pending shared-seam review. This permits an uneven opposing batch (for example, 100 selling against 50 buying at p=1) to cross 50/50 even when the AMM has no active liquidity.
+
+The price is the existing stored pool price, not a solver-selected price or a new external feed. It can be stale; enforced user limits remain the price protection. The mode requires zero active liquidity and conserved budgets for both tokens, and never routes an AMM residual. Zero active liquidity does not establish that all other tick ranges are empty. A one-sided batch still needs an external counterparty; expiration remains available. This implements a liquidity-independent crossing option, not a universal execution guarantee or a committed-capital backstop.
+
+The shared settlement lifecycle and allocation machinery are reused. No persistent queue, liquidity lock, extra collateral, oracle service, or proof input was added. An additive liquidity view and settlement entry point are the only new calls. Rounding is accounted for entirely: surplus goes to output recipients proportionally, with a commitment-ID tie-break for indivisible remainder, and no batch-created balance remains in settlement. Solver selection still has the previously tracked price/quantity-policy limitations; this feature does not claim maximum-volume completeness for all integer cases.
+
+
+Peer-only validation (2026-11-06):
+- `forge test --fuzz-runs 4096 -vv`: 260 passing test executions across twelve suites, including Unichain forks. Inherited suites repeat baseline scenarios; the count is not 260 distinct behaviors.
+- `npm test` in the peer solver: 23 offline tests pass; the opt-in integration test is skipped there and was run separately successfully.
+- The actual CLI runs normal AMM sells/buys, zero-active-liquidity peer crossings in both directions, and one-sided expiry/recovery on a fresh local anvil. Peer executions emit no pool Swap event and leave no new token balances in settlement.
+- Both token rounding-surplus paths, commitment-ID tie-breaking independent of reveal order, bad representatives, both budget deficits, user minimums, active-liquidity rejection, finalization, and window checks pass. Peer accounting fuzz tests run 4,096 cases locally and again on the fork. A 64-order peer batch is included.
+- Local peer candidate search: one simulation, approximately 2 ms in each direction. This excludes setup, state reads, the CLI's fresh pre-send check, submission, and confirmation, and is not a live-network latency claim.
+- The local 64-order settlement call consumed 1,577,677 gas in warm test state. This excludes setup and is not a cold transaction gas estimate. The size check reported 18,513 runtime bytes for the selected build.
+- Touched Solidity files pass formatting checks; both patches pass `git diff --check`.
