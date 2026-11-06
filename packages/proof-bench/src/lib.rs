@@ -180,7 +180,7 @@ pub(crate) fn check_payload_and_funding(
         expected,
         file_key: w.file_key,
     };
-    let decryptor = age::Decryptor::new(w.ciphertext.as_slice())?;
+    let decryptor = age::Decryptor::new_buffered(w.ciphertext.as_slice())?;
     ensure!(!decryptor.is_scrypt(), "recipient");
     let mut reader = decryptor.decrypt(std::iter::once(&identity as &dyn age::Identity))?;
     let mut output = Vec::new();
@@ -277,6 +277,52 @@ pub fn sample(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn buffered_reader_matches_streaming_reader_on_valid_and_damaged_files() -> Result<()> {
+        for (direction, amount, step) in [
+            (true, 0, 0),
+            (true, 100, 0),
+            (false, 100, 1),
+            (true, u128::MAX, 63),
+        ] {
+            let (s, w) = sample(1000, direction, amount, step)?;
+            let identity = CheckedIdentity {
+                round: s.round,
+                expected: wrap_key(s.round, w.file_key, w.sigma)?,
+                file_key: w.file_key,
+            };
+            let decrypt = |bytes: &[u8], buffered: bool| -> Result<Vec<u8>> {
+                let d = if buffered {
+                    age::Decryptor::new_buffered(bytes)?
+                } else {
+                    age::Decryptor::new(bytes)?
+                };
+                let mut r = d.decrypt(std::iter::once(&identity as &dyn age::Identity))?;
+                let mut out = Vec::new();
+                r.read_to_end(&mut out)?;
+                Ok(out)
+            };
+            assert_eq!(decrypt(&w.ciphertext, true)?, plaintext(&s, &w));
+            assert_eq!(decrypt(&w.ciphertext, false)?, plaintext(&s, &w));
+            for length in 0..w.ciphertext.len() {
+                assert!(
+                    decrypt(&w.ciphertext[..length], true).is_err(),
+                    "buffered truncation {length}"
+                );
+                assert!(
+                    decrypt(&w.ciphertext[..length], false).is_err(),
+                    "streaming truncation {length}"
+                );
+            }
+            for i in 0..w.ciphertext.len() {
+                let mut damaged = w.ciphertext.clone();
+                damaged[i] ^= 1;
+                assert!(decrypt(&damaged, true).is_err(), "buffered mutation {i}");
+                assert!(decrypt(&damaged, false).is_err(), "streaming mutation {i}");
+            }
+        }
+        Ok(())
+    }
     #[test]
     fn quicknet_standard_decryption_and_all_order_shapes() -> Result<()> {
         for (direction, amount, step) in [
