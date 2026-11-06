@@ -48,6 +48,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     error MissingLiquidity();
     error ExternalConfig();
     error ExternalPrice();
+    error ExternalInputTransfer();
     error PeerUnbalanced(uint256 in0, uint256 out0, uint256 in1, uint256 out1);
 
     event Filled(
@@ -439,7 +440,14 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         }
         address outToken = _inputToken(!r.zeroForOne);
         uint256 beforeBalance = IERC20Balance(outToken).balanceOf(address(this));
-        vault.operatorPull(_inputToken(r.zeroForOne), r.amountIn, address(externalMarket));
+        {
+            address input = _inputToken(r.zeroForOne);
+            uint256 beforeInput = IERC20Balance(input).balanceOf(address(externalMarket));
+            vault.operatorPull(input, r.amountIn, address(externalMarket));
+            if (IERC20Balance(input).balanceOf(address(externalMarket)) - beforeInput != r.amountIn) {
+                revert ExternalInputTransfer();
+            }
+        }
         r.amountOut = externalMarket.swap(r.zeroForOne, r.amountIn, owed);
         if (r.amountOut < owed || IERC20Balance(outToken).balanceOf(address(this)) - beforeBalance != r.amountOut) {
             revert ResidualShort(r.amountOut, owed);

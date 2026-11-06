@@ -427,3 +427,67 @@ factory at block 26,353,874. Its test parameters are a 600-second window,
 harmonic liquidity of 10^15, and a 100-basis-point deviation band. These are
 explicit fixture parameters. The fork exercises real token transfers and public
 pool swaps with zero liquidity in the sealed pool, in both directions.
+
+### General routing for pair-specific auctions
+
+A market still accepts orders for one endpoint pair. `UniswapV3Route` implements
+the existing external-market interface with one to three fixed Uniswap v3 hops.
+The endpoints need not share a direct pool. For example, WBTC/USDC orders can
+cross internally, then execute their residual through WBTC/WETH and WETH/USDC.
+
+```mermaid
+flowchart LR
+    O[WBTC / USDC batch] --> C[Cross opposing endpoint orders]
+    C --> R[UniswapV3Route]
+    R --> H1[WBTC / WETH pool]
+    H1 --> H2[WETH / USDC pool]
+    H2 --> V[Validate received USDC and credit vault]
+    P1[First hop historical reference] --> P[Compose endpoint reference]
+    P2[Second hop historical reference] --> P
+    P --> C
+```
+
+The constructor receives the settlement, factory, ordered token path, pool and
+liquidity/activity configuration for each hop, a common historical window and
+maximum delay, and the deviation band. Endpoint addresses must be sorted:
+`path[0] = settlement.token0`, `path[last] = settlement.token1`. Intermediate
+addresses can be in either order. It rejects duplicate tokens, discontinuous
+pools and paths longer than three hops. Each pool is authenticated against the
+configured factory by the existing single-pool adapter.
+
+Every hop observes the same historical end time. References are inverted when a
+hop runs opposite its pool's token order, then composed in raw-unit Q96 arithmetic.
+Per-hop history, liquidity, activity and spot checks remain in force. The composed
+spot/reference deviation must also fit the band. This prevents several individually
+acceptable deviations from exceeding the endpoint policy when multiplied.
+
+Execution checks that the adapter actually receives the exact residual input before prefunding the first hop. Each hop pays its
+own authenticated callback and passes only its measured output to the next hop.
+Reverse orders traverse the same path backwards. The last hop enforces the final
+minimum output; settlement independently measures the endpoint tokens received.
+A failed hop reverts the entire transaction. Intermediate tokens never enter the
+user's vault balance. Unrelated donated balances are not included in route output.
+Transfers between adapters and to settlement must change both balances by the
+expected amount.
+
+Deployment sequence:
+
+1. Deploy the pair's vault, settlement and sealed hook; initialize the existing
+   pair key as usual. Each pair retains its own vault and operator.
+2. Resolve each proposed hop with the intended chain's canonical v3 factory and
+   select per-hop liquidity/activity thresholds. Supply token and pool addresses
+   as constructor configuration, not solver-selected arbitrary calldata.
+3. Deploy `UniswapV3Route` and call `settlement.configureExternal(route)` before
+   accepting any commitments. Read the batch reference and simulate both directions.
+4. Publish the ordinary pair deployment record. The solver reads the generated
+   settlement ABI and external reference; it requires no new routing arguments.
+
+The order format, commitment domain, proof endpoint assets and settlement entry
+points are unchanged. A preparation remains bound to its original settlement;
+route support does not make proofs reusable across different pair deployments.
+
+Partial allocations retain the ordinary floored common fraction when the output
+covers the user's ceil-rounded minimum. If it does not, the input falls back to
+whole reduced amount/minimum lots; an empty fallback stays unfilled. This behavior
+is shared by sealed, peer and routed settlement. The solver uses the largest order
+in a limit group as its representative to preserve fraction resolution.
