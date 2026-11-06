@@ -12,7 +12,8 @@ export function command(input) {
   const { action, side, amount, minimum, token, batch } = input
   if (action === 'prepare-admission' && typeof batch === 'string' && /^(0|[1-9]\d{0,19})$/.test(batch) && BigInt(batch) < (1n << 64n)) return ['prepare-admission', batch]
   if (['track', 'blockers'].includes(action)) return [action, '--json']
-  if (['status', 'resume-admission'].includes(action)) return [action]
+  if (action === 'status') return ['status', '--json']
+  if (action === 'resume-admission') return [action]
   if (action === 'cleanup') return ['cleanup', '--json']
   if (action === 'cleanup-preview') return ['cleanup', '--dry-run', '--json']
   if (['deposit', 'withdraw'].includes(action)) {

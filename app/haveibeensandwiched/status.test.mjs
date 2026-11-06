@@ -17,6 +17,34 @@ test('status report preserves actual balances, batch and deadlines', () => {
   assert.equal(value.preparation, 'preparation: prepared for batch 8')
   assert.deepEqual(value.deadlines, ['20s commits close', '-4s reveal opens'])
 })
+test('status JSON is read first and still fills the text-shaped view', () => {
+  const value = parseStatus(JSON.stringify({
+    account: '0x1111111111111111111111111111111111111111',
+    chainId: 31337,
+    pair: {
+      token0: { address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', symbol: 'TKA', decimals: 18 },
+      token1: { address: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', symbol: 'TKB', decimals: 6 },
+    },
+    balances: [
+      { token: 'token0', wallet: '100', available: '20', reserved: '0', withdrawable: '20' },
+      { token: 'token1', wallet: '5', available: '1', reserved: '2', withdrawable: '0' },
+    ],
+    openCommitments: 1,
+    batch: { id: '3', now: 1700000000, deadlines: [{ at: 1700000060, what: 'commits close' }] },
+    preparation: 'none',
+    quote: null,
+  }))
+  assert.equal(value.account, '0x1111111111111111111111111111111111111111')
+  assert.equal(value.pair, 'pair TKA / TKB')
+  assert.equal(value.rows[0].wallet, '100 TKA')
+  assert.equal(value.rows[1].reserved, '2 TKB')
+  assert.match(value.open, /open commitments: 1/)
+  assert.deepEqual(value.deadlines, ['60s  commits close'])
+  assert.equal(value.preparation, 'preparation: none')
+  assert.equal(value.tokens[0].decimals, 18)
+  assert.equal(value.tokens[1].decimals, 6)
+})
+
 test('incomplete or error output is not presented as a successful status', () => {
   assert.equal(parseStatus('client: deployment is missing'), null)
   assert.equal(parseStatus('account 0x1111111111111111111111111111111111111111\nbatch 0 (chain time 0)'), null)

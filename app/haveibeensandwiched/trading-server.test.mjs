@@ -21,7 +21,7 @@ test('jobs serialize, capture output and release the slot on completion', () => 
   let args
   const jobs = createJobs({ start: (a) => { args = a; return child } })
   const id = jobs.start({ action: 'status' })
-  assert.deepEqual(args, ['status']); assert.equal(jobs.get(id).state, 'running')
+  assert.deepEqual(args, ['status', '--json']); assert.equal(jobs.get(id).state, 'running')
   assert.throws(() => jobs.start({ action: 'track' }), /running/)
   child.stdout.write('account example'); child.emit('close', 0)
   assert.deepEqual(jobs.get(id), { state: 'done', action: 'status', output: 'account example' })

@@ -1,5 +1,7 @@
-// Parse the client status report for display. The unmodified CLI output remains available in the activity log.
+// Parse the client status report for display. JSON from `status --json` wins; the text report is the fallback.
 export function parseStatus(text) {
+  const json = statusObject(text)
+  if (json) return statusFromJson(json)
   const lines = text.split(/\r?\n/)
   const account = lines.find((line) => /^account 0x[0-9a-f]{40}$/i.test(line))?.slice(8)
   const batch = lines.find((line) => /^batch \d+ \(chain time \d+\)$/.test(line))
@@ -34,6 +36,55 @@ export function displayPair(parsed) {
   if (sides.length < 2) return { label: 'Pair not reported', symbols: [], source: 'missing' }
   const symbols = sides.map(shortToken)
   return { label: `${symbols[0]} / ${symbols[1]}`, symbols, source: sides.some((side) => ADDRESS.test(side)) ? 'address' : 'symbol' }
+}
+
+function statusObject(text) {
+  for (const line of String(text).split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('{')) continue
+    try {
+      const value = JSON.parse(trimmed)
+      if (value?.account && value?.pair?.token0 && value?.pair?.token1 && value?.batch) return value
+    } catch { /* a log line that merely starts with a brace */ }
+  }
+  return null
+}
+
+function statusFromJson(value) {
+  const t0 = value.pair.token0
+  const t1 = value.pair.token1
+  const byRole = { token0: t0, token1: t1 }
+  const rows = (value.balances ?? []).map((row) => {
+    const token = byRole[row.token]
+    const symbol = token?.symbol ?? row.token
+    return {
+      token: symbol,
+      wallet: `${row.wallet} ${symbol}`,
+      available: `${row.available} ${symbol}`,
+      reserved: `${row.reserved} ${symbol}`,
+      withdrawable: `${row.withdrawable} ${symbol}`,
+    }
+  })
+  if (!rows.length) return null
+  const now = value.batch.now
+  const deadlines = (value.batch.deadlines ?? []).map((d) => `${Number(d.at) - Number(now)}s  ${d.what}`)
+  const openN = value.openCommitments
+  const open = `open commitments: ${openN}${openN ? ' (withdrawals blocked until each is revealed and settled, slashed, released or expired)' : ''}`
+  return {
+    account: value.account,
+    network: `network ${value.chainId}`,
+    pair: `pair ${t0.symbol} / ${t1.symbol}`,
+    batch: `batch ${value.batch.id} (chain time ${now})`,
+    open,
+    rows,
+    deadlines,
+    preparation: value.preparation == null ? null : `preparation: ${value.preparation}`,
+    tokens: [
+      { role: 'token0', symbol: t0.symbol, decimals: t0.decimals, address: t0.address },
+      { role: 'token1', symbol: t1.symbol, decimals: t1.decimals, address: t1.address },
+    ],
+    quote: null,
+  }
 }
 
 function tokenMeta(lines) {
