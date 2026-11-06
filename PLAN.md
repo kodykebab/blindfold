@@ -4,6 +4,46 @@ Who builds what, in three phases, so three people can work **asynchronously** wi
 
 Tick your own boxes as you merge. **Must** items are never cut.
 
+## Review and release sequence (2026-11-06)
+
+The first reviewed batch is merged through `09bc540c9c164c84dbc3cacfa47983520ecdf1a1`: #55, #5, #6, #34, #53 and #54, including original #50 and #42 commits. The contract and package sources on main match the tested integration tree. Shared review documentation retains the separately reviewed historical reproduction cases.
+
+| Merged increment | Verified behavior |
+|---|---|
+| #5 | Isolated local preparation/online circuits and proof-composition harness |
+| #6 | Equal-limit proportional allocation with executable-lot dust handling and ceil-rounded minimums |
+| #34 + #50 + #53 | Nonoverlapping settlement windows, aligned drand schedule, nonrefundable fee and atomic failure rollback |
+| #42 + #54 | CLI funding/commit/tracking/cleanup/withdrawal, terminal Released handling, policy-aware text and explicit CLIENT_ACCOUNT_INDEX |
+
+Validation on the integrated source: 215 Foundry tests including Unichain forks with 4,096 fuzz runs, 21 client tests including real Anvil CLI lifecycles, 14 clearing-model tests, Go constraint tests and 14 native Rust tests. Existing direct proof artifacts passed 22 Solidity tests and independent tlock/ABI interoperability; RISC Zero verifier plumbing passed 3 tests. Proof generation timings are the earlier recorded samples, not new measurements.
+
+### Next review and implementation order
+
+1. Complete admission integration (#29) using the selected local two-proof architecture, with the supported-token/arithmetic (#23) and deployment/configuration (#24) prerequisites. Keep the existing vault lifecycle and one-active-batch invariant. Prototype or mock proof verification does not satisfy this release gate.
+2. Review the remaining auction/solver stacks together: #4 → #33 → #36 → #41 → #52 for solver code; #35 → #40 → #51 for contract execution paths. Test each solver against the corresponding generated artifacts and preserve the merged fees/schedule checks while integrating.
+3. Integrate keeper #45 against the merged client and contracts, including operator budget, duplicate reveals, outage recovery and Released behavior.
+4. Review Court independently: #4 → #37 → #38 → #39 → #44 → #46 → #47 → #48 → #49. Assess the final coverage/payout behavior, then validate its independent release gates.
+5. Record exact reviewed heads and test results, retarget stacked PRs after parents land, and merge without squashing. Close issues only against complete acceptance criteria on main. Keep implementation, development tests and production deployment evidence distinct.
+
+### Integrated acceptance
+
+The clean-clone auction target is deploy → fund → generate local proofs → admit → reveal → settle (including partial fills) → verify balances → cleanup → withdraw. Exercise service outage and expiry recovery separately. The Court target is receipt → sandwich evidence → claim → claim window → collect. Keep time-travel fixtures separate from the wall-clock keeper chain.
+
+Run full Foundry and affected lane checks on the integrated tree. Include relevant fork/fuzz cases, model comparisons, actual proof-bound admission, independent decryption, client/keeper and solver CLI execution, and Court gates. Record offline and network-dependent results separately. Use generated artifacts and deployment manifests throughout.
+
+### Product completion milestones
+
+| Milestone | Owner(s) | Acceptance |
+|---|---|---|
+| Integrated development build | All lanes | A teammate runs the real-proof auction lifecycle from a clean clone; Court runs separately |
+| User-facing order flow | Khush; Kritarth for proving | Wallet/network selection, funding, quote/limit and fee review, local proof progress, submission tracking, partial-fill results, cleanup and withdrawal |
+| Private-state and device validation | Kritarth + Khush | Root/step-aware state export/restore; measured key loading, proving latency and memory on supported devices; timing selected from those measurements |
+| Operations and integrations | Bhoumik + Khush; Kritarth for Aqua | Named funded operators, deadline/error monitoring, permissionless recovery, Arkiv-backed user feature and fallback, agreed Aqua token-moving flow |
+| Production release | All lanes | Reviewed circuits/contracts, production proof parameters and authenticated key distribution, validated token/oracle/economic configuration, reproducible verified deployment and completed acceptance evidence |
+| Documentation and handover | Each lane | Architecture/status/commands match the release; two independent rehearsals; complete applicable feedback, integration evidence and submission materials |
+
+Keep the initial user flow pair-specific and reuse the existing vault, reveal, settlement and expiry lifecycle. Agree material architecture changes before implementing them. Review browser versus local-helper proving from measured device feasibility. Court remains a separate release boundary; integration/prize scope is decided explicitly.
+
 ## Team and lanes
 Each lane is a vertical slice with its own local check, and each prize has one owner.
 

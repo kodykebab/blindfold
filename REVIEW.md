@@ -2,7 +2,7 @@
 
 Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each item has an ID (R1–R11), a status, where it lives in the code, the fix, and an owner. The fixes are scheduled in [PLAN.md](PLAN.md). Design reference: [ARCHITECTURE.MD](ARCHITECTURE.MD).
 
-**Proven** means a Foundry test reproduces it against the current contracts (code in the [appendix](#appendix-reproduction-tests)). **From code** means it follows from reading the code and has no test yet.
+**Proven** means a Foundry test reproduces it against the cited baseline contracts (code in the [appendix](#appendix-reproduction-tests)). **From code** means it follows from reading the code and has no test yet.
 
 | ID | Problem | Severity | Status | Owner |
 |---|---|---|---|---|
@@ -19,6 +19,12 @@ Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each
 | R11 | One order larger than the pool's depth makes every price revert | Medium | Proven | Unassigned |
 
 ---
+
+## Current merged update (2026-11-06)
+
+The tables and reproduction snippets below retain their historical baselines. On main through `09bc540`, R1's reproduced marginal-order case and dust companion have regression coverage through proportional allocation (#6); R3 now charges a nonrefundable fee on every commit (#50/#53); settlement windows cannot overlap (#34); R7's schedule alignment is enforced. The fee/configuration integration passes 215 contract tests with 4,096 fuzz runs and Unichain forks. Alignment does not remove sequencer timing assumptions; #31 remains open. Clearing feasibility and solver integration remain tracked in #7/#12.
+
+The client (#42/#54) now handles Released as terminal and reports cleanup policy accurately. Isolated local circuits (#5) and their real-proof harness are merged; production commit still accepts unchecked ciphertext, so #29 remains open. The release-policy subclass in FeesAndTiming tests is not an admission verifier. Broader private-state acceptance remains #17.
 
 ## R1. One poison order can make a batch impossible to settle
 **Where:** `BlindfoldSettlement.quote` ([`:132`](contracts/src/BlindfoldSettlement.sol#L132)), `settle` ([`:139`](contracts/src/BlindfoldSettlement.sol#L139)), `_checkMarginal` ([`:206`](contracts/src/BlindfoldSettlement.sol#L206)).
@@ -667,4 +673,3 @@ this refinement after strict lot rounding reduced the fixed model corpus's
 rescued count from 49 to 38. Allocation is consequently price-dependent at these
 integer boundaries; solver discretion is not eliminated. The solver and model
 must use the same fallback, and complete clearing remains conditional.
-
