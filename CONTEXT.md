@@ -58,7 +58,7 @@ Demo chain: an anvil fork of **Unichain mainnet** (has Uniswap v4, Aqua and the 
 **SealedClearing (SwapVM).** An Aqua LP ships a strategy whose program runs `SealedClearing(settlement)`: it reverts unless the taker is the settlement and a batch is being settled, and fills exactly at `activeClearingPriceX96` (a transient value set during `settle`). Aqua tracks virtual balances, so the same LP capital can back other strategies too.
 
 ## Court design
-**Who's accountable:** the protected RPC. It signs an EIP-712 receipt per protected tx, `Protected{txHash, chainId, acceptedAt, maxBlock}`, and bonds in `BondRegistry`. If that tx is sandwiched, the RPC leaked it or built the sandwich.
+**Who's accountable:** the protected RPC. It signs an EIP-712 receipt per protected tx, `Protected{txHash, chainId, acceptedAt, maxBlock, maxPayout}`, and bonds in `BondRegistry`. If that tx is sandwiched, the RPC leaked it or built the sandwich.
 
 **`verify(claim)`:**
 1. block hash from `BLOCKHASH` (256 blocks), EIP-2935 (8,191 blocks), or the **L1 anchor**: a permissionless `checkpoint()` stores Base's `L1Block` hash; the claim proves that anchor header, then an account + storage proof of L1's EIP-2935 contract yields the target block's hash;
@@ -66,7 +66,7 @@ Demo chain: an anvil fork of **Unichain mainnet** (has Uniswap v4, Aqua and the 
 3. receipts proven into the receipt trie; one Swap log each (index hint) for the claimed v3 pool or v4 pool ID;
 4. predicate: front and victim same direction, back opposite and closing the front position (±1%), front signer == back signer ≠ victim signer, attacker net positive.
 
-Returns block, victim tx hash, attacker EOA, victim, profit. **Payout (to build):** `max(attacker profit, minimum penalty) + prover gas`, from the RPC's bond.
+Returns block, victim tx hash, attacker EOA, victim, profit. **Payout ([`BondRegistry`](contracts/src/court/BondRegistry.sol)):** the victim gets `min(attacker profit, receipt.maxPayout)` from the RPC's ETH bond, once per tx; the prover gets its execution gas at basefee. Profit is valued 1:1 only when it is in ETH or WETH (no oracle); claims for other profit tokens revert unpaid and stay claimable. The pool must be a canonical Uniswap v3 pool (CREATE2 from the factory) or the v4 PoolManager. One registry judges one source chain; unbonding has a delay so an RPC can't pull its bond ahead of a claim.
 
 **Cost on Base** (priced with Base's `GasPriceOracle`, Nov 2026 gas prices): a v3 claim on an L1 sandwich ≈ 0.00001 ETH; v4 ≈ 0.000015 ETH.
 

@@ -32,7 +32,7 @@ forge test --match-path test/Blindfold.t.sol                       # mechanism, 
 forge test --match-contract BlindfoldUnichainForkTest              # same suite on Unichain's real PoolManager (fork, 19)
 forge test --match-path test/ReservationModel.t.sol --fuzz-runs 4096   # private funding model (re-runs the 19 mechanism tests too)
 forge test --match-path 'test/swapvm/*'                            # SealedClearing opcode (4)
-forge test --match-path 'test/court/*'                             # Court, offline, real mainnet sandwiches (18)
+forge test --match-path 'test/court/*'                             # Court: verifier (18) + BondRegistry on real sandwiches (18) + unit/fuzz/invariant (12), offline
 forge test --match-path test/FeesAndTiming.t.sol                   # commit fee, schedule alignment, unrevealed policy (11)
 ```
 ```bash
@@ -102,13 +102,13 @@ Every change must keep `forge test` green. Add a test with every feature. Fork t
 contracts/            Foundry
   src/BlindfoldVault.sol  BatchAuction.sol  BlindfoldSettlement.sol  SealedPoolHook.sol
   src/swapvm/         SealedClearing.sol (SwapVM instruction), BlindfoldAquaRouter.sol
-  src/court/          SandwichCourtVerifier.sol, lib/ (Optimism RLPReader, MerkleTrie, Bytes)
+  src/court/          SandwichCourtVerifier.sol, BondRegistry.sol, lib/ (Optimism RLPReader, MerkleTrie, Bytes)
   test/               Blindfold.t.sol, BlindfoldUnichainFork.t.sol, ReservationModel.t.sol, swapvm/, court/ (+ fixtures/), utils/
   lib/                forge-std v1.11.0, v4-core v4.0.0, swap-vm v1.0.2 (submodules, pinned)
 packages/court-watcher/  find.mjs (scan), prove.mjs (claim + anchor fixtures), signed.mjs, lib.mjs
 packages/proof-bench/    admission-proof prototype: Rust checker (src/), RISC Zero guests + hosts (vm/; `prepared` splits key preparation from the online proof), verifier tests (evm/), interop scripts
 ```
-Planned, with owners in [PLAN.md](PLAN.md#team-and-lanes): `contracts/script/` (`DeployBlindfold`, `SeedBatch`, `DeployCourt`), `contracts/src/admission/`, `contracts/src/court/BondRegistry.sol`, `deployments/` (local addresses, gitignored), `packages/{arkiv,client,keeper,solver,demo-bots}`, `scripts/` (`check.sh`, `e2e.sh`), `app/` (Next.js), `arkiv/*.md`, `FEEDBACK.md`, `DEMO.md`.
+Planned, with owners in [PLAN.md](PLAN.md#team-and-lanes): `contracts/script/` (`DeployBlindfold`, `SeedBatch`, `DeployCourt`), `contracts/src/admission/`, `deployments/` (local addresses, gitignored), `packages/{arkiv,client,keeper,solver,demo-bots}`, `scripts/` (`check.sh`, `e2e.sh`), `app/` (Next.js), `arkiv/*.md`, `FEEDBACK.md`, `DEMO.md`.
 
 ## Compiler setup (don't break it)
 - v4-core's `PoolManager` pins `solc =0.8.26`. Our contracts use `pragma ^0.8.24` so they compile alongside it: **don't use the `transient` keyword** (needs 0.8.28); use assembly `tstore`/`tload`.

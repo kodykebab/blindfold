@@ -28,8 +28,8 @@ contract VerifierHarness is SandwichCourtVerifier {
     }
 }
 
-/// @notice Real Ethereum mainnet sandwiches (v3 and v4) found and proven by packages/court-watcher.
-contract SandwichCourtTest is Test {
+/// @dev Fixture loading and block-hash installation, shared by the Court test contracts.
+abstract contract CourtFixtures is Test {
     using stdJson for string;
 
     string constant V3 = "test/court/fixtures/v3.json";
@@ -39,10 +39,74 @@ contract SandwichCourtTest is Test {
     VerifierHarness court;
     MockL1Block l1;
 
-    function setUp() public {
+    function setUp() public virtual {
         l1 = new MockL1Block();
         court = new VerifierHarness(l1);
     }
+
+    // ---- helpers
+
+    function _claim(string memory path) internal view returns (SandwichCourtVerifier.Claim memory c, string memory j) {
+        j = vm.readFile(path);
+        c.header = j.readBytes(".header");
+        assertEq(keccak256(c.header), j.readBytes32(".blockHash"), "fixture header hashes to the real block hash");
+        c.front = _leg(j, ".front");
+        c.victim = _leg(j, ".victim");
+        c.back = _leg(j, ".back");
+        c.v4 = j.readBool(".v4");
+        c.pool = j.readAddress(".pool");
+        c.poolId = j.readBytes32(".poolId");
+    }
+
+    function _anchoredClaim(string memory path)
+        internal
+        view
+        returns (SandwichCourtVerifier.Claim memory c, string memory j)
+    {
+        (c, j) = _claim(path);
+        c.anchor.header = j.readBytes(".anchor.header");
+        c.anchor.accountProof = j.readBytesArray(".anchor.accountProof");
+        c.anchor.storageProof = j.readBytesArray(".anchor.storageProof");
+    }
+
+    function _leg(string memory j, string memory k) internal pure returns (SandwichCourtVerifier.Leg memory l) {
+        l.index = j.readUint(string.concat(k, ".index"));
+        l.rawTx = j.readBytes(string.concat(k, ".rawTx"));
+        l.txProof = j.readBytesArray(string.concat(k, ".txProof"));
+        l.receiptProof = j.readBytesArray(string.concat(k, ".receiptProof"));
+        l.logIndex = j.readUint(string.concat(k, ".logIndex"));
+    }
+
+    function _installBlockhash(string memory j) internal {
+        uint256 n = j.readUint(".blockNumber");
+        vm.roll(n + 10);
+        vm.setBlockhash(n, j.readBytes32(".blockHash"));
+    }
+
+    function _installHistory(string memory j) internal {
+        uint256 n = j.readUint(".blockNumber");
+        vm.roll(n + 300); // beyond BLOCKHASH's 256-block window
+        vm.etch(HISTORY, j.readBytes(".historyCode")); // the real EIP-2935 bytecode
+        vm.store(HISTORY, bytes32(n % 8191), j.readBytes32(".blockHash"));
+    }
+
+    function _checkpoint(string memory j) internal {
+        l1.set(uint64(j.readUint(".anchor.number")), j.readBytes32(".anchor.hash"));
+        court.checkpoint();
+    }
+
+    function _assertVerdict(SandwichCourtVerifier.Verdict memory v, string memory j) internal pure {
+        assertEq(v.blockNumber, j.readUint(".blockNumber"));
+        assertEq(v.attacker, j.readAddress(".attacker"), "attacker = the RPC-reported front/back sender");
+        assertEq(v.victim, j.readAddress(".victimFrom"));
+        assertEq(v.victimTxHash, keccak256(j.readBytes(".victim.rawTx")));
+        assertGt(v.profit, 0);
+    }
+}
+
+/// @notice Real Ethereum mainnet sandwiches (v3 and v4) found and proven by packages/court-watcher.
+contract SandwichCourtTest is CourtFixtures {
+    using stdJson for string;
 
     // ---- local block hash (BLOCKHASH, EIP-2935)
 
@@ -195,64 +259,5 @@ contract SandwichCourtTest is Test {
         for (uint256 i; i < kinds.length; i++) {
             assertEq(court.recover(j.readBytes(string.concat(".", kinds[i]))), signer, kinds[i]);
         }
-    }
-
-    // ---- helpers
-
-    function _claim(string memory path) internal view returns (SandwichCourtVerifier.Claim memory c, string memory j) {
-        j = vm.readFile(path);
-        c.header = j.readBytes(".header");
-        assertEq(keccak256(c.header), j.readBytes32(".blockHash"), "fixture header hashes to the real block hash");
-        c.front = _leg(j, ".front");
-        c.victim = _leg(j, ".victim");
-        c.back = _leg(j, ".back");
-        c.v4 = j.readBool(".v4");
-        c.pool = j.readAddress(".pool");
-        c.poolId = j.readBytes32(".poolId");
-    }
-
-    function _anchoredClaim(string memory path)
-        internal
-        view
-        returns (SandwichCourtVerifier.Claim memory c, string memory j)
-    {
-        (c, j) = _claim(path);
-        c.anchor.header = j.readBytes(".anchor.header");
-        c.anchor.accountProof = j.readBytesArray(".anchor.accountProof");
-        c.anchor.storageProof = j.readBytesArray(".anchor.storageProof");
-    }
-
-    function _leg(string memory j, string memory k) internal pure returns (SandwichCourtVerifier.Leg memory l) {
-        l.index = j.readUint(string.concat(k, ".index"));
-        l.rawTx = j.readBytes(string.concat(k, ".rawTx"));
-        l.txProof = j.readBytesArray(string.concat(k, ".txProof"));
-        l.receiptProof = j.readBytesArray(string.concat(k, ".receiptProof"));
-        l.logIndex = j.readUint(string.concat(k, ".logIndex"));
-    }
-
-    function _installBlockhash(string memory j) internal {
-        uint256 n = j.readUint(".blockNumber");
-        vm.roll(n + 10);
-        vm.setBlockhash(n, j.readBytes32(".blockHash"));
-    }
-
-    function _installHistory(string memory j) internal {
-        uint256 n = j.readUint(".blockNumber");
-        vm.roll(n + 300); // beyond BLOCKHASH's 256-block window
-        vm.etch(HISTORY, j.readBytes(".historyCode")); // the real EIP-2935 bytecode
-        vm.store(HISTORY, bytes32(n % 8191), j.readBytes32(".blockHash"));
-    }
-
-    function _checkpoint(string memory j) internal {
-        l1.set(uint64(j.readUint(".anchor.number")), j.readBytes32(".anchor.hash"));
-        court.checkpoint();
-    }
-
-    function _assertVerdict(SandwichCourtVerifier.Verdict memory v, string memory j) internal pure {
-        assertEq(v.blockNumber, j.readUint(".blockNumber"));
-        assertEq(v.attacker, j.readAddress(".attacker"), "attacker = the RPC-reported front/back sender");
-        assertEq(v.victim, j.readAddress(".victimFrom"));
-        assertEq(v.victimTxHash, keccak256(j.readBytes(".victim.rawTx")));
-        assertGt(v.profit, 0);
     }
 }

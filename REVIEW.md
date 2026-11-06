@@ -13,7 +13,7 @@ Design review of Blindfold and Court as of `main` @ `424642c` (2026-11-06). Each
 | R5 | Just-in-time liquidity takes the LP surplus; removing liquidity blocks settlement | Medium | From code | Kritarth |
 | R6 | Admission proofs limit an account to every other batch; proving time is unmeasured | Medium | From code | Kritarth |
 | R7 | Remaining trust in the sequencer and timestamps; the safety margin is 4–6 s, not ≥6 s | Medium | From code | Kritarth |
-| R8 | Court bonds can be drained by sandwiching yourself | High | From code | Bhoumik |
+| R8 | Court bonds can be drained by sandwiching yourself | High | Fixed in `BondRegistry` | Bhoumik |
 | R9 | Real sandwichers can easily slip past the Court predicate | Medium | From code | Bhoumik |
 | R10 | A commit into the next batch can unfund the account's own open order | Medium | Proven | Unassigned |
 | R11 | One order larger than the pool's depth makes every price revert | Medium | Proven | Unassigned |
@@ -54,6 +54,8 @@ No price is consistent with both, every `settle` reverts, and the batch expires.
 - **Limits:** output rounds down at the uniform price; the proportional minimum rounds up. An invalid nonzero partial fill reverts the whole settlement. The representative's limit price must be within the configured tolerance on the executable side of the clearing price.
 - **Remainder:** unfilled input stays in the owner's vault balance and unlocks. Events report actual input and output.
 - **Verification:** see the S1 implementation notes below. This resolves the reproduced case without claiming universal feasibility or a unique solver price.
+
+**How common:** in the solver's randomized model test (`packages/solver/test/price.test.mjs`: up to 12 random orders against a pool with linear price impact), 49 of 300 batches had no price at which every order fills fully. With a marginal partial fill, all 49 settled.
 
 ## R2. The commit-reveal free option is still open
 
@@ -112,6 +114,8 @@ CONTEXT.md's claim that "the solver chooses nothing else" does not hold.
 2. Pay the settler an explicit, small reward from the surplus, so honest settling pays and extraction isn't the business model.
 3. Our solver settles at the feasible price closest to the post-swap marginal price, not the first one it finds.
 
+**Status:** fix 3 is done. `packages/solver` finds the accepted band and settles at its midpoint; on a local deployment of the standard two-sided batch it settled at 0.9862, mid-band. Fixes 1 and 2 (tolerance, settler reward) are still open.
+
 ## R5. Just-in-time liquidity takes the LP surplus; removing liquidity blocks settlement
 **Where:** `SealedPoolHook` blocks only swaps ([`:12`](contracts/src/SealedPoolHook.sol#L12), [`:25`](contracts/src/SealedPoolHook.sol#L25)); the surplus goes through `manager.donate` to whoever is in range at that moment ([`BlindfoldSettlement.sol:260`](contracts/src/BlindfoldSettlement.sol#L260)).
 
@@ -169,6 +173,8 @@ Both are bound together (see the [proof-bench README](packages/proof-bench/READM
 2. They send the same transaction to their own bot, sandwich it, and claim from the RPC's bond.
 3. Their wallets' gains and losses cancel except for pool fees, so the payout is profit. They pick the "profit" themselves by giving the victim transaction wide slippage.
 4. The `minPenalty` floor makes even tiny self-sandwiches pay.
+
+**Status:** fixed in [`BondRegistry.sol`](contracts/src/court/BondRegistry.sol): the cap, no floor, once per tx, the unbond delay and chain binding are all tested against the mainnet fixtures. While building it, a related gap turned up: `verify` accepts Swap-shaped logs from whatever `c.pool` the claim names, so a contract emitting fake Swap events could fake a sandwich. BondRegistry pins the pool to the canonical v3 factory (CREATE2) or the v4 PoolManager. **Remaining limit:** profit is valued only in ETH/WETH. The v3 fixture's attacker profits in USDT, so that claim reverts unpaid; paying it needs a price, for example the front leg's own execution price, which `Verdict` doesn't expose yet.
 
 **Fix:** design `BondRegistry` so that sandwiching yourself never pays.
 - **Cap from the receipt:** the RPC writes `maxPayout` into the receipt, derived from the transaction's own slippage when it accepted it (quoted output minus `minAmountOut`). Pay `min(valued profit, maxPayout)`.
@@ -239,7 +245,6 @@ As written, Court catches only naive bots. Loosening the predicate invites false
   - "≥6 s margin" (R7);
   - "the solver chooses nothing else" (R4);
   - the free option is killed (R2);
-  - `max(profit, minPenalty)` (R8).
 
 ## Appendix: reproduction tests
 Save as `contracts/test/ReviewPoC.t.sol` and run `forge test --match-contract ReviewPoC -vv`. Each test passes while its flaw exists. Once a fix lands, flip its assertions into a regression test. Don't commit this file as-is: it asserts the bugs.

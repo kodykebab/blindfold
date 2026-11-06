@@ -125,7 +125,7 @@ Client account selection: `CLIENT_ACCOUNT_INDEX` selects the local Anvil account
 | General routing | Kritarth | deployment, solver | Configure `UniswapV3Route` through the existing `IExternalMarket` ABI before commitments. Constructor fixes one-to-three authenticated pools and endpoint-sorted token path. `hopCount()`, `path(index)`, `markets(index)` expose configuration; reverse orders traverse it backwards. Orders, proof statements and solver settlement arguments are unchanged |
 | Global auction v1 | Kritarth | solver, client, keeper, deployment | Separate `GlobalAuction` and one shared `BlindfoldVault`; registry of 2–8 tokens; `Order(owner,uint8 tokenIn,uint8 tokenOut,uint128 amountIn,uint128 minAmountOut)`; `admit(uint64,bytes32,bytes,bytes32,bytes32,bytes)`; `reveal(uint256,Order,bytes32)`; `settle(uint64,uint128[],Route[])`; `settleAtPrices(uint64,uint256[8],uint128[],Route[])`; `Route(uint8 input,uint8 output,uint8 market,uint128 amount,uint128 minimum)`; fraction denominator `2^128−1`; global proof domains and two-input online verifier; existing pair ABIs unchanged. Full encoding/lifecycle in ARCHITECTURE.MD §14 |
 | R4 reward | Kritarth | solver | `settleRewardBps() view returns (uint256)`: share of the residual surplus paid to `msg.sender` of `settle` (0 until shipped) |
-| Bonds | Bhoumik | demo-bots, watcher, UI (via Arkiv) | `bond()`, `requestUnbond()`, `unbond()` (delayed); `claim(SandwichCourtVerifier.Claim c, Protected r, bytes sig) returns (uint256 paid)`. EIP-712 `Protected{bytes32 txHash, uint256 chainId, uint64 acceptedAt, uint64 maxBlock, uint256 maxPayout}`; `maxPayout` comes from the tx's own slippage at acceptance |
+| Bonds | Bhoumik | demo-bots, watcher, UI (via Arkiv) | `bond()`, `requestUnbond()`, `unbond()` (delayed); `claim(SandwichCourtVerifier.Claim c, Protected r, bytes sig, bytes poolKey) returns (uint256 payout)`; `receiptDigest(Protected) view returns (bytes32)` is what the RPC signs. EIP-712 `Protected{bytes32 txHash, uint256 chainId, uint64 acceptedAt, uint64 maxBlock, uint256 maxPayout}`; `maxPayout` comes from the tx's own slippage at acceptance. `poolKey` is `abi.encode(token0, token1, fee)` for v3 and `abi.encode(PoolKey)` for v4; the registry checks it against the canonical v3 factory or v4 PoolManager. Payout `min(profit, maxPayout)` only when the profit is in ETH/WETH; other profit tokens revert `UnvaluedProfit` and stay claimable |
 
 Settlement timing: new deployments require `0 < settleLength <= floor(batchLength / 3) * 3`. This accounts for drand round quantization and ensures `settleCloses(b) <= revealCloses(b + 1)`. The former 30-second cadence / 60-second settlement configuration is rejected; use a 30-second settlement window or increase cadence. No predecessor-finalization cursor is needed.
 
@@ -180,7 +180,7 @@ forge script script/DeployCourt.s.sol     --rpc-url http://127.0.0.1:8545 --broa
 ## Already done
 - **Contracts:** vault, commit, anyone-reveal, slashing, padding orders; verified settle on the sealed v4 pool (local and Unichain fork); `SealedClearing` + router; Court verifier on live mainnet sandwiches.
 - **Off-chain tools:** sandwich finder and proof builder; admission-proof prototype (`packages/proof-bench`) and private funding model (`ReservationModel.t.sol`).
-- **Tests:** `forge test` 89/89.
+- **Tests:** `forge test` 119/119.
 
 ---
 
@@ -234,7 +234,7 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
   - **Check:** the output admits on a local deploy with `ADMISSION=mock`.
 
 ### Bhoumik
-- [ ] **`BondRegistry.sol` + tests (R8)** · Needs: nothing (the verifier exists).
+- [x] **`BondRegistry.sol` + tests (R8)** · Needs: nothing (the verifier exists).
   - **The frozen ABI:** `bond`, a delayed `unbond`, and `claim`.
   - **`claim` requires:**
     - `verdict.victimTxHash == r.txHash`;
@@ -247,11 +247,11 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
   - **Check (offline):** `forge test --match-path 'test/court/*'` with a test RPC key signing receipts for the `v3.json`/`v4.json` fixtures. Include:
     - a self-sandwich case that pays no more than `maxPayout`;
     - a replay that reverts.
-- [ ] **`DeployCourt.s.sol`** · Needs: own BondRegistry.
+- [x] **`DeployCourt.s.sol`** · Needs: own BondRegistry.
   - **Deploys:** the verifier (`l1Block = address(0)` locally) and `BondRegistry`, with account 4 bonded.
   - **Output:** writes `deployments/court.local.json`.
   - **Check:** both modes → `cast call <bondRegistry> ...` shows the bond.
-- [ ] **`packages/solver` v1 (R4)** · Needs: nothing (fake RPC).
+- [x] **`packages/solver` v1 (R4)** · Needs: nothing (fake RPC).
   - **Discovery:** reads `blindfold.local.json` and finds settleable batches from the schedule views and `Revealed` events.
   - **Pricing:**
     - finds the feasible band `[lo, hi]` with `eth_call`;
@@ -259,10 +259,10 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
     - uses the R1 overload when no price fills everyone fully.
   - **Modes:** `npm start` and `--once`.
   - **Check:** `npm test` against a fake RPC with a known band, including a poison case.
-- [ ] **court-watcher configurable** · Needs: nothing.
+- [x] **court-watcher configurable** · Needs: nothing.
   - **What:** `ETH_RPC` and `V4_POOL_MANAGER` env vars (today `lib.mjs` hardcodes Ethereum mainnet's), so it can scan the local chain.
   - **Check:** `N=300 node find.mjs` still finds mainnet sandwiches with the defaults.
-- [ ] **`scripts/check.sh`** · Needs: nothing.
+- [x] **`scripts/check.sh`** · Needs: nothing.
   - **What it runs:**
     - `forge test`;
     - `npm test` in every `packages/*` that has a `package.json` (auto-discovered, so nobody else edits the script);

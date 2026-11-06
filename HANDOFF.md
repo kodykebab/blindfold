@@ -19,7 +19,7 @@ Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEX
 | Court verifier (BLOCKHASH / EIP-2935 / L1 anchor, v3 + v4, signer recovery) | ✅ Built + tested on live mainnet sandwiches | `contracts/src/court/` |
 | Sandwich finder, proof + anchor builder | ✅ Working against mainnet | `packages/court-watcher/` |
 | Aqua leg inside `settle` (split residual between v4 and Aqua) | ⬜ | — |
-| `BondRegistry`: bonds, EIP-712 protection receipts, payout + slashing | ⬜ **next Must** | — |
+| `BondRegistry`: bonds, EIP-712 protection receipts, capped payouts, pool pinning | ✅ Built + tested on the mainnet fixtures (deploy script next) | `contracts/src/court/BondRegistry.sol` |
 | Court on Base: deploy + `checkpoint()` live | ⬜ | — |
 | tlock client CLI: funding, commit, tracking, cleanup, withdrawal, saved-state import/export | ✅ Built + tested, 26 client regressions plus the fresh-proof admission gate | `packages/client/` |
 | Local two-proof circuits and Solidity composition harness | ✅ Isolated prototype, tests and interoperability verified | `packages/proof-bench/circuit/` |
