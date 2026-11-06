@@ -15,3 +15,11 @@ remappings = [
 [profile.admission]
 test = "admission-test"
 fs_permissions = [{ access = "read", path = "../results" }]
+
+[profile.online]
+test = "online-test"
+fs_permissions = [{ access = "read", path = "../results" }]
+
+[profile.prepared]
+test = "prepared-test"
+fs_permissions = [{ access = "read", path = "../results" }]

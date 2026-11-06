@@ -13,6 +13,7 @@ use std::{
 
 #[cfg(feature = "accelerated")]
 pub mod accelerated;
+pub mod prepared;
 
 pub const CHAIN_HASH: &str = "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971";
 pub const PUBLIC_KEY: &str = "83cf0f2896adee7eb8b5f01fcad3912212c437e0073e911fb90022d3e760183c8c4b450b6a0a6c3ac6a5776a2d1064510d1fec758c921cc22b0e17e63aaf4bcb5ed66304de9cf809bd274ca73bab4af5a6e9c76a4bc09e76eae8991ef5ece45a";
@@ -120,6 +121,29 @@ impl age::Identity for CheckedIdentity {
 }
 
 pub fn check(s: &Statement, w: &Witness) -> Result<()> {
+    let expected = wrap_key(s.round, w.file_key, w.sigma)?;
+    check_payload_and_funding(s, w, expected)
+}
+
+pub fn wrap_key(round: u64, key: [u8; 16], sigma: [u8; 16]) -> Result<Vec<u8>> {
+    ensure!(round != 0, "zero round");
+    #[cfg(not(feature = "accelerated"))]
+    {
+        tlock::encrypt_with_sigma(&hex::decode(PUBLIC_KEY)?, round, key, sigma)
+    }
+    #[cfg(feature = "accelerated")]
+    {
+        accelerated::wrap(round, key, sigma)
+    }
+}
+
+// Caller must authenticate expected as the wrapper for w.file_key, either directly
+// or through the matching preparation proof. This is not an admission entry point.
+pub(crate) fn check_payload_and_funding(
+    s: &Statement,
+    w: &Witness,
+    expected: Vec<u8>,
+) -> Result<()> {
     ensure!(s.round != 0 && s.step < 64, "schedule/step");
     ensure!(w.ciphertext.len() <= 2048, "ciphertext bound");
     ensure!(hash(&w.ciphertext) == s.ciphertext_hash, "ciphertext hash");
@@ -151,11 +175,6 @@ pub fn check(s: &Statement, w: &Witness) -> Result<()> {
         root(s, next, w.new_blind, s.step + 1) == s.new_root,
         "new root"
     );
-    #[cfg(not(feature = "accelerated"))]
-    let expected =
-        tlock::encrypt_with_sigma(&hex::decode(PUBLIC_KEY)?, s.round, w.file_key, w.sigma)?;
-    #[cfg(feature = "accelerated")]
-    let expected = accelerated::wrap(s.round, w.file_key, w.sigma)?;
     let identity = CheckedIdentity {
         round: s.round,
         expected,

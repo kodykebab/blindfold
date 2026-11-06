@@ -79,3 +79,30 @@ packages/proof-bench/vm/target/release/proof-bench-host --reject-invalid
 ```
 
 The feature changes the guest program identity. Keep each variant's host binary with its receipts and use that binary for wrapping and export. A host compiled for one guest rejects the other guest's receipt. `--execute-matrix` records the program identity, cycles and execution time for padding, both directions, and the maximum-size final-step case. These measurements are guest execution, not completed proof benchmarks.
+
+## Prepared keys and online admission
+
+The `prepared` host retains an AGE encryptor in memory while constructing a preparation witness, then consumes it for one order ciphertext. Its two guest programs check standard tlock key wrapping and online payload/funding admission separately. A domain-separated hiding commitment binds the same context, wrapper and file key in both proofs. Both programs emit canonical ABI-word journals; the online journal starts with the complete 256-byte preparation binding.
+
+Build and generate a synthetic fixture (including private test witnesses under ignored `results/`):
+
+```sh
+source env.sh
+cargo build --manifest-path packages/proof-bench/vm/Cargo.toml --locked --release --features accelerated --bin prepared
+packages/proof-bench/vm/target/release/prepared fixture packages/proof-bench/results/prepared-fixture.json > packages/proof-bench/results/prepared-interop.json
+node packages/proof-bench/prepared-interop.mjs packages/proof-bench/results/prepared-interop.json packages/proof-bench/results/prepared-fixture.json
+```
+
+The fixture uses historical round 1000 and synthetic order/randomness values. The AGE library generates a fresh file key and nonce for each preparation. Use the same saved fixture for both phases:
+
+```sh
+packages/proof-bench/vm/target/release/prepared execute online packages/proof-bench/results/prepared-fixture.json
+packages/proof-bench/vm/target/release/prepared reject online packages/proof-bench/results/prepared-fixture.json
+packages/proof-bench/vm/target/release/prepared prove online packages/proof-bench/results/prepared-fixture.json packages/proof-bench/results/online-receipt.bin
+packages/proof-bench/vm/target/release/prepared wrap online packages/proof-bench/results/online-receipt.bin packages/proof-bench/results/online-groth16.bin
+packages/proof-bench/vm/target/release/prepared export online packages/proof-bench/results/online-groth16.bin packages/proof-bench/results/online.json
+node packages/proof-bench/prepared-interop.mjs packages/proof-bench/results/prepared-interop.json packages/proof-bench/results/prepared-fixture.json packages/proof-bench/results/online.json online
+(cd packages/proof-bench/evm && FOUNDRY_PROFILE=online forge test -vv)
+```
+
+Repeat the execution, rejection, proof, wrapping and export commands with `preparation` in place of `online` to generate the matching preparation artifact. Then run `FOUNDRY_PROFILE=prepared forge test -vv` in `evm/` to verify both proofs and their shared binding. The two-proof harness requires both real exports and rejects altered bindings and swapped proofs. Production contracts are separate from these benchmark harnesses.
