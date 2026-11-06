@@ -14,6 +14,7 @@ import {BlindfoldVault} from "../../src/BlindfoldVault.sol";
 import {AdmissionVault} from "../../src/admission/AdmissionVault.sol";
 import {AdmittedSettlement} from "../../src/admission/AdmittedSettlement.sol";
 import {AdmissionProof} from "../../src/admission/AdmissionProof.sol";
+import {AdmissionValidator} from "../../src/admission/AdmissionValidator.sol";
 import {SealedPoolHook} from "../../src/SealedPoolHook.sol";
 import {HookDeployer} from "../utils/HookDeployer.sol";
 
@@ -110,9 +111,8 @@ contract AdmittedSettlementTest is Test {
     }
 
     function proof(AdmissionProof.Statement memory a) internal returns (bytes memory) {
-        bytes memory p = abi.encode(
-            a.domain, a.chainId, a.settlement, a.owner, a.batch, a.round, a.keyCommitment, a.network
-        );
+        bytes memory p =
+            abi.encode(a.domain, a.chainId, a.settlement, a.owner, a.batch, a.round, a.keyCommitment, a.network);
         bytes memory o = abi.encode(a);
         bytes32 pd = keccak256(p);
         bytes32 od = keccak256(o);
@@ -161,6 +161,71 @@ contract AdmittedSettlementTest is Test {
         assertEq(vault.balanceOf(alice, address(t1)), 100);
         assertEq(vault.balanceOf(treasury, address(t1)), 0);
         assertEq(s.fundingRoot(alice), bytes32(0));
+    }
+
+    function test_deployedContractsRespectEip170() public {
+        assertLe(address(s).code.length, 24_576, "enforced settlement exceeds EIP-170");
+        AdmissionValidator validator = new AdmissionValidator(address(prep), address(online));
+        assertLe(address(validator).code.length, 24_576, "admission validator exceeds EIP-170");
+    }
+
+    function test_initializeStillChecksPairHookAndPool() public {
+        PoolKey memory key = s.poolKey();
+        key.currency0 = Currency.wrap(address(123));
+        vm.expectRevert(AdmittedSettlement.InvalidAdmissionConfig.selector);
+        s.initialize(key);
+        key = s.poolKey();
+        key.hooks = IHooks(address(0));
+        vm.expectRevert(AdmittedSettlement.InvalidAdmissionConfig.selector);
+        s.initialize(key);
+        key = s.poolKey();
+        (SealedPoolHook wrongHook,) = HookDeployer.deploySealed(address(this), address(s.manager()), address(123));
+        key.hooks = IHooks(address(wrongHook));
+        vm.expectRevert(AdmittedSettlement.InvalidAdmissionConfig.selector);
+        s.initialize(key);
+        key = s.poolKey();
+        key.fee = 500; // This pool has never been initialized.
+        vm.expectRevert(AdmittedSettlement.InvalidAdmissionConfig.selector);
+        s.initialize(key);
+        key = s.poolKey();
+        vm.prank(alice);
+        vm.expectRevert(BlindfoldSettlement.Unauthorized.selector);
+        s.initialize(key);
+        vm.expectRevert(BlindfoldSettlement.AlreadyInitialized.selector);
+        s.initialize(key);
+    }
+
+    function test_failedAppendPreservesExistingFundingAndFees() public {
+        admit(statement());
+        bytes32 root = s.fundingRoot(alice);
+        uint256 balance = vault.balanceOf(alice, address(t1));
+        AdmissionProof.Statement memory a = statement();
+        bytes memory p = proof(a);
+        online.configure(bytes32(0), true);
+        vm.prank(alice);
+        vm.expectRevert("online rejected");
+        s.admit(0, a.orderHash, hex"aabb", p);
+        assertEq(s.commitCount(), 1);
+        assertEq(s.commitIdsOf(0).length, 1);
+        assertEq(vault.openCommitments(alice), 1);
+        assertEq(vault.balanceOf(alice, address(t1)), balance);
+        assertEq(vault.balanceOf(treasury, address(t1)), 1);
+        assertEq(s.fundingRoot(alice), root);
+        admit(a);
+        assertEq(vault.openCommitments(alice), 2);
+    }
+
+    function test_wrongFundingRootRejectedAfterReservation() public {
+        admit(statement());
+        AdmissionProof.Statement memory a = statement();
+        a.oldRoot = bytes32(uint256(123));
+        bytes memory p = proof(a);
+        vm.prank(alice);
+        vm.expectRevert(AdmittedSettlement.FundingState.selector);
+        s.admit(0, a.orderHash, hex"aabb", p);
+        assertEq(s.commitCount(), 1);
+        assertEq(vault.openCommitments(alice), 1);
+        assertEq(vault.balanceOf(treasury, address(t1)), 1);
     }
 
     function test_appendAndReplayProtection() public {
