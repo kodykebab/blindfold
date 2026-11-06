@@ -329,3 +329,152 @@ contract ReviewPoCControl is BlindfoldTest {
 ```
 
 </details>
+
+
+## Proposed solutions from the broader design review
+
+Status: proposals for team review, not implemented fixes or approved changes to the frozen seams in PLAN.md. The S1–S22 identifiers below follow the broader review discussion; they do not replace R1–R9 above. Where recommendations differ from the existing plan, the team must reconcile them before implementation. In particular, proportional marginal allocation, execution scheduling, unrevealed refunds, and Court claim allocation can change interfaces or policy.
+
+Recommended initial scope: one supported pair, one v4 settlement path, partial fills, predictable execution windows, and an explicitly operated keeper. Court and additional integrations should have independent release gates. Admission-proof work proceeds independently.
+
+### S1. Clearing feasibility
+
+Allow partial fills, interpreting minAmountOut proportionally to the amount actually filled, and return unused input. An order selling 1,000 tokens for at least 900 would accept a 500-token fill only if it receives at least 450.
+
+Specify price priority, proportional allocation among orders at the marginal limit, integer rounding, and the outcome when no economically meaningful fill exists. The solver must not arbitrarily choose winners. Proportional allocation among multiple marginal orders may require a different interface from the single-marginal-order overload currently in PLAN.md.
+
+Gate: demonstrate feasibility across fees, opposing orders, liquidity boundaries, and integer rounding in an executable model before changing contracts. Partial fills are a candidate solution, not a proof that every batch has useful execution. Widening tolerance alone is insufficient.
+
+### S2. Batch execution order
+
+Prefer nonoverlapping settlement windows initially. Enforce the actual schedule invariant `settleCloses(b) <= revealCloses(b + 1)`. Commit and reveal phases can still overlap across batches.
+
+This removes execution-order discretion without a global cursor and predecessor-cleanup machinery, but constrains cadence. If benchmarks make that unacceptable, evaluate chronological settlement with explicit expired-predecessor handling. Test the schedule across drand round boundaries.
+
+### S3. Capacity economics
+
+Charge a nonrefundable admission fee for every commitment, including padding, separately from refundable collateral and the reveal reward. Self-revelation must not recover this fee. Per-address limits are not a substitute because addresses are cheap to create.
+
+Measure the cost of occupying the entire batch before selecting the fee. This prices congestion; it does not guarantee access against a well-funded attacker. Raise capacity only after measuring worst-case settlement gas.
+
+### S4. Cleanup and withdrawals
+
+Make cleanup part of the exit flow. Identify unresolved commitments, execute applicable expiration or unrevealed cleanup, then withdraw. Show which commitments prevent withdrawal.
+
+Preserve the funding lock until its invariant is replaced. Start with a guided transaction sequence; add atomic batching only where wallet or contract authorization supports it safely. Test mixed revealed, unrevealed, padding, and expired commitments, including withdrawals of unrelated assets.
+
+### S5. Court router attribution
+
+Do not treat a swap event's router address as the economic trader. Simply deleting the trader check would weaken attribution: supported transaction paths need a verifiable binding between the selected swap and the attacker or covered user.
+
+Start with a narrow set of supported transaction formats. Identify unsupported routes before coverage is purchased. Test both legitimate shared-router activity and adversarial combinations of unrelated swaps.
+
+### S6. Solver search
+
+Replace fixed percentage search bounds with a solver based on the finalized clearing rule: order limits, pool liquidity and tick boundaries, residual direction, executable amounts, and exact contract rounding. Simulate the complete candidate settlement before submission.
+
+Implement this after S1. A wider search cannot repair an infeasible clearing rule. Compare solver results against a small reference model, including cases outside the existing search band.
+
+### S7. Execution responsibility
+
+Run an operated keeper initially with an explicit budget and monitoring. Retain permissionless execution as a fallback. State who operates the service, what happens if it stops, and how users recover funds.
+
+A competitive solver market is separate scope. Permissionless access alone does not supply economic incentives. Test keeper outage and permissionless expiration paths.
+
+### S8. Reveal rewards
+
+Treat the reward as payment for successful on-chain revelation, not reimbursement for first discovering or decrypting an order. The keeper should simulate immediately before submitting and tolerate duplicate attempts. Private submission may reduce copying where available but must not be required for correctness.
+
+Avoid another commit–reveal protocol solely to protect the bounty. Measure competing submissions and gas costs before relying on public reveal competition for liveness.
+
+### S9. Availability and unrevealed penalties
+
+Once admission enforces valid ciphertext, the intended decryption round, and adequate funding, consider this target policy: retain the admission fee, reward successful revelation, and release unexecuted input after a hard deadline without an additional penalty merely because nobody revealed a valid order.
+
+This avoids an on-chain beacon-availability clock and unbounded waiting. It is conditional on enforced admission guarantees: applying the refund policy to unchecked ciphertext would reopen deliberate non-revelation. Evaluate beacon delay, keeper outage, censorship, and owner withholding separately before adopting the policy.
+
+### S10. User transaction flow
+
+Provide one coherent CLI workflow: check balances, approvals, fees, and eligibility; show completion and recovery deadlines; prepare and submit; track revelation and execution; offer cleanup and withdrawal.
+
+Display available, reserved, and withdrawable balances separately, and include every required asset in funding preflight. Keep proceeds in the vault by default for repeat traders with an explicit withdrawal option. Automatic withdrawal on every fill adds cost and settlement failure dependencies.
+
+### S11. Account cadence and private state
+
+Initially expose the one-active-batch restriction and reject incompatible submissions before proving or paying gas. Supporting overlapping private reservations needs a rule preventing the same balance from backing multiple batches; do not add it without settling that invariant.
+
+Provide reliable private-state export and restoration so state loss does not silently prevent appends. Decide whether overlapping batches are needed from actual usage and the admission design. Test stale and restored client state without changing the proof architecture in this proposal.
+
+### S12. Liquidity availability
+
+Initially accept liquidity removal as an execution risk, with expiry and recovery of unused funds. Show current liquidity and estimated execution before submission without presenting them as guarantees.
+
+Mandatory LP lockups require separate economics and lifecycle rules. Guaranteed liquidity would need an explicitly paid committed-liquidity arrangement. The existing same-block liquidity-change guard proposal addresses a narrower JIT behavior and should not be represented as an availability guarantee.
+
+### S13. Execution quality
+
+Compare fresh external quotes in the client and derive a user-approved limit and expiry. Keep the user's limit as the enforceable protection; an external quote is guidance rather than an execution oracle.
+
+Show results after fees and expected partial execution. Internal price consistency is not a best-execution claim. Test stale quote handling and unfavorable isolated-pool prices.
+
+### S14. Incident-level Court accounting
+
+Define an incident identifier covering chain, block, pool, and attacker front/back transactions. Enforce one incident-level payout budget alongside receipt-level caps; per-victim transaction replay protection alone does not cap repeated use of the same attacker profit.
+
+Two policy choices remain: first valid claims consume the budget, which is simple but rewards speed; or claims register during a window and share the budget, which delays payment and adds state. For a compensation product, prefer the claim-window approach with explicitly defined eligible weights, proportional allocation, and individual caps. State how unclaimed coverage is treated. This does not automatically compensate every affected trader.
+
+Gate: test several covered victims sharing attacker legs, duplicate claims, claim ordering, and aggregate conservation. Reconcile this policy with PLAN.md before implementing payout storage or interfaces.
+
+### S15. Coverage beneficiaries and claims
+
+Bind the beneficiary in a signed coverage receipt issued before the covered activity. Do not infer the payment recipient solely from the transaction signer.
+
+Define the insured event separately from attribution: a sandwich-shaped sequence does not establish provider leakage or quantify victim loss. Offer capped, profit-based coverage for a defined observable event rather than claiming proof of causation. This policy does not by itself solve the self-sandwich incentive described in R8; payout economics still need that adversarial check.
+
+### S16. Watcher operations
+
+Build a minimal service around existing scripts: persist the processed block, rescan a bounded overlap, deduplicate, apply an explicit confirmation policy, bound concurrency, enforce request timeouts, read anchor values against one consistent block, and track submission outcomes.
+
+Separate discovery from expensive proof construction. Test restart, duplicate discovery, RPC failure, anchor consistency, and reorg handling. Add more recovery orchestration only for demonstrated failure boundaries.
+
+### S17. Token and arithmetic domains
+
+Restrict the initial deployment to a supported token pair and transfer behavior. Reject unsupported deposits. For ordinary supported ERC-20s, verify received amounts match credited amounts; fee-on-transfer and rebasing support are separate scope.
+
+Define shared bounds for individual inputs, aggregate residuals, v4 signed deltas, prices, and quotes. Use full-precision arithmetic wherever that domain requires it, including Aqua if retained. Test boundary values and token behavior rather than assuming every ERC-20 acts identically.
+
+### S18. Configuration validation
+
+Validate meaningful phase durations, admission economics, bounded price tolerance, supported tokens, the expected pool/hook relationship, initialization state, and pre-start behavior.
+
+Write negative tests for invalid configurations and deployment checks for relationships that cannot be established in a constructor. An unusable schedule should fail before accepting orders.
+
+### S19. Arkiv and Swarm scope
+
+Keep contract state and events authoritative. Additional services should serve a specific need such as searchable history, convenient payload retrieval, or a required integration. Settlement and fund recovery should not depend on them unnecessarily.
+
+For each integration, identify what user capability is lost without it. Defer integrations without a concrete purpose, subject to explicit release or prize requirements. Test the supported offline or unavailable-service path.
+
+### S20. Aqua scope
+
+Finish and verify the v4 path first. If Aqua is required for the release, define its narrow role and demonstrate actual end-to-end execution. An isolated opcode test does not demonstrate participation in auction settlement.
+
+Do not support interchangeable residual routes before settling their pricing and accounting rules. This recommendation requires reconciliation with the existing 1inch release lane; it does not silently cancel that work.
+
+### S21. Court release boundary
+
+Give Court independent gates for coverage issuance, attribution, cross-chain evidence, valuation, incident accounting, and payout funding. The auction should remain deployable and usable without Court.
+
+Treat Court as a separate product boundary rather than incidental settlement logic. Demonstrate both the auction-only flow and the complete covered-transaction flow before claiming either is ready.
+
+### S22. Documentation consistency
+
+Maintain one authoritative architecture document, a concise status handoff, and verified test instructions. Distinguish implemented behavior from proposals. Keep unresolved review material here under the REVIEW.md exception, and other local concerns in the ignored .workspace.md.
+
+Reconcile architecture and plan documents after decisions are accepted, without overwriting concurrent admission-proof documentation.
+
+### Implementation order and verification status
+
+First settle partial-fill allocation and build an executable reference model. Then address execution-window ordering, admission economics, keeper responsibility, and cleanup UX. Court and optional integrations can progress independently within their existing team lanes.
+
+These recommendations are not implemented by this document. Earlier isolated tests reproduced six existing behaviors: an executable limit order with no admissible clearing price, reversible batch execution order, padding capacity with no protocol fee, a valid price outside the test solver search range, withdrawal blocking until unrevealed cleanup, and shared-router rejection by the Court predicate. Those reproductions are not validation of the proposed solutions, and this documentation update does not claim a fresh full-suite run or production readiness.
