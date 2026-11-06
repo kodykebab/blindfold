@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { decrypt, drandClient, encrypt, orderHash, encodePayload, decodePayload } from '../lib.mjs'
-import { balances, preflight, track, isOpen } from '../flow.mjs'
+import { balances, exitPlan, preflight, track, isOpen } from '../flow.mjs'
 
 const fixture = fileURLToPath(new URL('./fixtures/drand.json', import.meta.url))
 const owner = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
@@ -97,4 +97,15 @@ test('track: follows each commitment to its outcome', () => {
   assert.deepEqual([...mine.values()].map((c) => [c.id, c.state]),
     [[0n, 'filled'], [1n, 'padding'], [3n, 'slashed'], [4n, 'expired'], [5n, 'unfunded'], [6n, 'committed']])
   assert.deepEqual([...mine.values()].filter(isOpen).map((c) => c.id), [6n])
+})
+
+test('S4 exitPlan: the step that clears each open commitment', () => {
+  const sched = new Map([[1n, { revealOpens: 100n, revealCloses: 124n, settleCloses: 184n }]])
+  const c = (id, state) => ({ id, batchId: 1n, state, hash: `0x${id}` })
+  const plan = (now, saved = new Set(['0x1'])) =>
+    exitPlan([c(1n, 'committed'), c(2n, 'committed'), c(3n, 'revealed')], { now, sched, saved }).map((s) => [s.action, s.at])
+  assert.deepEqual(plan(90n), [['wait', 100n], ['wait', 100n], ['wait', 184n]])
+  assert.deepEqual(plan(110n), [['reveal', undefined], ['wait', 124n], ['wait', 184n]]) // #2 has no saved order
+  assert.deepEqual(plan(124n), [['slash', undefined], ['slash', undefined], ['wait', 184n]])
+  assert.deepEqual(plan(184n), [['slash', undefined], ['slash', undefined], ['expire', undefined]])
 })

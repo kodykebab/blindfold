@@ -3,12 +3,14 @@
 //   npm start -- deposit <token0|token1> <amount>
 //   npm start -- commit <sell|buy> <amountIn> <minAmountOut> [--dry-run]   preflight, encrypt, commit
 //   npm start -- track                           every commitment of this account and what happened to it
+//   npm start -- blockers                        which commitments block withdrawal and what clears each
+//   npm start -- cleanup [--dry-run]             reveal own saved orders, slash unrevealed, expire unsettled batches
 //   npm start -- withdraw <token0|token1> <amount|all>
 // sell = token0 in, token1 out; buy = token1 in, token0 out. Amounts are decimal token units.
 import { formatUnits, parseEventLogs, parseUnits } from 'viem'
 import { connect, encrypt, newSalt, orderHash } from './lib.mjs'
-import { balances, deadlines, preflight, track } from './flow.mjs'
-import { saveCommitment } from './state.mjs'
+import { balances, deadlines, exitPlan, isOpen, preflight, track } from './flow.mjs'
+import { loadState, saveCommitment } from './state.mjs'
 
 const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
@@ -127,10 +129,12 @@ async function commit(side, amountIn, minOut, dryRun) {
   console.log(`committed #${ev.args.commitId} to round ${round} in ${receipt.transactionHash}`)
 }
 
+const myCommitments = async () =>
+  track(await pub.getContractEvents({ address: S, abi: abi.settlement, fromBlock: BigInt(dep.deployBlock ?? 0) }), me)
+
 async function trackAll() {
   const t = await tokens()
-  const logs = await pub.getContractEvents({ address: S, abi: abi.settlement, fromBlock: BigInt(dep.deployBlock ?? 0) })
-  const mine = track(logs, me)
+  const mine = await myCommitments()
   if (!mine.size) return console.log('no commitments')
   for (const c of mine.values()) {
     const o = c.order
@@ -140,11 +144,56 @@ async function trackAll() {
   }
 }
 
+async function exitSteps() {
+  const open = [...(await myCommitments()).values()].filter(isOpen)
+  const now = (await pub.getBlock()).timestamp
+  const sched = new Map()
+  for (const b of new Set(open.map((c) => c.batchId))) {
+    const [revealOpens, revealCloses, settleCloses] = await Promise.all(['revealOpens', 'revealCloses', 'settleCloses'].map((f) => read(S, f, [b])))
+    sched.set(b, { revealOpens, revealCloses, settleCloses })
+  }
+  // by hash, so an entry saved before its commit landed (no id yet) still counts
+  const kept = new Map(loadState(dep, me).commitments.map((x) => [x.hash, x]))
+  return { now, kept, steps: exitPlan(open, { now, sched, saved: new Set(kept.keys()) }) }
+}
+
+const describe = ({ c, action, at, why }, now) =>
+  `#${c.id} batch ${c.batchId} (${c.state}): ${action === 'wait' ? `wait ${at - now}s` : action} — ${why}`
+
+async function blockers() {
+  const { now, steps } = await exitSteps()
+  if (!steps.length) return console.log('nothing blocks withdrawal')
+  for (const s of steps) console.log(describe(s, now))
+}
+
+/** Guided exit: one transaction per step, in order; reports what still blocks withdrawal. */
+async function cleanup(dryRun) {
+  const { now, kept, steps } = await exitSteps()
+  const expired = new Set()
+  for (const s of steps) {
+    console.log(describe(s, now))
+    if (dryRun || s.action === 'wait') continue
+    const { id, batchId } = s.c
+    if (s.action === 'reveal') await send(S, abi.settlement, 'reveal', [id, kept.get(s.c.hash).order, kept.get(s.c.hash).salt])
+    if (s.action === 'slash') await send(S, abi.settlement, 'slashUnrevealed', [id])
+    if (s.action === 'expire' && !expired.has(batchId)) {
+      expired.add(batchId)
+      await send(S, abi.settlement, 'expire', [batchId])
+    }
+  }
+  if (dryRun) return console.log('dry run: nothing sent')
+  const open = await read(dep.vault, 'openCommitments', [me])
+  console.log(open ? `${open} commitment(s) still block withdrawal; run blockers` : 'nothing blocks withdrawal')
+}
+
 async function withdraw(name, amount) {
   const t = await tokens()
   const tok = pick(t, name)
   const { open, rows } = await vaultView(t)
-  if (open) fail(`${open} open commitment(s) block withdrawals; run \`track\` to see them`)
+  if (open) {
+    const { now, steps } = await exitSteps()
+    fail(`${open} open commitment(s) block withdrawals of every token:\n  ${steps.map((s) => describe(s, now)).join('\n  ')}\nrun cleanup`)
+  }
   const row = rows.find((r) => r.tok === tok)
   const value = amount === 'all' ? row.withdrawable : parseUnits(amount, tok.decimals)
   if (value > row.withdrawable) fail(`only ${fmt(tok, row.withdrawable)} is withdrawable`)
@@ -158,6 +207,8 @@ const commands = {
   deposit: () => deposit(args[0], args[1]),
   commit: () => commit(args[0], args[1], args[2], args.includes('--dry-run')),
   track: () => trackAll(),
+  blockers: () => blockers(),
+  cleanup: () => cleanup(args.includes('--dry-run')),
   withdraw: () => withdraw(args[0], args[1] ?? 'all'),
 }
 if (!commands[cmd]) fail(`usage: npm start -- <${Object.keys(commands).join('|')}> ...`)

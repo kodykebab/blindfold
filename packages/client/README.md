@@ -10,7 +10,9 @@ npm start -- deposit token1 50
 npm start -- commit sell 10 9 --dry-run    # preflight only: funding of every asset, approvals, fee, eligibility, deadlines
 npm start -- commit sell 10 9              # deposits any shortfall, encrypts to the batch's drand round, commits
 npm start -- track                         # each commitment: committed, revealed, padding, unfunded, slashed, filled, unfilled, expired
-npm start -- withdraw token0 all
+npm start -- blockers                      # each commitment blocking withdrawal and the step that clears it
+npm start -- cleanup [--dry-run]           # reveal own saved orders, slash unrevealed ones, expire unsettled batches
+npm start -- withdraw token0 all           # lists the blockers instead if any remain
 ```
 
 `sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units.

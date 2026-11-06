@@ -48,7 +48,7 @@ export function track(logs, owner) {
   const expired = new Set()
   const lower = owner.toLowerCase()
   for (const { eventName: e, args: a } of logs) {
-    if (e === 'Committed' && a.committer.toLowerCase() === lower) mine.set(a.commitId, { id: a.commitId, batchId: a.batchId, state: 'committed', round: a.round })
+    if (e === 'Committed' && a.committer.toLowerCase() === lower) mine.set(a.commitId, { id: a.commitId, batchId: a.batchId, state: 'committed', round: a.round, hash: a.hash })
     if (e === 'Expired') expired.add(a.batchId)
     const c = a?.commitId != null ? mine.get(a.commitId) : a?.id != null ? mine.get(a.id) : undefined
     if (!c) continue
@@ -64,3 +64,27 @@ export function track(logs, owner) {
 
 /** Commitments still holding the account's vault open: never revealed, or revealed and not yet settled/expired. */
 export const isOpen = (c) => c.state === 'committed' || c.state === 'revealed'
+
+/**
+ * Why each open commitment blocks withdrawal, and the step that clears it now (REVIEW S4).
+ * open: open commitments from track(); sched: Map(batchId → {revealOpens, revealCloses, settleCloses});
+ * saved: Set of commitment hashes whose order and salt the client still has; now: latest block timestamp.
+ * action: 'reveal' (own saved order), 'slash' (unrevealed after the window), 'expire' (unsettled after the deadline)
+ * or 'wait' until `at`.
+ */
+export function exitPlan(open, { now, sched, saved }) {
+  return open.map((c) => {
+    const s = sched.get(c.batchId)
+    if (c.state === 'committed') {
+      if (now < s.revealOpens) return { c, action: 'wait', at: s.revealOpens, why: 'sealed until its drand round' }
+      if (now < s.revealCloses) {
+        return saved.has(c.hash)
+          ? { c, action: 'reveal', why: 'own saved order: revealing it yourself keeps the bounty' }
+          : { c, action: 'wait', at: s.revealCloses, why: 'order and salt not saved here: a keeper must reveal it, or it can be slashed' }
+      }
+      return { c, action: 'slash', why: 'never revealed: slashing forfeits its deposit and releases the account' }
+    }
+    if (now < s.settleCloses) return { c, action: 'wait', at: s.settleCloses, why: 'revealed, waiting for settlement; expirable after' }
+    return { c, action: 'expire', why: 'nobody settled the batch: expiring unlocks its input' }
+  })
+}
