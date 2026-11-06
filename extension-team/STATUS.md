@@ -3,7 +3,7 @@
 | Agent | Area | State | Current task | Blocked on | Updated |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `packages/extension` (MV3 extension, service worker, state, offscreen, pages) | ready for QA | all parts built against bridge v1, helper v1 and Pages <-> SW; `npm run build`, `npm test` (40 offline) | E3 (real proofs through the extension) waits on agent 2's `local-prover` build | 2026-11-06 |
-| 2 | `packages/prover-helper` (native messaging host around `local-prover`, installer) | in progress | Go host, installer, tests; building `local-prover` (Go 1.27 toolchain + gnark downloading over a slow link) | | 2026-11-06 |
+| 2 | `packages/prover-helper` (native messaging host around `local-prover`, installer) | in progress | host + installer + offline tests committed; next: build `local-prover` and parameters, I4 real proofs, measurements | `local-prover` build: Go 1.27 toolchain fetched, gnark modules still downloading (network drops to KB/s) | 2026-11-06 |
 | 3 | `packages/bridge` + `packages/extension-e2e` (wallet integration, bridge page, QA lead) | in progress | QA review; E3 when the real local-prover exists | E3: agent 2's `local-prover` build | 2026-11-06 |
 
 States: not started, in progress, blocked, ready for QA, done.

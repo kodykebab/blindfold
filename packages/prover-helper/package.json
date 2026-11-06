@@ -1,0 +1,7 @@
+{
+  "name": "@blindfold/prover-helper",
+  "private": true,
+  "scripts": {
+    "test": "go test -count=1 ."
+  }
+}
