@@ -49,15 +49,34 @@ export function classify(q) {
   return { kind: 'invalid', value: s }
 }
 
-/** Every sandwich in `swaps` where a swap of tx `txIndex` is a victim. findSandwiches keeps only the first victim, so re-check each pair. */
+/**
+ * Every sandwich around tx `txIndex`: one bot swaps the victim's pool before it in the same direction, and after it in the other.
+ * Looser than Court's predicate, to match what MEV trackers report: a bot's swaps in one tx are netted, and the back-run may
+ * unwind only part of the front-run (bots often keep some inventory). `strict` says whether Court's predicate also holds.
+ * `profit` is in the token the front-run paid in: what the back-run got back, minus what the front-run paid, plus any
+ * inventory the bot kept, valued at the back-run's own price (an outside price feed can be off by more than the profit).
+ */
 export function matchVictim(swaps, txIndex) {
-  const mine = swaps.filter((s) => s.txIndex === txIndex)
-  const out = []
-  for (const sw of findSandwiches(swaps)) {
-    const { front: f, back: b, profitInToken0: z } = sw
-    const v = mine.find((v) => v.pool === f.pool && v.poolId === f.poolId && v.txIndex > f.txIndex && v.txIndex < b.txIndex
-      && (v.a0 > 0n) === z && v.from !== f.from) // any route: a router shared with the attacker is not the trader (S5)
-    if (v) out.push({ ...sw, victim: v })
+  const via = (s) => s.caller ?? s.trader // court-watcher calls the pool's caller `trader` before S5 and `caller` after
+  const net = new Map() // one leg per (tx, pool, signer, calling contract): a back-run split over several swaps counts once
+  for (const s of swaps) {
+    const k = `${s.txIndex}|${s.pool}|${s.poolId}|${s.from}|${via(s)}`, l = net.get(k)
+    if (l) { l.a0 += s.a0; l.a1 += s.a1 } else net.set(k, { ...s })
+  }
+  const legs = [...net.values()], strict = findSandwiches(swaps), out = []
+  for (const v of legs.filter((l) => l.txIndex === txIndex)) for (const f of legs) {
+    // any route: a router shared with the attacker is not the trader (S5), so only the signer tells them apart
+    if (f.pool !== v.pool || f.poolId !== v.poolId || f.txIndex >= v.txIndex || f.from === v.from) continue
+    const z = f.a0 > 0n
+    if ((v.a0 > 0n) !== z) continue
+    const b = legs.find((b) => b.pool === f.pool && b.poolId === f.poolId && b.txIndex > v.txIndex && b.from === f.from && via(b) === via(f) && (b.a0 > 0n) !== z)
+    const bought = -(z ? f.a1 : f.a0), sold = b ? (z ? b.a1 : b.a0) : 0n
+    if (!b || bought <= 0n || sold * 2n < bought) continue // the back-run must unwind at least half of what the front-run bought
+    const pay = z ? f.a0 : f.a1, backIn = -(z ? b.a0 : b.a1), kept = -(z ? f.a1 + b.a1 : f.a0 + b.a0)
+    const profit = backIn - pay + (kept * backIn) / sold
+    const s = strict.some((x) => x.front.txIndex === f.txIndex && x.back.txIndex === b.txIndex && x.front.pool === f.pool && x.front.poolId === f.poolId)
+    if (!s && profit <= 0n) continue // a loose match only counts when the bot came out ahead
+    out.push({ front: f, victim: v, back: b, profitInToken0: z, profit, kept, strict: s })
   }
   return out
 }
@@ -92,7 +111,8 @@ export async function checkTx(hash, rc) {
       block: Number(n), time: ts, v4: sw.front.v4, pool: sw.front.pool, poolId: sw.front.poolId,
       attacker: sw.front.from, frontTx: txAt(sw.front.txIndex), backTx: txAt(sw.back.txIndex),
       profitRaw: sw.profit.toString(), token: tok, symbol: p?.symbol ?? null, amount, usd: amount !== null ? amount * p.price : null,
-      courtProvable: BigInt(head) - n <= HISTORY_WINDOW, // L1 anchor window, AGENTS.md gotcha 7
+      strict: sw.strict, // false: the bot kept inventory, which Court's predicate doesn't accept
+      courtProvable: sw.strict && BigInt(head) - n <= HISTORY_WINDOW, // Court's predicate, within the L1 anchor window (AGENTS.md gotcha 7)
     }
   }))
   return summarize({ kind: 'tx', input: hash, txs: [{ txHash: hash, block: Number(n), sandwiches }] })
