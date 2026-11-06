@@ -150,7 +150,7 @@ Settlement timing: new deployments require `0 < settleLength <= floor(batchLengt
 ### Files, CLIs and data
 | Seam | Producer | Consumers | Exact shape |
 |---|---|---|---|
-| `deployments/blindfold.local.json` | Kritarth | Khush, Bhoumik | `{chainId, deployBlock, mode: "local"\|"fork", vault, settlement, hook, poolManager, token0, token1, depositToken, admission: "off"\|"mock"\|"real", admissionVerifier, admissionImageId, aquaRouter}`. Keys not shipped yet are `null` |
+| `deployments/blindfold.local.json` | Kritarth | Khush, Bhoumik | `{chainId, deployBlock, mode: "local"\|"admitted", vault, settlement, hook, poolManager, token0, token1, depositToken, market, marketKind: "none"\|"mock"\|"v3", start, batchLength, settleLength, admission: "off" or {manifestSha256, preparationVerifier, onlineVerifier}}`, written by `DeployBlindfold.s.sol` (FIXES.md fix 7). Planned keys not shipped yet: `aquaRouter` |
 | `deployments/court.local.json` | Bhoumik | Khush | `{chainId, deployBlock, verifier, bondRegistry, rpcSigner}` |
 | `deployments/demo.local.json` | Bhoumik | `scripts/court-demo.sh` | `{chainId, deployBlock, poolManager, token, router, bot, poolKey, poolId}`: the demo-bots pool (currency0 = native ETH) |
 | Prover CLI | Kritarth | client | `admission-prover prepare <prep.json> <state.json>`, then `admission-prover admit <in.json> <state.json> <out.json>`.<br>**Prepare** needs only `{chainId, settlement, owner, batch, round}`, so it can run before the order is chosen. It covers the key-wrapper proof (the `prepared` host on `main` splits this out).<br>**Admit** in: `{order: {owner, zeroForOne, amountIn, minAmountOut}, salt, step, prev: {total0, total1, blinding}, budget0, budget1}`. Out: `{ciphertext, hash, proof, next: {total0, total1, blinding}, root}`, where `proof` is the hex of the opaque `admit` bytes. It encrypts too, because the proofs need the tlock randomness.<br>`--mock` on either step returns seals that RISC Zero's `RiscZeroMockVerifier` accepts. The binary name is Kritarth's call; the subcommands and JSON are the seam. The client keeps its own fake until the CLI ships |
@@ -210,13 +210,13 @@ forge script script/DeployCourt.s.sol     --rpc-url http://127.0.0.1:8545 --broa
 Every item builds against the frozen seams with its own fakes. **No Phase 1 item needs anything from another lane.** The Must flaw fixes (R1, R3, R7, R8) land here.
 
 ### Kritarth
-- [ ] **`DeployBlindfold.s.sol`** · Needs: nothing.
-  - **Modes:** in local mode (no code at the Unichain PoolManager address) it deploys its own `PoolManager`; on the fork it uses Unichain's.
-  - **Deploys:** vault, settlement, mined hook, pool init, LP seed.
-  - **Users:** mints both tokens to users 10–19.
-  - **Schedule:** `start` from the chain time, rounded up so `start − DRAND_GENESIS` is a multiple of 3 (R7).
-  - **Config:** reads `TOLERANCE_BPS`, `COMMIT_FEE`, `SETTLE_REWARD_BPS` and `ADMISSION`.
-  - **Output:** writes `deployments/blindfold.local.json` with every key, unshipped ones `null`.
+- [x] **`DeployBlindfold.s.sol`** · Needs: nothing. Done for FIXES.md fix 7; see the script's NatSpec for every env var.
+  - **Modes:** without `POOL_MANAGER` it deploys its own; `TOKEN0`/`TOKEN1` select real tokens, otherwise it deploys mock ones. `ADMISSION=on` deploys `AdmissionVault` and `AdmittedSettlement` with `PREPARATION_VERIFIER`, `ONLINE_VERIFIER` and `ADMISSION_MANIFEST_SHA256`.
+  - **Deploys:** vault, settlement, the hook (mined through a factory), pool init, and the external market (`MARKET=mock`, `v3` with `V3_FACTORY`/`V3_POOL`, or `none`). Not yet: LP seed, minting to users.
+  - **Schedule:** `start` from the chain time, rounded up so `start − DRAND_GENESIS` is a multiple of 3 (R7). Defaults from the replay: 120 s batches, settle window = batch.
+  - **Market defaults:** `maxDelay` = settle window (fix 3), `maxObservationAge` 0 (fix 1), 600 s window, 100 bps deviation.
+  - **Checks (S18):** vault operator, pair, deposit token, hook permissions and binding, pool initialized, settle window, market wiring, and `maxDelay` covering the settle window. A failure reverts before anything is written.
+  - **Output:** `deployments/blindfold.local.json` (`DEPLOYMENTS_OUT` overrides it).
   - **Check:** fresh anvil (both modes) → script → `cast call <settlement> "currentBatch()(uint64)"` returns, and `cast block latest -f timestamp` is within seconds of `date +%s`.
 - [ ] **`SeedBatch.s.sol`** · Needs: own deploy script.
   - **What it does:** one batch with plaintext commits and reveals from users 10–19, including one poison order (REVIEW R1), then time-travel into its settle window.
