@@ -4,6 +4,8 @@ This document describes the executable contracts, the private funding model, and
 
 The intended auction property is that accepted orders are correctly encrypted for a future public beacon round and cumulatively funded before acceptance. The sender knows its own order. Encryption delays disclosure to other participants; it does not prevent a sender from voluntarily disclosing an order.
 
+There are now two versioned auction paths. The pair path below retains its existing order and settlement ABIs. The global path in [§14](#14-global-multi-token-auctions) uses one shared vault operator, explicit token indices, mandatory global admission proofs and atomic cross-pair settlement. Pair proofs and global proofs have different statements and verifier interfaces.
+
 ## 1. System map
 
 ```mermaid
@@ -224,6 +226,8 @@ There is no required proving server, shared-round proof publisher, preparation r
 
 Preparation journals contain eight ABI words: domain, chain, settlement, owner, batch, round, key commitment and pinned network configuration digest. Online journals add step, old root, new root, budget0, budget1, order hash and ciphertext hash. The two proof inputs for each journal are the high and low 128-bit halves of its Keccak digest. The current online circuit also binds the similarly split digest of its ten-word funding statement; settlement derives that statement from the online journal. Byte encodings and executable commands are specified in the circuit README and the existing independent interop checker.
 
+`AdmittedSettlement` creates an immutable `AdmissionValidator` in its constructor. The validator checks pool initialization, canonical proof encoding, statement context, cumulative funding and both proofs through read-only calls. It reads the calling settlement and vault through their existing getters; it owns no mutable accounting state. Admission first runs the existing `_commit` reservation path, then validates against the post-reservation balances and the prior step (`openCommitments - 1`). A rejected check reverts the entire transaction, including fees and reservations. Only settlement records the accepted funding root. Constructor arguments, verifier getters and the opaque proof encoding remain unchanged.
+
 Both verification keys and their circuit/encoding versions are fixed deployment configuration. Production Groth16 parameters are established through a reviewed multiparty setup ceremony with at least one honest contributor erasing its contribution; clients obtain the authenticated proving parameters for those verification keys. Ceremony parameters are public distribution artifacts, not an online proving service. Benchmark-generated single-party setup parameters are used only for testing.
 
 Preparation is independent of order selection. The client serializes admissions against the current root and step; advance preparation is the intended latency strategy for short commit windows (REVIEW R6). It updates its private funding opening after confirming inclusion. An identical ciphertext can be retransmitted or reproved against eligible updated funding state; a changed order or target batch consumes a fresh preparation. The preparation circuit's eight-candidate scalar derivation admits only the standard first valid nonzero candidate; exhausted or zero outcomes require fresh randomness before preparation. The client submits only when proving and inclusion fit before the fixed deployment's commit deadline. Batch selection never changes the scheduled release round after proof creation.
@@ -376,3 +380,235 @@ The checked-in Solidity fixture test uses an upstream receipt. Its purpose is ve
 - The tlock patch exposes explicit randomness while retaining upstream encryption and attribution. AGE authentication uses the upstream library.
 
 Primary implementation references: [drand tlock](https://github.com/drand/tlock), [tlock-rs](https://github.com/thibmeu/tlock-rs), [tlock-js](https://github.com/drand/tlock-js), [RISC Zero](https://github.com/risc0/risc0), [RISC Zero Ethereum verifier](https://github.com/risc0/risc0-ethereum), [Uniswap v4 core](https://github.com/Uniswap/v4-core), and [EIP-2935](https://eips.ethereum.org/EIPS/eip-2935).
+
+
+## Peer-only matching when active liquidity is zero
+
+`settlePeer(batchId, marginalId, marginalAmountIn)` crosses opposing funded orders without a pool swap. The contract reads the validated external reference ending at the batch reveal deadline and requires the sealed pool's active liquidity to be zero. The representative identifies the price-priority boundary: eligible better same-side limits fill fully, equal limits share the input fraction, and worse limits remain unfilled. The boundary fraction may be 100%; zero-minimum orders are supported. Opposing orders retain the ordinary quote rule.
+
+```mermaid
+flowchart LR
+    A[Zero active liquidity] --> B[Stored pool price]
+    B --> C[Price priority and proportional fills]
+    C --> D[Check minimums and both token budgets]
+    D --> E[Distribute rounding surplus]
+    E --> F[Pay traders and unlock unused input]
+```
+
+Each base output is rounded down at the reference price, while its proportional minimum rounds up. Execution requires nonzero opposing payouts and independently sufficient token0 and token1 inputs. Rounding surplus is distributed to recipients of that token in proportion to their base quoted outputs; the smallest commitment ID receives the final indivisible remainder. Actual payouts appear in `Filled`, and `PeerSettled` records the reference price and aggregate rounding surplus. The existing finalization, commitment cleanup, and expiration lifecycle applies.
+
+The solver tries this local crossing first when the liquidity view is zero, validates the candidate onchain, and simulates again before sending. It retains AMM search if no peer candidate succeeds; liquidity can exist beyond the current tick even when active liquidity is zero.
+
+### Ethereum public-pool execution
+
+An external market is configured once, after token initialization and before the
+first commitment. The settlement checks its token pair and settlement address.
+Its configuration cannot change while users have orders pending.
+
+```mermaid
+flowchart LR
+    O[Revealed orders] --> P[Price priority and proportional allocation]
+    V3[Authenticated Uniswap v3 pool] --> R[Historical reference ending at reveal deadline]
+    R --> G[Reference validation and clearing-price band]
+    G --> P
+    P --> C[Cross opposing inputs]
+    C -->|Residual| V3
+    V3 --> B[Verify actual output covers promised payouts]
+    C -->|Peer-only, both budgets covered| B
+    B --> U[Vault credits: quoted output plus surplus]
+```
+
+`UniswapV3Market` authenticates one pool against its factory. `referencePriceX96(batch)`
+uses the geometric mean price over a fixed historical window ending at the reveal
+deadline. It checks available observation history, harmonic mean liquidity,
+latest observation age, reference age and current spot deviation. Negative mean
+ticks round down, following Uniswap's OracleLibrary. Prices stay in raw
+token1/token0 Q96 units; Ethereum USDC is token0 and WETH is token1.
+
+`settlePeer` now uses this reference and still requires zero active sealed-pool
+liquidity. It never substitutes the stored private-pool price. The original
+`settle` path requires active sealed-pool liquidity, including balanced batches.
+
+`settleExternal(batch,price)` uses the same collection, user-limit checks, vault
+accounting and finalization as sealed settlement. A four-argument overload adds
+the existing proportional boundary group. The proposed price must lie inside the
+configured external reference band. Only the unmatched exact input goes to the
+fixed public pool. The callback authenticates the pool and limits payment to that
+input. The settlement verifies the actual output balance increase and returns all
+surplus to output recipients. A short or partial swap reverts the transaction;
+normal expiry remains available.
+
+This public route uses existing LP liquidity without requiring LP commitments to
+Blindfold. It does not use the sealed pool's post-swap marginal-price condition or
+donate surplus to its LPs. `ExternalSettled` identifies this execution policy;
+`PeerSettled` identifies peer execution. `Filled.amountOut` includes returned
+surplus for both modes.
+
+The Ethereum fork fixture resolves the USDC/WETH 500-fee pool from the canonical
+factory at block 26,353,874. Its test parameters are a 600-second window,
+30-second maximum reference delay, 120-second observation-age limit, minimum
+harmonic liquidity of 10^15, and a 100-basis-point deviation band. These are
+explicit fixture parameters. The fork exercises real token transfers and public
+pool swaps with zero liquidity in the sealed pool, in both directions.
+
+### General routing for pair-specific auctions
+
+A market still accepts orders for one endpoint pair. `UniswapV3Route` implements
+the existing external-market interface with one to three fixed Uniswap v3 hops.
+The endpoints need not share a direct pool. For example, WBTC/USDC orders can
+cross internally, then execute their residual through WBTC/WETH and WETH/USDC.
+
+```mermaid
+flowchart LR
+    O[WBTC / USDC batch] --> C[Cross opposing endpoint orders]
+    C --> R[UniswapV3Route]
+    R --> H1[WBTC / WETH pool]
+    H1 --> H2[WETH / USDC pool]
+    H2 --> V[Validate received USDC and credit vault]
+    P1[First hop historical reference] --> P[Compose endpoint reference]
+    P2[Second hop historical reference] --> P
+    P --> C
+```
+
+The constructor receives the settlement, factory, ordered token path, pool and
+liquidity/activity configuration for each hop, a common historical window and
+maximum delay, and the deviation band. Endpoint addresses must be sorted:
+`path[0] = settlement.token0`, `path[last] = settlement.token1`. Intermediate
+addresses can be in either order. It rejects duplicate tokens, discontinuous
+pools and paths longer than three hops. Each pool is authenticated against the
+configured factory by the existing single-pool adapter.
+
+Every hop observes the same historical end time. References are inverted when a
+hop runs opposite its pool's token order, then composed in raw-unit Q96 arithmetic.
+Per-hop history, liquidity, activity and spot checks remain in force. The composed
+spot/reference deviation must also fit the band. This prevents several individually
+acceptable deviations from exceeding the endpoint policy when multiplied.
+
+Execution checks that the adapter actually receives the exact residual input before prefunding the first hop. Each hop pays its
+own authenticated callback and passes only its measured output to the next hop.
+Reverse orders traverse the same path backwards. The last hop enforces the final
+minimum output; settlement independently measures the endpoint tokens received.
+A failed hop reverts the entire transaction. Intermediate tokens never enter the
+user's vault balance. Unrelated donated balances are not included in route output.
+Transfers between adapters and to settlement must change both balances by the
+expected amount.
+
+Deployment sequence:
+
+1. Deploy the pair's vault, settlement and sealed hook; initialize the existing
+   pair key as usual. Each pair retains its own vault and operator.
+2. Resolve each proposed hop with the intended chain's canonical v3 factory and
+   select per-hop liquidity/activity thresholds. Supply token and pool addresses
+   as constructor configuration, not solver-selected arbitrary calldata.
+3. Deploy `UniswapV3Route` and call `settlement.configureExternal(route)` before
+   accepting any commitments. Read the batch reference and simulate both directions.
+4. Publish the ordinary pair deployment record. The solver reads the generated
+   settlement ABI and external reference; it requires no new routing arguments.
+
+The order format, commitment domain, proof endpoint assets and settlement entry
+points are unchanged. A preparation remains bound to its original settlement;
+route support does not make proofs reusable across different pair deployments.
+
+Partial allocations retain the ordinary floored common fraction when the output
+covers the user's ceil-rounded minimum. If it does not, the input falls back to
+whole reduced amount/minimum lots; an empty fallback stays unfilled. This behavior
+is shared by sealed, peer and routed settlement. The solver uses the largest order
+in a limit group as its representative to preserve fraction resolution.
+
+
+## 14. Global multi-token auctions
+
+### Scope and state ownership
+
+`contracts/src/global/GlobalAuction.sol` is the sole operator of a `BlindfoldVault`. One deployment fixes a sorted registry of 2–8 token addresses, up to 64 authenticated route adapters and 64 commitments per batch. Registry bounds make funding proofs, allocation checks and cleanup bounded. The registry and routes freeze before admission; tokens outside that registry can still appear as intermediate assets inside an authenticated route.
+
+The pair implementation remains a separate compatible deployment path. A global deployment needs its own vault operator assignment and versioned proofs. Depositors fund one shared balance per token; they do not distribute capital among pair vaults or deposit route intermediates.
+
+```mermaid
+flowchart LR
+    U[User CLI] -->|deposit once per token| V[Shared BlindfoldVault]
+    U --> P[Local preparation + global online prover]
+    P -->|two proofs and encrypted global order| G[GlobalAuction: sole vault operator]
+    G <-->|balances / locks / open commitments| V
+    D[drand signature] --> K[Permissionless revealer]
+    G -->|ciphertext event| K
+    K -->|owner, token indices, amounts, salt| G
+    S[Global solver CLI] -->|one price vector + fractions + routes| G
+    O[Historical base-token oracle paths] --> G
+    G -->|batch surplus only| R[Registered UniswapV3Route adapters]
+    R --> A[Authenticated public v3 pools]
+    A -->|measured output| V
+    G -->|atomic payouts and rebates| V
+```
+
+`GlobalAuction` owns commitments, orders, per-owner reservation roots/steps, batch finality and route configuration. The vault owns real tokens, internal balances, input locks and open-commitment counts. The prover owns private cumulative totals and blinding. No registered route has vault operator authority. Routes receive only prefunded surplus for a specific settlement call.
+
+Deposits and external vault transfers check real balance changes; short transfers cannot mint internal credit. Donations remain outside batch budgets. Callback-bearing transfers cannot reenter vault deposit/withdraw/push/pull or global auction actions.
+
+### Global order and funding relation
+
+```text
+Order = (owner, uint8 tokenIn, uint8 tokenOut, uint128 amountIn, uint128 minAmountOut)
+registryHash = keccak256(abi.encode(address[8] paddedTokens))
+orderHash = keccak256(abi.encode(
+    keccak256("blindfold.global.order.v1"), chainId, auction,
+    registryHash, batch, Order, salt
+))
+```
+
+Token indices refer to the immutable sorted registry. The global plaintext contains the entire order and salt. The online circuit constructs the complete canonical AGE ciphertext and proves its digest; the preparation circuit proves the key wrapper for the target drand round. `GlobalAdmissionVerifier` checks both generated Groth16 verifiers against digests derived by the auction.
+
+For each owner and batch, the private reservation state contains eight cumulative input totals. Admission increases exactly the selected input token's total, proves every total fits the current budget and binds the resulting hiding root. The onchain budget excludes this admission's deposit and nonrefundable fee, both charged in registry token 0. An owner can have commitments in only one unresolved global batch. Withdrawals stay blocked while any commitment is open; new deposits can increase available budgets. The vault does not reserve a public capacity in both sides of each pair.
+
+There is no global unproved `commit` entry point. A pair proof cannot substitute for a global proof: the order, registry, funding root, online domain and public-input arity differ. Preparation remains reusable within its bound owner/auction/batch/round context; online encryption uses fresh nonce and reservation blinding.
+
+### Lifecycle and timing
+
+```mermaid
+stateDiagram-v2
+    [*] --> Committed: valid proofs + current batch + fee/deposit
+    Committed --> Revealed: anyone supplies matching plaintext in reveal window
+    Committed --> Closed: unrevealed slash after reveal window
+    Revealed --> Closed: atomic settlement or expiry
+    Closed --> [*]: decrement owner and vault open counts
+```
+
+Batch cadence and start align with drand's three-second rounds. Settlement windows cannot overlap. `admit` records ciphertext; `reveal` locks the exact input and pays the fixed bounty/refund. `settle` or `settleAtPrices` unlocks all revealed inputs, collects actual fills and closes those commitments atomically. Unrevealed entries remain individually slashable even after a batch settles. `expire` handles all remaining revealed and unrevealed entries in a bounded loop. Once an owner's open count reaches zero, withdrawals and participation in another batch are possible.
+
+### One price vector, including cycles
+
+Token 0 is the numeraire. Each other token has an authenticated path to it, queried over the same historical window ending at the commit deadline. `prices(batch)` returns raw base-token value per token, scaled by `2^96`; token 0 is exactly `2^96`. Token decimals are not assumed to equal 18.
+
+For input `x` of token `i` buying token `j`:
+
+```text
+output = floor(x × price[i] / price[j])
+required minimum = ceil(order.minAmountOut × x / order.amountIn)
+```
+
+`settle` uses the historical vector directly. `settleAtPrices` permits a proposed vector within each oracle's immutable deviation band, retaining the fixed numeraire and zero unused slots. This allows pool fees to fit inside user limits without choosing inconsistent prices independently for each pair. Price validation and every user minimum are enforced onchain. A zero price explicitly excludes a non-base token: all orders involving it must have zero fractions. The solver can therefore leave a stale market unfilled while healthy pairs settle, without inventing a fallback price.
+
+```mermaid
+flowchart LR
+    A[A seller contributes A] -->|A buys B at pA/pB| B[B seller contributes B]
+    B -->|B buys C at pB/pC| C[C seller contributes C]
+    C -->|C buys A at pC/pA| A
+```
+
+A balanced cycle requires no pool execution. The same vector determines all three exchange ratios. The solver submits fractions in commitment order, with denominator `2^128−1`, giving unit resolution for every uint128 order size. Equal exact limits within a directed pair require equal fractions; any filled worse limit requires full fractions at better limits. Ineligible orders have zero fractions. A partial allocation that misses its rounded minimum falls back to exact reduced-ratio lots, as in the approved pair allocation refinement. Zero-output dust stays unfilled.
+
+### Conservation, routing and surplus
+
+Settlement computes `incoming[token]` and `owed[token]` from the entire batch before routing. A route may spend only `available[input] − owed[input]`, and only acquire a token with an outstanding deficit. Routes are bounded, pre-registered and authenticated; the solver cannot inject arbitrary targets or calldata. A route adapter can contain up to three pools, so intermediates do not require auction-level prefunding.
+
+After every route, actual balance changes update the available budget. Every token must cover its payouts before any order is finalized. Failure in the final route reverts all earlier routes, input collection and unlocks. Existing auction deposits and donated balances cannot cover a batch deficit.
+
+Remaining surplus is returned proportionally to contributors of that token. When an acquired token had no input contributors, its output recipients receive the surplus. Cumulative division allocates every integer unit deterministically. `Filled` reports the uniform-price trade; `Rebate` separately reports returned surplus.
+
+### Local tools, deployment and verification
+
+`packages/global-auction` supplies admission/reveal/cleanup commands, a bounded global solver, simple-path discovery and deployment tooling. It loads generated artifacts. Deployment requires explicit chain identity, reviewed preparation/global verifier addresses, sorted tokens, oracle paths, execution routes and schedule/economic parameters. It installs the one vault operator, registers paths and seals configuration.
+
+`packages/proof-bench/src/bin/global-prepare.rs` creates a fresh private preparation witness using OS entropy. The Go circuit CLI supports reusable proving keys bound to the serialized circuit identity; an ordinary subsequent proof loads existing keys instead of creating a new verifier. Preparation and online keys remain distinct.
+
+Verification commands and private file formats are documented in `packages/global-auction/README.md` and `packages/proof-bench/circuit/README.md`. Contract tests cover cycles, per-token conservation, mixed raw-unit prices, fraction fairness, fee-aware price vectors, maximum batches, callback/transfer boundaries, rollback and cleanup. Fork tests execute real WBTC/WETH/USDC routes. A separate real-proof harness exercises actual admission, settlement and withdrawal, and independent tlock-js decryption recomputes the global ABI hashes. Current measurements and review/deployment gates are recorded in REVIEW.md.
