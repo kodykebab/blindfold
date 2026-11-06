@@ -1,7 +1,7 @@
 # Release checklist
 
 Status: `[x]` done · `[~]` partly done · `[ ]` open. Owner: **Claude** (this branch stack), **Cursor** (sections 3 and 8, see `CURSOR_PROMPT.md`), **Antigravity** (section 5 on branch `bhoumik/orders-ui`, see `ANTIGRAVITY_PROMPT.md`), **Team** (needs a decision or another lane).
-Updated after every 3 completed tasks. Last update: 2026-11-07, 28 done, 7 partly done, 58 open of 93.
+Updated after every 3 completed tasks. Last update: 2026-11-07, 35 done, 6 partly done, 52 open of 93.
 
 ## 1. Local setup and operation (Claude)
 - [~] Repeatable clean-clone setup: install, build, deploy. `scripts/dev.sh` works; the clean-clone rehearsal remains.
@@ -52,13 +52,13 @@ Updated after every 3 completed tasks. Last update: 2026-11-07, 28 done, 7 partl
 - [ ] Witness/privacy review of the browser-to-helper path.
 
 ## 5. Order tracking, cleanup and withdrawal (Antigravity)
-- [ ] Each order's batch and lifecycle.
-- [ ] Admission, reveal, full/partial/unfilled/released/expired outcomes in the UI.
-- [ ] Filled amounts, received amounts and unused input.
-- [ ] Which commitments block withdrawal, with cleanup guidance.
-- [~] Guided reveal, cleanup, expiry and withdrawal. CLI actions exist; some results are still raw output.
-- [ ] Policy-specific fees, deposits, rewards and refunds.
-- [ ] Browser acceptance for beacon delay, keeper outage and expiry.
+- [x] Each order's batch and lifecycle. Proven by packages/client/test/orders.test.mjs ("orderView: revealed order waiting for settlement") and app/haveibeensandwiched/orders.test.mjs ("orderRows returns full row objects from track and blockers JSON fixtures").
+- [x] Admission, reveal, full/partial/unfilled/released/expired outcomes in the UI. Proven by app/haveibeensandwiched/orders.test.mjs ("table row: committed" through "table row: expired").
+- [x] Filled amounts, received amounts and unused input. Proven by packages/client/test/orders.test.mjs ("orderView: partial fill with unused input") and app/haveibeensandwiched/orders.test.mjs ("table row: filled (partial)").
+- [x] Which commitments block withdrawal, with cleanup guidance. Proven by app/haveibeensandwiched/orders.test.mjs ("withdrawalSummary with 0, 1, and 2 blockers").
+- [x] Guided reveal, cleanup, expiry and withdrawal. Proven by packages/client/test/orders.test.mjs ("cleanupPayload: formats dry run and completed actions") and app/haveibeensandwiched/orders.test.mjs ("next step buttons and sentences").
+- [x] Policy-specific fees, deposits, rewards and refunds. Proven by app/haveibeensandwiched/orders.test.mjs ("policyText with and without admission").
+- [x] Browser acceptance for beacon delay, keeper outage and expiry. `ORDERS_E2E=1 node --test app/haveibeensandwiched/orders.e2e.test.mjs`: 3/3 against a real local chain.
 
 ## 6. Recovery, finality and private state (Claude)
 - [x] Backup export and import through the page.
