@@ -33,3 +33,10 @@ To preview the full animation on a system with reduced motion enabled, open `/?m
 This page-specific setting enables the original story transitions, hero animation and result effects.
 
 Demo address: `0xcf36363eea51f669c391eafc2ec2c3ff1b7a4be5`.
+
+## Deploy on Vercel
+`api/check.js` is the same lookup as a Vercel Function, and `index.html` is served as a static file. In the project settings:
+- Root Directory: `app/haveibeensandwiched`, with "Include files outside the root directory in the Build Step" on (the lookup imports `packages/court-watcher`). `vercel.json` installs court-watcher's dependencies.
+- Node.js 22, and `ETHERSCAN_API_KEY` as an environment variable (`ETH_RPC` is optional).
+
+Complete answers are cached at Vercel's edge for 5 minutes.
