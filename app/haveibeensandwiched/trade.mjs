@@ -13,14 +13,42 @@ import {
   formatCountdown,
 } from './orders.mjs'
 import { createBackupReminder, createJobStore } from './job-store.mjs'
+import { backupReminder, identityChanged, importProblems, preparationPanel, proverSteps, reminderNeedsExport } from './prover-view.mjs'
 import { createWalletView, walletMismatch } from './wallet-view.mjs'
 const output = document.querySelector('#output')
 const state = document.querySelector('#job-state')
 const reconnect = document.querySelector('#reconnect')
 const reminder = document.querySelector('#backup-reminder')
 const reminderStore = (() => { try { return createBackupReminder(localStorage) } catch { return createBackupReminder(null) } })()
-function showBackupReminder(show) { reminder.hidden = !show; reminderStore.set(show) }
-reminder.hidden = !reminderStore.get()
+// The reminder clears only once a backup exported after the last submission is confirmed saved (prover-view.mjs).
+const REMINDER_KEY = 'blindfold.backupReminderState'
+let reminderState = (() => { try { return JSON.parse(localStorage.getItem(REMINDER_KEY)) } catch { return null } })()
+  ?? (reminderStore.get() ? backupReminder(null, 'submitted', 0) : null)
+function backupEvent(event) {
+  reminderState = backupReminder(reminderState, event)
+  try { localStorage.setItem(REMINDER_KEY, JSON.stringify(reminderState)) } catch {}
+  reminderStore.set(reminderState.pending)
+  reminder.hidden = !reminderState.pending
+  document.querySelector('#backup-reminder-note').textContent = reminderState.pending && !reminderNeedsExport(reminderState) ? 'Backup exported.' : ''
+}
+reminder.hidden = !reminderState?.pending
+const stepsEl = document.querySelector('#prover-steps')
+function renderSteps(job) {
+  let typical = null
+  try { typical = Number(localStorage.getItem('blindfold.proveSeconds')) || null } catch {}
+  const view = proverSteps(job, { typicalSeconds: typical })
+  stepsEl.hidden = !view
+  if (!view) return
+  stepsEl.replaceChildren(...view.steps.map((step) => {
+    const item = document.createElement('li')
+    item.className = `step ${step.status}`
+    item.textContent = `${step.name}: ${step.status}${step.detail ? ` (${step.detail})` : ''}`
+    if (step.status === 'current') item.setAttribute('aria-current', 'step')
+    return item
+  }))
+  if (job.state === 'done' && view.seconds) try { localStorage.setItem('blindfold.proveSeconds', String(view.seconds)) } catch {}
+}
+let lastIdentity = null
 const jobStore = (() => { try { return createJobStore(localStorage) } catch { return createJobStore(null) } })()
 const mobile = matchMedia('(max-width: 760px) and (pointer: coarse)')
 const desktopOnly = new Set(['prepare-admission', 'preflight', 'commit', 'deposit', 'cleanup', 'resume-admission', 'backup-import'])
@@ -51,6 +79,7 @@ async function follow(id) {
       }
       const view = presentJob(job)
       output.textContent = view.body
+      renderSteps(job)
       if (job.state === 'running') state.textContent = view.title
       if (job.state !== 'running') {
         if (job.action === 'preflight') showReview(job.output, job.state === 'done')
@@ -77,6 +106,12 @@ async function follow(id) {
           output.textContent = 'A backup download was requested. Save it somewhere private, then mark it saved.'
         }
         if (job.state === 'done' && job.action === 'deposit') noteDeposit(job.output)
+        if (job.state === 'done' && job.action === 'backup-export') backupEvent('exported')
+        document.querySelector('#resume-admission').hidden = !(job.state === 'failed' && explainClientError(job.output).title === 'Admission needs a resume')
+        if (job.state === 'failed' && job.action === 'backup-import') {
+          const problems = importProblems(job.output)
+          if (problems.length) output.textContent = `Backup not restored. ${problems.map((p) => p.text).join(' ')} Nothing in your local state changed.`
+        }
         if (job.state === 'done' && ['commit', 'cleanup', 'withdraw', 'deposit', 'resume-admission'].includes(job.action)) {
           queued = { action: 'status' }
         }
@@ -108,7 +143,7 @@ async function run(input) {
     if (!response.ok) throw Error(data.error || 'Could not start command')
     saveJob(data.id)
     if (input.action === 'commit') {
-      showBackupReminder(true)
+      backupEvent('submitted')
       document.querySelector('#preparation-state').textContent = 'Submission may consume the prepared key. Refresh status before the next order.'
     }
     await follow(data.id)
@@ -352,8 +387,17 @@ function showStatus(text) {
     labelSide('#side-buy', `Buy ${token0}`, `WITH ${token1}`)
   }
   document.querySelector('#batch-status').textContent = parsed.batch
-  document.querySelector('#preparation-state').textContent = parsed.preparation ?? 'Preparation is not required by this deployment'
   const current = parsed.batch.match(/^batch (\d+) /)
+  const prep = preparationPanel(parsed.preparation ?? '', current?.[1] ?? null)
+  const identity = { account: parsed.account, network: parsed.network, pair: parsed.pair }
+  const changed = identityChanged(lastIdentity, identity)
+  lastIdentity = identity
+  // A changed account, network or pair invalidates the last review: submit stays off until a fresh review.
+  if (changed) { lastReview = null; document.querySelector('#confirm').disabled = true }
+  document.querySelector('#preparation-state').textContent = changed ? `Re-check needed: the account, network or pair changed since the last status. ${prep.text}` : prep.text
+  const prepareNext = document.querySelector('#prepare-next')
+  prepareNext.hidden = !prep.action
+  if (prep.action) { prepareNext.textContent = prep.action.label; prepareNext.dataset.batch = prep.action.batch }
   const batchInput = document.querySelector('#prepare input[name=batch]')
   if (!batchInput.value && current && BigInt(current[1]) + 1n < (1n << 64n)) batchInput.value = String(BigInt(current[1]) + 1n)
   document.querySelector('#open-status').textContent = parsed.open
@@ -478,7 +522,12 @@ function noteDeposit(text) {
     queued = { action: 'status' }
   }
 }
-document.querySelector('#backup-confirm').addEventListener('click', () => showBackupReminder(false))
+document.querySelector('#backup-confirm').addEventListener('click', () => {
+  if (reminderNeedsExport(reminderState)) { document.querySelector('#backup-reminder-note').textContent = 'Export a backup first: this stays until a backup made after your last order is saved.'; return }
+  backupEvent('acknowledged')
+})
+document.querySelector('#prepare-next').addEventListener('click', (event) => run({ action: 'prepare-admission', batch: event.currentTarget.dataset.batch }))
+document.querySelector('#resume-admission').addEventListener('click', () => run({ action: 'resume-admission' }))
 const order = document.querySelector('#order')
 let confirmFields = null
 function orderAction(action) {

@@ -5,8 +5,5 @@
   "scripts": {
     "start": "node --env-file-if-exists=../../.env server.mjs",
     "test": "node --test"
-  },
-  "dependencies": {
-    "viem": "^2.57.16"
   }
 }

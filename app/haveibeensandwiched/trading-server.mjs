@@ -52,7 +52,7 @@ export function createJobs({ start = (args) => spawn(process.execPath, ['package
       } else args = command(input)
       let child
       try { child = start(args) } catch (e) { if (dir) rmSync(dir, { recursive: true, force: true }); throw e }
-      const id = randomUUID(), job = { state: 'running', action: input.action, output: '' }
+      const id = randomUUID(), job = { state: 'running', action: input.action, output: '', startedAt: Date.now() }
       jobs.set(id, job); active = id
       const append = (chunk) => { job.output = (job.output + chunk.toString().replaceAll(dir ?? '\0', '[private temporary file]')).slice(-32000) }
       const finish = (code) => {

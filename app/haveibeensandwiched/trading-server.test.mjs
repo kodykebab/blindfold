@@ -24,6 +24,8 @@ test('jobs serialize, capture output and release the slot on completion', () => 
   assert.deepEqual(args, ['status']); assert.equal(jobs.get(id).state, 'running')
   assert.throws(() => jobs.start({ action: 'track' }), /running/)
   child.stdout.write('account example'); child.emit('close', 0)
-  assert.deepEqual(jobs.get(id), { state: 'done', action: 'status', output: 'account example' })
+  const { startedAt, ...job } = jobs.get(id)
+  assert.ok(Number.isInteger(startedAt)) // for the page's elapsed-time display
+  assert.deepEqual(job, { state: 'done', action: 'status', output: 'account example' })
   assert.doesNotThrow(() => jobs.start({ action: 'track' }))
 })
