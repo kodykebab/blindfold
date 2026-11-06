@@ -580,3 +580,11 @@ must use the same fallback, and complete clearing remains conditional.
 
 
 
+
+
+Fork reproducibility: the public Ethereum RPC prunes historical state, including
+previously untouched deployment addresses needed by Foundry. The external-market
+fork now defaults to the latest block, with ETH_FORK_BLOCK selecting a fixed
+block on an archive endpoint or complete cache. Its historical 26,353,874 results
+remain recorded above; a cached successful run is not proof a fresh machine can
+retrieve that old state from the public endpoint.

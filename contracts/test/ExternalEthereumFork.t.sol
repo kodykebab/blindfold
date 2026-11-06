@@ -26,7 +26,11 @@ contract ExternalEthereumForkTest is Test {
     uint64 start;
 
     function setUp() public {
-        vm.createSelectFork(vm.envOr("ETH_RPC", string("https://ethereum-rpc.publicnode.com")), 26353874);
+        string memory rpc = vm.envOr("ETH_RPC", string("https://ethereum-rpc.publicnode.com"));
+        uint256 forkBlock = vm.envOr("ETH_FORK_BLOCK", uint256(0));
+        if (forkBlock == 0) vm.createSelectFork(rpc);
+        else vm.createSelectFork(rpc, forkBlock);
+        emit log_named_uint("external market fork block", block.number);
         forkTime = block.timestamp;
         start = uint64(forkTime - 60);
         vault = new BlindfoldVault();
