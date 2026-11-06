@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>have i been sandwiched?</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 3rem auto; padding: 0 1rem; }
+  form { display: flex; gap: .5rem; }
+  input { flex: 1; padding: .6rem; font-family: monospace; }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; font-size: .85rem; }
+  td, th { border: 1px solid #ccc; padding: .3rem .5rem; text-align: left; }
+  .ph { color: #888; border: 1px dashed #bbb; padding: 1rem; margin: 1rem 0; }
+  code { word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>have i been sandwiched?</h1>
+<div class="ph">[placeholder: hero copy]</div>
+
+<form id="f">
+  <label for="q" hidden>Ethereum tx hash or wallet address</label>
+  <input id="q" name="q" placeholder="0x… tx hash or wallet address" autocomplete="off" required>
+  <button>Check</button>
+</form>
+
+<div id="out" aria-live="polite"></div>
+
+<div class="ph">[placeholder: how Blindfold + Court prevent and refund this]</div>
+
+<script>
+const $ = (s) => document.querySelector(s)
+const short = (h) => h ? `${h.slice(0, 8)}…${h.slice(-4)}` : '—'
+const usd = (x) => x == null ? 'unpriced' : `$${x.toFixed(2)}`
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`)
+
+$('#f').onsubmit = async (e) => {
+  e.preventDefault()
+  $('#out').textContent = 'Checking…'
+  const r = await (await fetch('/api/check?q=' + encodeURIComponent($('#q').value))).json()
+  if (r.error) return ($('#out').textContent = r.error)
+  const rows = r.txs.flatMap((t) => t.sandwiches.length
+    ? t.sandwiches.map((s) => `<tr><td><code>${short(t.txHash)}</code></td><td>${s.block}</td><td><code>${short(s.attacker)}</code></td>
+        <td>${s.amount != null ? `${s.amount.toPrecision(4)} ${esc(s.symbol)}` : `${s.profitRaw} raw`}</td><td>${usd(s.usd)}</td>
+        <td>${s.courtProvable ? 'yes' : 'no (older than 8191 blocks)'}</td></tr>`)
+    : [`<tr><td><code>${short(t.txHash)}</code></td><td>${t.block}</td><td colspan="4">${t.project ? `Dune: sandwiched on ${esc(t.project)} v${esc(t.version)}; ` : ''}no Uniswap v3/v4 sandwich detected by our checker</td></tr>`])
+  $('#out').innerHTML = `
+    <h2>${r.sandwichCount ? `Sandwiched ${r.sandwichCount}×. Lost at least ${usd(r.lostUsd)}${r.unpriced ? ` (+${r.unpriced} unpriced)` : ''}.` : 'No v3/v4 sandwich found.'}</h2>
+    ${r.sandwichCount ? `<p>With Blindfold: <b>${usd(r.lostUsd)} saved</b>. Sealed batches hide your order, so there is nothing to front-run.</p>` : ''}
+    ${r.fixture ? '<p><small>Cached result (OFFLINE=1).</small></p>' : ''}
+    ${r.scannedTxs != null ? `<p><small>Checked ${r.swapTxs} Uniswap v3/v4 swaps in this address's last ${r.scannedTxs} sent txs${r.failed ? ` (${r.failed} lookups failed, retry for a full result)` : ''}.</small></p>` : ''}
+    <table><tr><th>tx</th><th>block</th><th>attacker</th><th>attacker profit</th><th>USD</th><th>Court can prove</th></tr>${rows.join('')}</table>
+    <p><small>"Lost" is the attacker's gross profit: a lower bound on your loss.</small></p>`
+}
+</script>
+</body>
+</html>
