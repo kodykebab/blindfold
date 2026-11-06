@@ -1,0 +1,17 @@
+{
+  "name": "@blindfold/extension",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node build.mjs --watch",
+    "test": "node --import ./test/resolve.mjs --test"
+  },
+  "dependencies": {
+    "tlock-js": "0.9.0",
+    "viem": "2.21.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

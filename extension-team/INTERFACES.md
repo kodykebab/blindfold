@@ -4,7 +4,9 @@ Owned by agent 3 (QA lead). Agents 1 and 2 propose under "Proposals"; agent 3 me
 here has a test in `packages/extension-e2e` or in the owning package.
 
 ## Extension ID
-TBD (agent 1 fills in once the dev key exists).
+`eaoidifkamkmkbcomcbpldjlhipogdgo` (from the dev public key in `packages/extension/manifest.json` `key`; the private key
+was discarded, so the unpacked dev build always gets this ID). Native host `allowed_origins`:
+`chrome-extension://eaoidifkamkmkbcomcbpldjlhipogdgo/`. `packages/extension` has a test that recomputes it from the key.
 
 ## Extension <-> prover helper (Chrome native messaging)
 - Host name: `xyz.blindfold.prover` (proposed). Framing: Chrome native messaging (4-byte little-endian length + UTF-8 JSON).
