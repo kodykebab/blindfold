@@ -19,3 +19,7 @@
 .order-list{list-style:none;margin:0;padding:0}.order-list li{border-top:1px solid var(--edge);padding:14px 0;font-size:13px}.order-list strong{font-weight:500}.order-state{float:right;color:#8493ff;font:11px ui-monospace,monospace;text-transform:uppercase}.order-list p{margin:7px 0 0;color:var(--mute);overflow-wrap:anywhere;font:11px/1.6 ui-monospace,monospace}
 
 .wallet-inspect{border-top:1px solid var(--edge);margin-top:20px;padding-top:20px}.wallet-inspect .fine{color:var(--mute);line-height:1.6}.wallet-inspect .tools{margin-top:10px}.wallet-inspect select{margin-top:8px}
+.prover-steps { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
+.prover-steps .step.done { opacity: .7; }
+.prover-steps .step.current { font-weight: 600; }
+.prover-steps .step.failed { color: #b42318; font-weight: 600; }

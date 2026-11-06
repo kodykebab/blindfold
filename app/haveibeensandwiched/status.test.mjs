@@ -218,3 +218,18 @@ test('withdrawal blockers preserve the actual action and policy explanation', ()
   assert.deepEqual(parseBlockers('nothing blocks withdrawal'), [])
   assert.equal(parseBlockers('unknown output'), null)
 })
+
+test('prover, deadline and busy failures each get a sentence and a next step', () => {
+  const cases = [
+    ['client: local prover was stopped by SIGKILL; this device may not have enough free memory to prove', /Device can’t finish/, /8 GB|Prepare ahead/],
+    ['client: local prover not found or not executable at /x/local-prover; set ADMISSION_PROVER to a built local-prover', /not set up/, /scripts\/dev.sh/],
+    ['client: deployment must pin the local admission parameter manifest', /not set up/, /scripts\/dev.sh/],
+    ['client: local prover failed (1); check the local parameter files and request', /Proof failed/, /review/],
+    ['client: The contract function "admit" reverted with the following reason:\nNotCurrentBatch(1, 2)', /Batch closed/, /next batch/],
+    ['Another CLI command is running', /Already running/, /Wait/],
+  ]
+  for (const [text, title, next] of cases) {
+    const e = explainClientError(text)
+    assert.match(e.title, title, text); assert.match(e.next, next, text)
+  }
+})
