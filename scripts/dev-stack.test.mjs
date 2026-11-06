@@ -1,7 +1,7 @@
 // Opt-in smoke check for the actual proof-enforced local developer stack; no proof is generated here.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -65,6 +65,9 @@ test('developer stack deploys real admission contracts and serves a funded local
       const response = await fetch(dep.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBlockByNumber', params: ['latest', false] }) })
       return BigInt((await response.json()).result.timestamp)
     }
+    const verified = spawnSync(process.execPath, [join(root, 'scripts/verify-deployment.mjs'), join(directory, 'blindfold.local.json')], { env: { ...process.env, RPC_URL: dep.rpc }, encoding: 'utf8' })
+    assert.equal(verified.status, 0, verified.stdout + verified.stderr)
+    assert.match(verified.stdout, /^ok +onlineVerifier bytecode: match$/m)
     const before = await latestBlock()
     await new Promise((resolve) => setTimeout(resolve, 2200))
     assert.ok((await latestBlock()) > before, 'the local chain clock advances while the client is idle')

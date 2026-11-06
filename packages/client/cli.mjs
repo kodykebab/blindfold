@@ -284,7 +284,9 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n, vaultOnly 
   const [commitsClose, commits] = await Promise.all([read(S, 'commitsClose', [current]), read(S, 'commitIdsOf', [current])])
   const per = async (f) => Object.fromEntries(await Promise.all(Object.keys(t.byAddress).map(async (a) => [a, await f(a)])))
   const enforced = await admissionRequired()
-  let funding, minLead = 3n, target = { batch: current, prepared: false, close: commitsClose }
+  const leadText = process.env.CLIENT_MIN_LEAD_SECONDS || '3'
+  if (!/^\d+$/.test(leadText)) fail('CLIENT_MIN_LEAD_SECONDS must be a whole number of seconds')
+  let funding, minLead = BigInt(leadText), target = { batch: current, prepared: false, close: commitsClose }
   if (enforced) {
     await checkAdmissionNetwork()
     if (!dep.admission?.manifestSha256) fail('this deployment requires admission; its deployment file must include the parameter manifest')
@@ -370,7 +372,7 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n, vaultOnly 
     }
     await checkAdmissionNetwork()
     const latest = (await pub.getBlock()).timestamp
-    if (latest >= target.close) fail(`proof completed after batch ${target.batch} closed; nothing submitted. This device's margin now reflects the slower proof; commit again`)
+    if (latest + 1n >= target.close) // the submission lands at least one block later fail(`proof completed after batch ${target.batch} closed; nothing submitted. This device's margin now reflects the slower proof; commit again`)
     reconcileFunding(dep, me, funding, await fundingOnchain(), latest)
     const state = loadState(dep, me)
     state.commitments.push({ id: null, batchId: target.batch, round, hash, order, salt })

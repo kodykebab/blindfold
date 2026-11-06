@@ -28,11 +28,14 @@ forge build --root "$root/contracts" --no-dynamic-test-linking "$root/packages/s
 echo 'Local tier (admission off): real client, web service, keeper, solver and v4 pool; recorded drand and local test tokens.'
 WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs
 STACK_E2E=1 node --test packages/solver/test/local-stack.e2e.test.mjs
+ACCEPT_E2E=1 node --test packages/solver/test/acceptance.e2e.test.mjs
 CLIENT_E2E=1 node --test packages/client/test/e2e.test.mjs
+DEADLINE_E2E=1 node --test packages/client/test/deadline.e2e.test.mjs
 KEEPER_E2E=1 node --test packages/keeper/test/e2e.test.mjs
 OUTAGE_E2E=1 SETTLEMENT_ARTIFACT="$(node -e "import('./packages/solver/artifacts.mjs').then((m) => console.log(m.artifactPath(process.env.CONTRACTS_OUT, 'BlindfoldSettlement')))")" node --test scripts/outage.e2e.test.mjs
 SOLVER_E2E=1 node --test packages/solver/test/integration.test.mjs
 DEMO_E2E=1 node --test scripts/demos.e2e.test.mjs
+VERIFY_E2E=1 node --test scripts/verify-deployment.e2e.test.mjs
 if [ "$real_proof" = 1 ]; then
   export ADMISSION_PARAMS="${ADMISSION_PARAMS:-$root/packages/proof-bench/results/admission-params}"
   if [ ! -f "$ADMISSION_PARAMS/manifest.json" ] || [ ! -f "$ADMISSION_PARAMS/out/preparation.sol/Verifier.json" ] || [ ! -f "$ADMISSION_PARAMS/out/online.sol/Verifier.json" ]; then
@@ -50,6 +53,8 @@ if [ "$real_proof" = 1 ]; then
   DEV_E2E=1 node --test scripts/dev-stack.test.mjs
   echo 'Fresh-proof tier: real proofs, verifiers, web, keeper and solver; recorded drand and local test tokens.'
   STACK_E2E=1 STACK_REAL_PROOF=1 node --test packages/solver/test/local-stack.e2e.test.mjs
+  echo 'Deployed-contract verification with generated verifiers.'
+  VERIFY_E2E=1 node --test scripts/verify-deployment.e2e.test.mjs
   echo 'Fresh-proof recovery: isolated client admission lifecycle.'
   node --test packages/client/test/admission-e2e.test.mjs
 fi
