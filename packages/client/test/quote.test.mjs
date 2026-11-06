@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Q96, limitFromQuote, nextPreparation, parseSlippage, quoteOut, retryable, routeFeePpm } from '../quote.mjs'
+import { Q96, limitFromQuote, nextPreparation, parseSlippage, quoteOut, retryable, routeFeePpm, settlesIn, waitNote } from '../quote.mjs'
 
 const e18 = 10n ** 18n
 
@@ -58,4 +58,14 @@ test('keep-ready prepares for the earliest batch it can still make, and keeps a 
   assert.equal(at(200n, '4'), 5n) // that key can no longer be used: replace it
   assert.equal(at(200n, '5'), null)
   assert.equal(at(100n, '3'), 4n) // a key for a closed batch is replaced
+})
+
+test('the order shows when it settles and what waiting typically costs, with its source', () => {
+  assert.equal(settlesIn({ now: 100n, revealCloses: 160n }), 72n)
+  assert.equal(settlesIn({ now: 200n, revealCloses: 160n }), 12n)
+  const [wait, cost] = waitNote({ now: 100n, revealCloses: 160n })
+  assert.match(wait, /settles about 72s from now/)
+  assert.match(cost, /3-6 bps on deep pools and 8-18 bps on thin ones/)
+  assert.match(cost, /order-flow replay, 2026-11-06/)
+  assert.match(cost, /larger orders, or pairs that get sandwiched/)
 })

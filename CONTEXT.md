@@ -11,8 +11,17 @@ ETHGlobal Mumbai. Team of 4, 36 hours, up to 3 partner prizes.
 ## Pitch (30 s)
 - Every "MEV-protected" swap today relies on a middleman: a private RPC, a builder's promise, a keyper committee, a sequencer network, or a solver. Protected transactions still get sandwiched: 2,932 private sandwiches in Nov–Dec 2024 ([arXiv 2512.17602](https://arxiv.org/html/2512.17602)).
 - **Blindfold** batches orders encrypted to a *future* drand round. Nobody, including the user, can read an order before the batch closes, and *anyone* can reveal it after. That kills front-running and the commit-reveal "free option" (a user withholding an unfavourable reveal).
-- Batches clear at **one price the contract verifies**, against a Uniswap v4 pool only batches can touch, plus 1inch Aqua liquidity through a custom SwapVM instruction. It's the FM-AMM design ([Canidio & Fritsch](https://arxiv.org/abs/2307.02074)), so arbitrage value goes to LPs.
+- Batches clear at **one price the contract verifies**. Opposing orders cross each other directly, and the rest goes through a Uniswap v4 pool only batches can touch, or through public Uniswap v3 pools at a price checked against their time-weighted average. It's the FM-AMM design ([Canidio & Fritsch](https://arxiv.org/abs/2307.02074)), so arbitrage value goes to LPs. A custom SwapVM instruction can fill at the clearing price from 1inch Aqua liquidity, but no settlement route uses it yet (REVIEW S20).
 - **Court** turns a protected RPC's promise into a slashable contract: when a tx it signed a protection receipt for gets sandwiched, anyone proves it onchain (header, tx and receipt proofs, attacker's signature recovered) and the RPC's bond pays the victim. It runs on Base and judges Ethereum through an L1 anchor.
+
+## When Blindfold is the better choice
+An order waits for its batch, so it isn't a drop-in replacement for an instant swap. The order-flow replay of 2026-11-06 (`packages/solver/replay.mjs`) measured what that costs, against each swap executed immediately:
+
+- **Waiting costs a few basis points.** Filled orders came out a median 3–6 bps worse on USDC/WETH 0.05% and 8–18 bps worse on UNI/WETH 0.3%. That's price drift during the wait plus the uniform price paying for the pool swap.
+- **Most orders fill.** With 50 bps limits and the latest-trade oracle check off (PR #77), 85–97% filled across those pools. The rest kept their funds: unfilled, never worse than their limit.
+- **It pays off** when MEV protection is worth more than that cost: larger orders, pairs that get sandwiched, and traders who'd otherwise set a wide slippage a sandwich can take. For a small trade nobody would sandwich, a direct swap through a private RPC is cheaper. Say so.
+
+The client shows the expected wait and this cost before every order (FIXES.md fix 8). The sandwich checker (`app/haveibeensandwiched`) shows a wallet what it has actually lost, which makes the case concrete.
 
 ## Prize picks
 | Prize | What we show | Hard requirements |
@@ -84,9 +93,9 @@ Why Arkiv: keepers anywhere find reveal work with one query and no server of our
 
 ## Demo script (4 min)
 1. **0:00 The problem.** Mempool view: a normal swap on a normal pool gets sandwiched by our bot; the loss shows in red.
-2. **0:40 Blindfold.** Ten wallets commit to one batch. The mempool shows only ciphertext; the sandwich bot finds nothing.
+2. **0:40 Blindfold.** Ten wallets commit to one batch. Each sees its limit ("at least X, or you keep your funds"), when it settles and what waiting costs. The mempool shows only ciphertext; the sandwich bot finds nothing.
 3. **1:20 Round R arrives.** A third-party keeper (another laptop) decrypts and reveals, including the order of a user who "rage-quits". A garbage commitment is slashed.
-4. **2:00 Settle.** One clearing price for everyone; the residual routes through the sealed v4 pool and the Aqua strategy with real token transfers. A malicious solver's bad price reverts.
+4. **2:00 Settle.** One clearing price for everyone: opposing orders cross, and the residual routes through the sealed v4 pool or the public v3 pool with real token transfers. A malicious solver's bad price reverts. (Aqua joins this step only once a settlement route uses it; see REVIEW S20.)
 5. **2:50 Court.** Our "protected" RPC leaks a tx and it gets sandwiched. The watcher proves it; the victim is refunded from the RPC's bond.
 6. **3:30 Ledger.** The Arkiv-backed Court ledger updates. Close on the one-liner.
 
