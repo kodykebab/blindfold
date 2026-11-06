@@ -745,3 +745,43 @@ fork now defaults to the latest block, with ETH_FORK_BLOCK selecting a fixed
 block on an archive endpoint or complete cache. Its historical 26,353,874 results
 remain recorded above; a cached successful run is not proof a fresh machine can
 retrieve that old state from the public endpoint.
+
+
+#### General routing scope and validation (issue #43)
+The new adapter supports fixed one-to-three-hop v3 paths for pair-specific
+markets, including reverse execution, composite historical pricing and exact
+balance-delta accounting. This does not deploy a global multi-token auction,
+shared vault, pair registry or automatic route-discovery service. Operators must
+configure and validate each supported pair; users still select its deployment.
+Fee-on-transfer and rebasing token behavior is not supported by the exact-transfer
+checks. Native ETH must be wrapped. Numerical underflow/overflow in a composite
+reference fails closed rather than broadening the supported price domain.
+
+The first Ethereum fixture rejected inactive DAI/WETH and WBTC/WETH 0.3% pools.
+Measured WBTC/WETH observation ages at block 26,354,673 were 12 s (0.01%), 72 s
+(0.05%), 8,664 s (0.3%) and 10,284 s (1%). The 0.05% path passed WBTC/WETH/USDC
+settlement in both directions at block 26,354,676 with mixed 8/18/6 decimals;
+warm settlement calls used 776,676 and 775,620 gas. Fixture thresholds are not
+production calibration. Single-pool oracle manipulation concerns apply to each
+hop as well as the composed price; route availability is not a fill guarantee.
+
+Each hop deploys an instance of the existing market adapter, reusing its callback
+budget and oracle checks. This increases deployment cost versus a shared-library
+implementation, but avoids adding a second callback/payment implementation in
+this change. Route state is immutable after construction. No arbitrary external
+call targets, approvals to aggregators or new recovery lifecycle were introduced.
+
+
+Final routing verification: 372 contract test executions pass with 4,096 runs per
+fuzz test (inherited and compiler-profile duplicates are included), using
+ETH_FORK_BLOCK=26354750 and ROUTING_FORK_BLOCK=26354750 for reproducible success
+cases. The full suite also covers one/two/three hops, reversed internal pairs,
+composite deviation, invalid paths, callback permissions, missing/stale/thin
+history, zero output, rollback, dust conservation and short prefunding masked by
+a donated adapter balance. Latest-state runs separately hit the intended
+freshness rejection; fixed functional fixtures are not an availability promise.
+Final warm two-hop settlement calls at that block used 819,645/819,712 gas.
+Settlement runtime is 22,578 bytes; route runtime is 3,745 bytes (Solc 0.8.26).
+The final solver stack restores all 49 stuck cases in the fixed 300-batch model
+corpus while preserving ceil-rounded user minimums and passing dust/coprime
+regressions. This corpus is not a universal-clearing proof.
