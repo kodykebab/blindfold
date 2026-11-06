@@ -142,11 +142,7 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
     function initialize(PoolKey calldata k) public virtual {
         if (msg.sender != admin) revert Unauthorized();
         if (token0 != address(0)) revert AlreadyInitialized();
-        address c0 = Currency.unwrap(k.currency0);
-        address c1 = Currency.unwrap(k.currency1);
-        if (c0 >= c1 || c0.code.length == 0 || c1.code.length == 0 || (depositToken != c0 && depositToken != c1)) {
-            revert InvalidAuctionConfig(ConfigField.PoolKey);
-        }
+        _checkPoolKey(k);
         key = k;
         token0 = Currency.unwrap(k.currency0);
         token1 = Currency.unwrap(k.currency1);
@@ -201,6 +197,15 @@ contract BlindfoldSettlement is BatchAuction, IUnlockCallback {
         uint256 diff = priceX96 > ref ? priceX96 - ref : ref - priceX96;
         if (diff > FullMath.mulDiv(ref, externalMarket.maxDeviationBps(), BPS)) revert ExternalPrice();
         _settle(batchId, priceX96, group, Route.External);
+    }
+
+    /// @dev Two ERC-20 currencies in order, one of them the deposit token. Overridden where a stricter check runs.
+    function _checkPoolKey(PoolKey calldata k) internal view virtual {
+        address c0 = Currency.unwrap(k.currency0);
+        address c1 = Currency.unwrap(k.currency1);
+        if (c0 >= c1 || c0.code.length == 0 || c1.code.length == 0 || (depositToken != c0 && depositToken != c1)) {
+            revert InvalidAuctionConfig(ConfigField.PoolKey);
+        }
     }
 
     function poolKey() external view returns (PoolKey memory) {
