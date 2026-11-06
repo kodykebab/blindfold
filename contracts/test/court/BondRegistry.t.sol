@@ -5,6 +5,7 @@ import {stdJson} from "forge-std/StdJson.sol";
 import {CourtFixtures} from "./SandwichCourt.t.sol";
 import {SandwichCourtVerifier} from "../../src/court/SandwichCourtVerifier.sol";
 import {BondRegistry} from "../../src/court/BondRegistry.sol";
+import {RLPReader} from "../../src/court/lib/RLPReader.sol";
 
 /// @notice BondRegistry against the real mainnet sandwiches in fixtures/: v4 (ETH/0x373c…, hooked; profit in ETH)
 ///         and v3 (WETH/USDT 0.01%; profit in USDT, which is not valued).
@@ -193,6 +194,39 @@ contract BondRegistryTest is CourtFixtures {
         reg.claim(c, r, sig, abi.encode(WETH, V4_TOKEN1, uint24(0), int24(60), V4_HOOKS)); // claims WETH, not ETH
     }
 
+    // ---- beneficiary and timing (S15)
+
+    function test_paysTheBeneficiary_notTheTxSigner() public {
+        // a contract-mediated user: the tx was signed by one account, coverage names a smart wallet
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
+        BondRegistry.Protected memory r = _receipt(v, 100 ether);
+        r.beneficiary = address(new SmartWallet());
+        uint256 signerBefore = v.victim.balance;
+        _claimAndCheck(c, r, _v4Key(), v.profit);
+        assertEq(v.victim.balance, signerBefore, "the tx signer gets nothing");
+    }
+
+    function test_rejects_noBeneficiary() public {
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
+        BondRegistry.Protected memory r = _receipt(v, 100 ether);
+        r.beneficiary = address(0);
+        bytes memory sig = _sign(RPC_KEY, r);
+        vm.expectRevert(BondRegistry.NoBeneficiary.selector);
+        reg.claim(c, r, sig, _v4Key());
+    }
+
+    function test_receiptMustPrecedeTheSandwichBlock() public {
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
+        uint256 ts = _timestamp(c.header);
+        BondRegistry.Protected memory r = _receipt(v, 100 ether);
+        r.acceptedAt = uint64(ts + 1); // signed after the block that holds the sandwich
+        bytes memory sig = _sign(RPC_KEY, r);
+        vm.expectRevert(abi.encodeWithSelector(BondRegistry.IssuedAfterIncident.selector, ts + 1, ts));
+        reg.claim(c, r, sig, _v4Key());
+        r.acceptedAt = uint64(ts); // accepted in the same second as the block: still before inclusion
+        _claimAndCheck(c, r, _v4Key(), v.profit);
+    }
+
     // ---- unbonding
 
     function test_unbond_afterDelay_andClaimableMeanwhile() public {
@@ -258,6 +292,13 @@ contract BondRegistryTest is CourtFixtures {
         v = court.verify(c);
     }
 
+    function _timestamp(bytes memory header) internal pure returns (uint256 t) {
+        bytes memory b = RLPReader.readBytes(RLPReader.readList(header)[11]);
+        for (uint256 i; i < b.length; i++) {
+            t = (t << 8) | uint8(b[i]);
+        }
+    }
+
     function _v4Key() internal pure returns (bytes memory) {
         return abi.encode(address(0), V4_TOKEN1, uint24(0), int24(60), V4_HOOKS);
     }
@@ -268,7 +309,12 @@ contract BondRegistryTest is CourtFixtures {
         returns (BondRegistry.Protected memory)
     {
         return BondRegistry.Protected({
-            txHash: v.victimTxHash, chainId: 1, acceptedAt: 0, maxBlock: uint64(v.blockNumber), maxPayout: maxPayout
+            txHash: v.victimTxHash,
+            chainId: 1,
+            acceptedAt: 0,
+            maxBlock: uint64(v.blockNumber),
+            maxPayout: maxPayout,
+            beneficiary: v.victim
         });
     }
 
@@ -294,11 +340,16 @@ contract BondRegistryTest is CourtFixtures {
         uint256 expected
     ) internal returns (uint256 paid) {
         SandwichCourtVerifier.Verdict memory v = court.verify(c);
-        uint256 before = v.victim.balance;
+        uint256 before = r.beneficiary.balance;
         vm.prank(prover);
         paid = reg.claim(c, r, sig, poolKey);
         assertEq(paid, expected, "payout");
-        assertEq(v.victim.balance - before, expected, "victim received the payout");
+        assertEq(r.beneficiary.balance - before, expected, "beneficiary received the payout");
         assertTrue(reg.paid(r.txHash));
     }
+}
+
+/// @dev A smart-contract wallet that accepts ETH, standing in for a contract-mediated user.
+contract SmartWallet {
+    receive() external payable {}
 }
