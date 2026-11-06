@@ -10,6 +10,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
+	"time"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend"
@@ -104,7 +107,8 @@ func loadLocalManifest(dir, pin, mode string) {
 		}
 	}
 }
-func proveLocal(dir, pin, mode string, assignment frontend.Circuit) map[string]string {
+func proveLocal(dir, pin, mode string, assignment frontend.Circuit) map[string]any {
+	start := time.Now()
 	loadLocalManifest(dir, pin, mode)
 	cs := groth16.NewCS(ecc.BN254)
 	readObject(filepath.Join(dir, mode+".r1cs"), cs)
@@ -112,10 +116,15 @@ func proveLocal(dir, pin, mode string, assignment frontend.Circuit) map[string]s
 	readObject(filepath.Join(dir, mode+".pk"), pk)
 	vk := groth16.NewVerifyingKey(ecc.BN254)
 	readObject(filepath.Join(dir, mode+".vk"), vk)
+
+	loadSeconds := time.Since(start).Seconds()
+	start = time.Now()
 	w, e := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
 	must(e)
 	p, e := groth16.Prove(cs, pk, w, solidity.WithProverTargetSolidityVerifier(backend.GROTH16))
 	must(e)
+	proveSeconds := time.Since(start).Seconds()
+	start = time.Now()
 	public, e := w.Public()
 	must(e)
 	must(groth16.Verify(p, vk, public, solidity.WithVerifierTargetSolidityVerifier(backend.GROTH16)))
@@ -126,18 +135,24 @@ func proveLocal(dir, pin, mode string, assignment frontend.Circuit) map[string]s
 	case *OnlineCircuit:
 		journal = onlineStatement(*c)
 	}
-	return map[string]string{"seal": "0x" + hex.EncodeToString(p.(*bn.Proof).MarshalSolidity()), "journal": "0x" + hex.EncodeToString(journal)}
+	var usage syscall.Rusage
+	must(syscall.Getrusage(syscall.RUSAGE_SELF, &usage))
+	rss := usage.Maxrss
+	if runtime.GOOS != "darwin" {
+		rss *= 1024
+	}
+	return map[string]any{"peakRssBytes": rss, "goVersion": runtime.Version(), "timings": map[string]float64{"load_s": loadSeconds, "prove_s": proveSeconds, "verify_s": time.Since(start).Seconds()}, "seal": "0x" + hex.EncodeToString(p.(*bn.Proof).MarshalSolidity()), "journal": "0x" + hex.EncodeToString(journal)}
 }
 func localCommand(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
 	switch args[0] {
-	case "fixture-local":
+	case "fixture-local", "prepare-fixture-local":
 		if len(args) != 1 {
 			panic("usage: fixture-local < request.json")
 		}
-		fixtureCommand()
+		fixtureCommand(args[0] == "prepare-fixture-local")
 		return true
 	case "setup-local":
 		if len(args) != 2 {

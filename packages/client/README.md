@@ -58,7 +58,7 @@ This fixture selects the release policy only; it does not verify admission proof
 
 ## Local proof-enforced admission
 
-For `AdmittedSettlement`, `commit` generates both direct Groth16 proofs locally and calls `admit`. Its deployment file supplies an `admission` object with `manifestSha256`, `preparationVerifier` and `onlineVerifier`; the manifest is the SHA-256 pin for the generated parameter files. The local parameter tool accepts chain 31337. Read the ABI from the `AdmittedSettlement` build artifact.
+For `AdmittedSettlement`, `commit` generates direct Groth16 proofs locally and calls `admit`. Its deployment file supplies an `admission` object with `manifestSha256`, `preparationVerifier` and `onlineVerifier`; the manifest is the SHA-256 pin for the generated parameter files. The local parameter tool accepts chain 31337. Read the ABI from the `AdmittedSettlement` build artifact.
 
 The client includes all prior private inputs in its funding preflight. It persists totals, blinding and the pending transition before submission, confirms the chain root before appending, and includes that state in exports. Use `npm start -- resume-admission` after an interrupted submission. Restore a current export when this device lacks the opening for an active onchain root. Once all commitments close, the next opening is canonical zero. Mutation commands serialize with a per-account lock; if a process is forcibly terminated, inspect the PID in the reported lock file and remove that file only after the process has exited.
 
@@ -71,4 +71,35 @@ source env.sh
 bash packages/proof-bench/check-admission.sh
 ```
 
-This creates reusable development parameters when absent, builds generated verifiers and deployable contract artifacts, then starts an isolated Anvil chain. The fixture uses 900-second batches and recorded quicknet data. It generates fresh proofs, checks rejection and resume paths, restores private state, decrypts independently, reveals, settles and withdraws, and separately exercises unrevealed release. Setup parameters stay under ignored `results/`.
+This creates reusable development parameters when absent, builds generated verifiers and deployable contract artifacts, then starts an isolated Anvil chain. The fixture uses 300-second development batches and recorded quicknet data. It generates fresh proofs, checks rejection and resume paths, restores private state, decrypts independently, reveals, settles and withdraws, and separately exercises unrevealed release. Setup parameters stay under ignored `results/`.
+
+## Prepare before choosing an order
+
+Run `npm start -- status`, choose an explicit future batch, then run:
+
+```bash
+npm start -- prepare-admission 42
+# Once batch 42 is current, choose the order:
+npm start -- commit sell 10 9 --dry-run
+npm start -- commit sell 10 9
+```
+
+`prepare-admission` creates and proves a fresh quicknet key wrapper without an order or funding witness. It keeps one ready preparation in the existing private state file; another successful preparation replaces it. A current batch is also accepted while its commit window remains open. Account, chain, settlement, batch, round and parameter manifest must match at submission. The RPC chain ID is checked as well. A mismatched preparation stops preflight; prepare again for the intended batch.
+
+`commit` durably consumes the preparation before encrypting the selected order, then generates only the online proof. A failed or interrupted attempt consumes that key; run `prepare-admission` again for a fresh one. Completed pending submissions still use `resume-admission`, which resends or reconciles the same saved ciphertext. With no ready preparation, the existing inline two-proof flow remains available. Neither path submits unchecked ciphertext to the enforced settlement.
+
+Exports contain orders and funding openings but omit unused preparation keys. Restoring an export never restores a ready preparation. Run `prepare-admission` on the restored device. Private temporary witnesses are removed when the prover exits; forcibly terminating the client can leave its private temporary directory and state lock for manual cleanup.
+
+For native local-helper measurements, build the prover and run from the repository root:
+
+```bash
+source env.sh
+(cd packages/proof-bench/circuit && go build -o ../results/local-prover .)
+node packages/proof-bench/measure-admission.mjs 3
+```
+
+The result under `packages/proof-bench/results/advance-preparation-measurements.json` records device/tool identities, parameter hashes, separate loading/proving/verification times and peak prover RSS. Every proof uses a fresh process; filesystem cache is uncontrolled. Use a user-controlled machine with the Go toolchain and the local parameter files. Prover errors stop submission; retry on a machine that completes the local gate if the current device cannot run the helper.
+
+The desktop helper preflight requires at least 120 seconds remaining with a ready preparation, or 180 seconds for inline two-proof generation. `ADMISSION_MIN_LEAD_SECONDS` overrides this margin with a positive integer for a measured desktop configuration. Recheck the deadline after proving; a missed deadline sends nothing. The local gate uses 300-second batches. These margins include headroom over observed local loading/proving costs; production timing remains tracked in REVIEW R6/R7.
+
+On macOS, prefix a measurement or long proof test with `caffeinate -i` to prevent idle sleep for that process, and keep the lid open. The assertion ends with the process.
