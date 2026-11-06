@@ -334,3 +334,14 @@ contract ReviewPoCControl is BlindfoldTest {
 ```
 
 </details>
+
+
+## Proportional solver integration (issues #7 and #12)
+
+The `kritarth/solver-proportional` branch extends the solver from Bhoumik's PR #4 and targets that branch for review. It consumes the proportional group semantics introduced by PR #6, without changing the four-argument settlement signature. Exact equal-limit groups share one fraction; the solver respects price priority and rounded-up partial minimums. It probes known limit discontinuities before raw-price bisection and validates returned candidates against the contract.
+
+Search reads and simulations use one block, followed by a fresh simulation before submission. RPC failures propagate, a 4,096-call budget fails explicitly, and an unsuccessful search reports no candidate found rather than asserting mathematical infeasibility. This is not a proof of universal execution: absent liquidity and integer constraints still require expiry, and the existing tolerance leaves price/quantity discretion tracked in issue #30.
+
+Validation on 2026-11-06: 15 offline Node tests pass; the separate integration test passes against a real local PoolManager with the actual CLI. The fixed 300-batch model corpus contains 49 all-or-none gaps and the proportional solver rescues all 49. Integration covers sell and buy groups, then liquidity removal, a nonzero CLI exit, and expiration returning the locked input. The local searches used 13 simulations in 44 ms for sells, 13 in 43 ms for buys, and 139 in 375 ms for the no-liquidity case; these are local search measurements, not live-network or proving latency claims.
+
+The integration uses generated contract artifacts and a test-only CREATE2 factory. Artifact resolution supports fresh Foundry builds with compiler-suffixed filenames. The complete batching/order contract branch passed 198 contract test executions including Unichain forks with 4,096 fuzz runs, separately from the Node checks. Merge requires the solver owner and shared-interface review; the ongoing proof work is unchanged.
