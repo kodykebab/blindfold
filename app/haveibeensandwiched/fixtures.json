@@ -1,0 +1,234 @@
+{
+  "0x22ff1f22701816646547335b596f6d3eb36313008980d44dab0f653fa7458294": {
+    "kind": "tx",
+    "input": "0x22ff1f22701816646547335b596f6d3eb36313008980d44dab0f653fa7458294",
+    "txs": [
+      {
+        "txHash": "0x22ff1f22701816646547335b596f6d3eb36313008980d44dab0f653fa7458294",
+        "block": 26355112,
+        "sandwiches": [
+          {
+            "block": 26355112,
+            "time": 1793959679,
+            "v4": false,
+            "pool": "0xdba395588a758c6075052e194bf5b5a88cfeefc3",
+            "poolId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "attacker": "0xae2fc483527b8ef99eb5d9b44875f005ba1fae13",
+            "frontTx": "0x75a6e73cf9fd2d533751c8d4263fa00bc8ed73e89a47ebbdcbe4e50e9a08409d",
+            "backTx": "0xae951cfb9d9ff2cfbf820db0838bbd0a643b827a84f8dc0a648b4954df16de68",
+            "profitRaw": "1001100",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "symbol": "USDT",
+            "amount": 1.0011,
+            "usd": 0.9997485150000002,
+            "courtProvable": true
+          }
+        ]
+      }
+    ],
+    "sandwichCount": 1,
+    "lostUsd": 0.9997485150000002,
+    "unpriced": 0
+  },
+  "0x159b74a219b9cb6115b19540d98545b2408d889ced9a5ae74adc59cdd0a003ae": {
+    "kind": "tx",
+    "input": "0x159b74a219b9cb6115b19540d98545b2408d889ced9a5ae74adc59cdd0a003ae",
+    "txs": [
+      {
+        "txHash": "0x159b74a219b9cb6115b19540d98545b2408d889ced9a5ae74adc59cdd0a003ae",
+        "block": 26355106,
+        "sandwiches": [
+          {
+            "block": 26355106,
+            "time": 1793959607,
+            "v4": false,
+            "pool": "0xdba395588a758c6075052e194bf5b5a88cfeefc3",
+            "poolId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "attacker": "0x27c2a1733f14e1247c5feb1c37cd52ae7d0d2bf2",
+            "frontTx": "0xfeb9ffcadd28d703f85b0b387b8ccd55312bc4a96529fb6ef31e18cceaeabe10",
+            "backTx": "0x1e36d2aad03a90981fe66094e9f269bbde1fbcbe9b617f7066a684fa178038fa",
+            "profitRaw": "989078",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "symbol": "USDT",
+            "amount": 0.989078,
+            "usd": 0.988172720318686,
+            "courtProvable": true
+          }
+        ]
+      }
+    ],
+    "sandwichCount": 1,
+    "lostUsd": 0.988172720318686,
+    "unpriced": 0
+  },
+  "0xa7676b953158be8f174518c51329814228b49acb0a8573d7f01506a7b65d23ee": {
+    "kind": "tx",
+    "input": "0xa7676b953158be8f174518c51329814228b49acb0a8573d7f01506a7b65d23ee",
+    "txs": [
+      {
+        "txHash": "0xa7676b953158be8f174518c51329814228b49acb0a8573d7f01506a7b65d23ee",
+        "block": 26355101,
+        "sandwiches": [
+          {
+            "block": 26355101,
+            "time": 1793959547,
+            "v4": false,
+            "pool": "0xdba395588a758c6075052e194bf5b5a88cfeefc3",
+            "poolId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "attacker": "0xe3d5e8d77dc4031013e6fa53c26164555dc273ad",
+            "frontTx": "0xc4ca4be4019b88aa08d0dc05f19c6d646876b3b18db7a5d2b6820e82eb05b078",
+            "backTx": "0xf7536266088b4be260e8a0638ffa1eee9a850c72ff425f0b72f360fe025481ed",
+            "profitRaw": "867442",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "symbol": "USDT",
+            "amount": 0.867442,
+            "usd": 0.86630565098,
+            "courtProvable": true
+          },
+          {
+            "block": 26355101,
+            "time": 1793959547,
+            "v4": false,
+            "pool": "0x54e28234667ae31fee46559eefaf4afd2279fdee",
+            "poolId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "attacker": "0xe3d5e8d77dc4031013e6fa53c26164555dc273ad",
+            "frontTx": "0xc4ca4be4019b88aa08d0dc05f19c6d646876b3b18db7a5d2b6820e82eb05b078",
+            "backTx": "0xf7536266088b4be260e8a0638ffa1eee9a850c72ff425f0b72f360fe025481ed",
+            "profitRaw": "404406",
+            "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "symbol": "USDC",
+            "amount": 0.404406,
+            "usd": 0.40432049199095405,
+            "courtProvable": true
+          }
+        ]
+      }
+    ],
+    "sandwichCount": 2,
+    "lostUsd": 1.270626142970954,
+    "unpriced": 0
+  },
+  "0xa7085d4556115050e93444b678c6aa32b40218a2b33b56fe5c48ed324e393e10": {
+    "kind": "tx",
+    "input": "0xa7085d4556115050e93444b678c6aa32b40218a2b33b56fe5c48ed324e393e10",
+    "txs": [
+      {
+        "txHash": "0xa7085d4556115050e93444b678c6aa32b40218a2b33b56fe5c48ed324e393e10",
+        "block": 26355101,
+        "sandwiches": [
+          {
+            "block": 26355101,
+            "time": 1793959547,
+            "v4": true,
+            "pool": "0x000000000004444c5dc75cb358380d2e3de08a90",
+            "poolId": "0x3d8a4e3c8985f514808a901424724c9bc03b7a5b5ac3ca8b679d4681690d1e7f",
+            "attacker": "0x478a361363499dc26d1d3881542f2dc64137afc3",
+            "frontTx": "0x9fed83ba21962b0f46764219cd475bbe3d526eed3042b40d8b2da64aaf48de96",
+            "backTx": "0x12f34460e7a9916c3c99a78188bcf7a73094e10f53f3af32ba2e801d7333c63f",
+            "profitRaw": "156396862096409",
+            "token": null,
+            "symbol": null,
+            "amount": null,
+            "usd": null,
+            "courtProvable": true
+          }
+        ]
+      }
+    ],
+    "sandwichCount": 1,
+    "lostUsd": 0,
+    "unpriced": 1
+  },
+  "0xcf36363eea51f669c391eafc2ec2c3ff1b7a4be5": {
+    "kind": "address",
+    "input": "0xcf36363eea51f669c391eafc2ec2c3ff1b7a4be5",
+    "txs": [
+      {
+        "txHash": "0x22ff1f22701816646547335b596f6d3eb36313008980d44dab0f653fa7458294",
+        "block": 26355112,
+        "sandwiches": [
+          {
+            "block": 26355112,
+            "time": 1793959679,
+            "v4": false,
+            "pool": "0xdba395588a758c6075052e194bf5b5a88cfeefc3",
+            "poolId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "attacker": "0xae2fc483527b8ef99eb5d9b44875f005ba1fae13",
+            "frontTx": "0x75a6e73cf9fd2d533751c8d4263fa00bc8ed73e89a47ebbdcbe4e50e9a08409d",
+            "backTx": "0xae951cfb9d9ff2cfbf820db0838bbd0a643b827a84f8dc0a648b4954df16de68",
+            "profitRaw": "1001100",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "symbol": "USDT",
+            "amount": 1.0011,
+            "usd": 0.9997485150000002,
+            "courtProvable": true
+          }
+        ]
+      },
+      {
+        "txHash": "0x159b74a219b9cb6115b19540d98545b2408d889ced9a5ae74adc59cdd0a003ae",
+        "block": 26355106,
+        "sandwiches": [
+          {
+            "block": 26355106,
+            "time": 1793959607,
+            "v4": false,
+            "pool": "0xdba395588a758c6075052e194bf5b5a88cfeefc3",
+            "poolId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "attacker": "0x27c2a1733f14e1247c5feb1c37cd52ae7d0d2bf2",
+            "frontTx": "0xfeb9ffcadd28d703f85b0b387b8ccd55312bc4a96529fb6ef31e18cceaeabe10",
+            "backTx": "0x1e36d2aad03a90981fe66094e9f269bbde1fbcbe9b617f7066a684fa178038fa",
+            "profitRaw": "989078",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "symbol": "USDT",
+            "amount": 0.989078,
+            "usd": 0.988172720318686,
+            "courtProvable": true
+          }
+        ]
+      },
+      {
+        "txHash": "0xa7676b953158be8f174518c51329814228b49acb0a8573d7f01506a7b65d23ee",
+        "block": 26355101,
+        "sandwiches": [
+          {
+            "block": 26355101,
+            "time": 1793959547,
+            "v4": false,
+            "pool": "0xdba395588a758c6075052e194bf5b5a88cfeefc3",
+            "poolId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "attacker": "0xe3d5e8d77dc4031013e6fa53c26164555dc273ad",
+            "frontTx": "0xc4ca4be4019b88aa08d0dc05f19c6d646876b3b18db7a5d2b6820e82eb05b078",
+            "backTx": "0xf7536266088b4be260e8a0638ffa1eee9a850c72ff425f0b72f360fe025481ed",
+            "profitRaw": "867442",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "symbol": "USDT",
+            "amount": 0.867442,
+            "usd": 0.86630565098,
+            "courtProvable": true
+          },
+          {
+            "block": 26355101,
+            "time": 1793959547,
+            "v4": false,
+            "pool": "0x54e28234667ae31fee46559eefaf4afd2279fdee",
+            "poolId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "attacker": "0xe3d5e8d77dc4031013e6fa53c26164555dc273ad",
+            "frontTx": "0xc4ca4be4019b88aa08d0dc05f19c6d646876b3b18db7a5d2b6820e82eb05b078",
+            "backTx": "0xf7536266088b4be260e8a0638ffa1eee9a850c72ff425f0b72f360fe025481ed",
+            "profitRaw": "404406",
+            "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "symbol": "USDC",
+            "amount": 0.404406,
+            "usd": 0.40432049199095405,
+            "courtProvable": true
+          }
+        ]
+      }
+    ],
+    "sandwichCount": 4,
+    "lostUsd": 3.25854737828964,
+    "unpriced": 0,
+    "note": "built from a scan of Ethereum blocks 26355095-26355345, not a full address history"
+  }
+}
