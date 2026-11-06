@@ -93,3 +93,31 @@ ceil-rounded minimum. Only a violating allocation falls back to whole reduced
 input lots; a zero result stays unfilled. Largest-order representatives preserve
 fraction precision when dust orders share a limit. This is a bounded candidate
 search, not proof of maximum volume or universal clearing.
+
+## Real-proof admission through the solver CLI
+
+The opt-in admission test uses the client CLI to generate and submit two cumulative
+proof-backed orders to `AdmittedSettlement` with actual generated Groth16 verifiers.
+It independently decrypts the event ciphertext with the recorded drand fixture,
+reveals through another account, checks stale-oracle rejection and retries the
+solver CLI through a two-hop route. It checks fills, fees, reveal bounties, funding closure, adapter
+balances and client CLI withdrawals. Public pools use local fixtures.
+
+After preparing development parameters with the proof-bench admission setup, run
+from the repository root:
+
+```bash
+source env.sh
+npm ci --prefix packages/client --ignore-scripts
+npm ci --prefix packages/solver --ignore-scripts
+forge build --root contracts --no-dynamic-test-linking
+export ADMISSION_PROVER="$PWD/packages/proof-bench/results/local-prover"
+export ADMISSION_PARAMS="$PWD/packages/proof-bench/results/admission-params"
+export ADMISSION_MANIFEST_SHA256="$(shasum -a 256 "$ADMISSION_PARAMS/manifest.json" | cut -d ' ' -f 1)"
+SOLVER_E2E=1 node --test packages/solver/test/admission.test.mjs
+```
+
+`CONTRACTS_OUT` can select generated artifacts from another integrated checkout.
+The test owns its Anvil node and uses 900-second development batches and recorded
+drand data; it never advances a keeper's chain. Without both `SOLVER_E2E=1` and
+`ADMISSION_PARAMS`, ordinary unit-test runs skip this proof-generation test.

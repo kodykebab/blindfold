@@ -20,7 +20,7 @@ export const DRAND = fileURLToPath(new URL('./fixtures/drand.json', import.meta.
 export const DEPOSIT = 5n * 10n ** 18n
 export const user = (i) => mnemonicToAccount(TEST_MNEMONIC, { addressIndex: i })
 
-export async function localChain({ timestamp, schedule = {}, settlementContract = 'BlindfoldSettlement', fee = 0n, admission } = {}) {
+export async function localChain({ timestamp, schedule = {}, settlementContract = 'BlindfoldSettlement', fee = 0n, admission, configureMarket = true } = {}) {
   const port = await new Promise((r) => { const s = createServer().listen(0, () => { const p = s.address().port; s.close(() => r(p)) }) })
   const rpc = `http://127.0.0.1:${port}`
   const args = ['--silent', '--port', String(port), '--accounts', '20', '--gas-limit', '300000000']
@@ -79,8 +79,9 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
   const pool = { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks }
   if (admission) await write(manager, 'PoolManager', 'initialize', [pool, 1n << 96n])
   await write(settlement, settlementContract, 'initialize', [pool])
-  // Admission chains add no pool liquidity, so a matched batch settles through settlePeer, priced by this market.
-  if (admission) await write(settlement, settlementContract, 'configureExternal', [await deploy('MockExternalMarket', [settlement, token0, token1])])
+  // Admission chains add no pool liquidity; matched batches use this market for peer pricing.
+  // Routing tests opt out to install their own immutable market before the first commitment.
+  if (admission && configureMarket) await write(settlement, settlementContract, 'configureExternal', [await deploy('MockExternalMarket', [settlement, token0, token1])])
 
   const dir = mkdtempSync(join(tmpdir(), 'blindfold-client-'))
   const deployments = join(dir, 'blindfold.local.json')
