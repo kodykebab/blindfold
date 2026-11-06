@@ -18,11 +18,17 @@ was discarded, so the unpacked dev build always gets this ID). Native host `allo
 Implemented in `packages/bridge/public/protocol.mjs` (message handling) and `public/wallet.mjs` (EIP-1193 adapter);
 each row below has a test in `packages/bridge/test/protocol.test.mjs` or `test/wallet.test.mjs` (named after the row).
 
+**Origins (D9).** The bridge is plain static files (`packages/bridge/public/`); its only deploy-time value is the
+extension ID in `public/config.mjs`. The extension owns the bridge origin: its `externally_connectable` match and its
+`port.sender.origin` check must both come from one build-time setting (dev `http://localhost:4317`), so the production
+https origin is swapped in by the extension build.
+
 **Connection.** The page at `http://localhost:4317/` (D9; `localhost`, not `127.0.0.1`: `externally_connectable` matches
 the host name) calls `chrome.runtime.connect("eaoidifkamkmkbcomcbpldjlhipogdgo", { name: "blindfold-bridge" })`. The
 extension accepts a port in `runtime.onConnectExternal` only when `port.name === "blindfold-bridge"` and
 `port.sender.origin === "http://localhost:4317"`, and disconnects anything else. If the port drops (service worker
-restart, extension reload), the bridge reconnects after 1 s and re-sends `hello`, `wallets` and `wallet`. Every message
+restart, extension reload), the bridge reconnects after 1 s and re-sends `hello`, `wallets` and `wallet`, then any
+`sent` / `result` it produced while disconnected (so the extension must accept a `result` for a request id it persisted). Every message
 is a JSON object with a `type`. Addresses and hex data are `0x` strings; quantities (`chainId`, `value`) are hex
 quantities as in JSON-RPC (`"0x7a69"`).
 
@@ -37,7 +43,8 @@ quantities as in JSON-RPC (`"0x7a69"`).
 | `sent` | `id, callsId` | the wallet accepted the whole batch (atomic path) |
 | `result` | `id, ok: true, atomic: boolean, hashes: string[], receipts: object[]` | every call mined with status `0x1`. Receipts are the wallet's JSON-RPC receipts, unmodified |
 | `result` | `id, ok: false, error: { code, message }, hashes, receipts` | the request failed; `hashes` / `receipts` hold whatever was sent or mined before the failure |
-| `error` | `error: { code: "BAD_REQUEST", message }` | the extension sent something that is not a valid message (no `id` to answer) |
+| `error` | `error: { code, message }` | a message with no `id` to answer failed: `BAD_REQUEST` (not a valid message), `NO_WALLET` (`connect` to an unknown wallet), or the wallet's code when `connect` fails (`4001` rejected) |
+| `ping` | none | every 25 s while connected: keeps the service worker alive while a wallet prompt is open. Ignore it |
 
 **Extension -> bridge**
 

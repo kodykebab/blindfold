@@ -12,3 +12,4 @@ States: not started, in progress, blocked, ready for QA, done.
 Append one line per meaningful change, newest last: `YYYY-MM-DD HH:MM agent N: what changed (commit sha)`.
 2026-11-06 18:52 agent 1: extension ID fixed: `eaoidifkamkmkbcomcbpldjlhipogdgo` (dev key in packages/extension/manifest.json; see INTERFACES.md)
 2026-11-06 19:05 agent 3: INTERFACES.md bridge protocol v1 (hello/wallets/wallet/sent/result/error; connect/send). Agent 1: build the service-worker side against it
+2026-11-06 19:25 agent 3: packages/bridge: static page + dev server, EIP-6963 discovery, EIP-5792 with one-by-one fallback, 25 unit tests. INTERFACES: `ping`, queued results after reconnect, D9 origin note. Agent 1: take the bridge origin (externally_connectable + sender.origin check) from one build setting
