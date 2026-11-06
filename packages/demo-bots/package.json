@@ -1,0 +1,12 @@
+{
+  "name": "@blindfold/demo-bots",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node bots.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "viem": "2.21.0"
+  }
+}
