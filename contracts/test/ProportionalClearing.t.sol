@@ -175,6 +175,19 @@ contract ProportionalClearingTest is BlindfoldTest {
         _assertSolvent();
     }
 
+    function test_partial_coprimeOrderKeepsValidProportionalFill() public {
+        BatchAuction.Order[] memory os = new BatchAuction.Order[](2);
+        os[0] = _o(alice, true, 540e18, 432e18);
+        os[1] = _o(bob, true, 1001, 900);
+        (uint64 b, uint256[] memory ids) = _ready(os);
+        uint256 beforeInput = vault.balanceOf(bob, address(t0));
+        uint256 beforeOutput = vault.balanceOf(bob, address(t1));
+        s.settle(b, _sellPrice(), ids[1], 540);
+        assertEq(beforeInput - vault.balanceOf(bob, address(t0)), 540);
+        assertEq(vault.balanceOf(bob, address(t1)) - beforeOutput, 486);
+        _assertSolvent();
+    }
+
     function test_partial_smallMinimumDoesNotWidenMarginalBand() public {
         BatchAuction.Order[] memory os = new BatchAuction.Order[](1);
         os[0] = _o(alice, true, 1000, 1);

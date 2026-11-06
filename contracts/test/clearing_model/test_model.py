@@ -78,10 +78,10 @@ class ClearingModelTest(unittest.TestCase):
 
     def test_dust_companion_leaves_executable_group_unblocked(self):
         orders = [Order(True, 1000 * U, 900 * U), Order(True, 10, 9)]
-        fills = prorata(orders, 54, 100)
+        fills = prorata(orders, 54, 100, F(9, 10))
         self.assertEqual(fills, (540 * U, 0))
         self.assertTrue(evaluate(self.pool, orders, fills, F(9, 10)).feasible)
-        self.assertEqual(prorata([Order(True, 40, 39)], 99, 100), (0,))
+        self.assertEqual(prorata([Order(True, 40, 39)], 99, 100, F(975, 1000)), (0,))
 
     def test_zero_output_is_not_a_paid_fill(self):
         r = evaluate(self.pool, [Order(True, 1, 0)], [1], F(1, 2))
