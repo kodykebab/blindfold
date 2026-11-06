@@ -180,7 +180,7 @@ forge script script/DeployCourt.s.sol     --rpc-url http://127.0.0.1:8545 --broa
 ## Already done
 - **Contracts:** vault, commit, anyone-reveal, slashing, padding orders; verified settle on the sealed v4 pool (local and Unichain fork); `SealedClearing` + router; Court verifier on live mainnet sandwiches.
 - **Off-chain tools:** sandwich finder and proof builder; admission-proof prototype (`packages/proof-bench`) and private funding model (`ReservationModel.t.sol`).
-- **Tests:** `forge test` 119/119.
+- **Tests:** `forge test` 131/131.
 
 ---
 
@@ -355,6 +355,14 @@ Swap the fakes for the real pieces. Every `Needs:` below is either Phase 1 work 
   - **Sandwich bot:** works on a normal (no-hook) v4 pool it deploys itself. It uses `token0`/`token1` from `blindfold.local.json` if present, and its own tokens otherwise.
   - **Command:** `npm start -- leak-and-sandwich`.
 - [ ] **Watcher service** · Needs: own BondRegistry and demo-bots; Khush's P1 `packages/arkiv`.
+  - **Done for S16 (#22):** `npm start` in `packages/court-watcher` (`watch.mjs` + `watcher.mjs`):
+    - confirmed blocks only, a bounded range per tick, with bounded concurrency and RPC timeouts;
+    - state saved atomically (`.watcher/state.json`), a bounded overlap rescanned on restart, discoveries de-duplicated;
+    - reorgs detected from recent block hashes, with receipts checked against the hashed block;
+    - proving (`prove.mjs`, child process, time-limited) kept separate from discovery, with retries and a per-tick limit;
+    - submission outcomes tracked once a submitter is plugged in;
+    - the L1 anchor read from one Base block.
+  - **Left for this item:** submitting through `BondRegistry.claim` (needs the demo-bots receipts) and the Arkiv writes.
   - **Pipeline:** new block → sandwich of a receipted tx → claim (BLOCKHASH path on anvil, AGENTS.md gotcha 5) → `BondRegistry.claim`.
   - **Writes:** `court.verdict` and `court.rpc`.
   - **R9:** near-misses go out as `court.suspect`, with no payout.

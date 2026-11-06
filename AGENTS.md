@@ -32,7 +32,7 @@ forge test --match-path test/Blindfold.t.sol                       # mechanism, 
 forge test --match-contract BlindfoldUnichainForkTest              # same suite on Unichain's real PoolManager (fork, 19)
 forge test --match-path test/ReservationModel.t.sol --fuzz-runs 4096   # private funding model (re-runs the 19 mechanism tests too)
 forge test --match-path 'test/swapvm/*'                            # SealedClearing opcode (4)
-forge test --match-path 'test/court/*'                             # Court: verifier (18) + BondRegistry on real sandwiches (18) + unit/fuzz/invariant (12), offline
+forge test --match-path 'test/court/*'                             # Court: verifier (18) + BondRegistry on real sandwiches (21) + unit/fuzz (20) + 1 invariant suite (3 invariants), offline
 forge test --match-path test/FeesAndTiming.t.sol                   # commit fee, schedule alignment, unrevealed policy (11)
 ```
 ```bash

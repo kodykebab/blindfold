@@ -1,7 +1,7 @@
 // Shared helpers: JSON-RPC, header/receipt RLP encoding, trie proofs, Swap log parsing.
 import { Trie } from '@ethereumjs/trie'
 import { hexToBytes, bytesToHex } from '@ethereumjs/util'
-import { toRlp, keccak256, numberToHex } from 'viem'
+import { toRlp, keccak256, numberToHex, toFunctionSelector } from 'viem'
 
 export const ETH_RPC = process.env.ETH_RPC || 'https://ethereum-rpc.publicnode.com'
 export const BASE_RPC = process.env.BASE_RPC || 'https://mainnet.base.org'
@@ -12,6 +12,8 @@ export const V4_SWAP = keccak256(new TextEncoder().encode('Swap(bytes32,address,
 export const V4_POOL_MANAGER = (process.env.V4_POOL_MANAGER || '0x000000000004444c5dc75cb358380d2e3de08a90').toLowerCase()
 export const HISTORY = '0x0000f90827f1c53a10cb7a02335b175320002935' // EIP-2935
 export const HISTORY_WINDOW = 8191n
+export const L1_BLOCK = '0x4200000000000000000000000000000000000015' // OP-stack L1 attributes predeploy
+const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS || 15_000)
 
 let id = 0
 export async function rpc(url, method, params = [], tries = 5) {
@@ -21,6 +23,7 @@ export async function rpc(url, method, params = [], tries = 5) {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }),
+        signal: AbortSignal.timeout(RPC_TIMEOUT_MS), // a hung RPC fails the call instead of stalling the watcher
       })
       const j = await res.json()
       if (j.error) throw new Error(`${method}: ${JSON.stringify(j.error)}`)
@@ -30,6 +33,17 @@ export async function rpc(url, method, params = [], tries = 5) {
       await new Promise((r) => setTimeout(r, 500 * 2 ** t))
     }
   }
+}
+
+/**
+ * The L1 block Base's L1Block predeploy reports, with number and hash read at one Base block. Two reads at
+ * 'latest' can straddle a Base block and pair one L1 block's number with another's hash.
+ */
+export async function l1Anchor(call = (method, params) => rpc(BASE_RPC, method, params)) {
+  const at = await call('eth_blockNumber', [])
+  const read = (sig) => call('eth_call', [{ to: L1_BLOCK, data: toFunctionSelector(sig) }, at])
+  const [number, hash] = await Promise.all([read('number()'), read('hash()')])
+  return { number: BigInt(number), hash: '0x' + hash.slice(-64), baseBlock: BigInt(at) }
 }
 
 /** RLP quantity: minimal big-endian, zero = empty string. */
@@ -107,14 +121,14 @@ export function swapLogs(receipts) {
       if (t0 === V3_SWAP && l.topics.length >= 3) {
         out.push({
           v4: false, pool: l.address.toLowerCase(), poolId: '0x' + '00'.repeat(32),
-          txIndex: Number(r.transactionIndex), logIndex, from: r.from.toLowerCase(),
+          txIndex: Number(r.transactionIndex), txHash: r.transactionHash, logIndex, from: r.from.toLowerCase(),
           trader: '0x' + l.topics[2].slice(26),
           a0: signed('0x' + l.data.slice(2, 66), 256), a1: signed('0x' + l.data.slice(66, 130), 256),
         })
       } else if (t0 === V4_SWAP && l.address.toLowerCase() === V4_POOL_MANAGER && l.topics.length >= 3) {
         out.push({
           v4: true, pool: V4_POOL_MANAGER, poolId: l.topics[1],
-          txIndex: Number(r.transactionIndex), logIndex, from: r.from.toLowerCase(),
+          txIndex: Number(r.transactionIndex), txHash: r.transactionHash, logIndex, from: r.from.toLowerCase(),
           trader: '0x' + l.topics[2].slice(26),
           a0: -signed('0x' + l.data.slice(2, 66), 256), a1: -signed('0x' + l.data.slice(66, 130), 256),
         })
