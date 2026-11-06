@@ -3,55 +3,358 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>have i been sandwiched?</title>
+<title>Have you been sandwiched? · Blindfold</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@300;400;600&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 3rem auto; padding: 0 1rem; }
-  form { display: flex; gap: .5rem; }
-  input { flex: 1; padding: .6rem; font-family: monospace; }
-  table { border-collapse: collapse; width: 100%; margin-top: 1rem; font-size: .85rem; }
-  td, th { border: 1px solid #ccc; padding: .3rem .5rem; text-align: left; }
-  .ph { color: #888; border: 1px dashed #bbb; padding: 1rem; margin: 1rem 0; }
-  code { word-break: break-all; }
+:root{--void:#05070A;--edge:#18202A;--text:#DCE3EA;--mute:#6B7684;--seal:#2E4BFF;--atk:#FF3B5C;
+  --disp:"Funnel Display",system-ui,sans-serif;--mono:"Spline Sans Mono",ui-monospace,monospace}
+*{box-sizing:border-box;margin:0}
+html{background:var(--void);color:var(--text);font:15px/1.55 var(--disp);overscroll-behavior:none}
+:focus-visible{outline:2px solid var(--seal);outline-offset:3px}
+canvas{position:fixed;inset:0;width:100vw;height:100vh;z-index:0}
+.lbl{font:400 11px/1.4 var(--mono);letter-spacing:.04em;color:var(--mute)}
+nav{position:fixed;inset:0 0 auto;z-index:10;display:flex;align-items:center;gap:22px;padding:18px 32px}
+nav b{font:600 15px var(--disp);display:flex;gap:8px;align-items:center} nav b i{width:12px;height:12px;background:var(--seal)}
+nav .sp{flex:1} nav a{color:var(--mute);text-decoration:none;font:400 12px var(--mono)}
+main{position:relative;z-index:2}
+.hero{position:relative;min-height:100svh;display:flex;flex-direction:column;justify-content:flex-end;padding:0 32px 64px;background:linear-gradient(90deg,rgba(5,7,10,.85),transparent 60%)}
+h1{font:300 clamp(48px,7.4vw,118px)/.95 var(--disp);letter-spacing:-.035em;max-width:11ch}
+.hero p{color:var(--mute);margin:18px 0 28px;max-width:44ch;font-size:17px}
+form.look{display:flex;max-width:620px;background:rgba(14,19,26,.85);border:1px solid var(--edge);backdrop-filter:blur(10px)}
+form.look input{flex:1;min-width:0;background:none;border:0;outline:none;color:var(--text);font:400 14px var(--mono);padding:18px}
+form.look button{border:0;background:var(--seal);color:#fff;font:500 14px var(--disp);padding:0 26px;cursor:pointer}
+.hint{margin-top:14px}
+#story{position:relative}
+.card{position:fixed;left:32px;bottom:40px;z-index:5;width:min(440px,calc(100vw - 36px));background:rgba(5,7,10,.88);border:1px solid var(--edge);padding:22px 24px;backdrop-filter:blur(8px);
+  opacity:0;transform:translateY(12px);transition:opacity .4s,transform .4s;pointer-events:none}
+.card.on{opacity:1;transform:none}
+.card h2{font:400 clamp(24px,2.4vw,36px)/1.08 var(--disp);letter-spacing:-.02em;margin:10px 0}
+.card p{color:var(--mute);min-height:3.1em}
+.swap{transition:opacity .2s} .swap.out{opacity:0}
+.bar{display:flex;gap:4px;margin-top:16px} .bar i{flex:1;height:6px;background:var(--edge);position:relative;overflow:hidden}
+.bar i b{position:absolute;inset:0 auto 0 0;width:calc(var(--f,0)*100%);background:var(--seal)} .card.red .bar i b{background:var(--atk)}
+.count{position:absolute;right:24px;top:22px}
+.end{min-height:100svh;display:flex;flex-direction:column;justify-content:center;padding:0 32px;background:linear-gradient(transparent,var(--void) 40%)}
+.end h2{font:300 clamp(40px,6vw,96px)/1 var(--disp);letter-spacing:-.035em;max-width:14ch;margin:16px 0 32px}
+.end a{display:inline-block;margin-right:10px;padding:14px 24px;border:1px solid var(--edge);color:var(--text);text-decoration:none}
+.end a:first-of-type{background:var(--seal);border-color:var(--seal);color:#fff}
+/* lookup results: their own scroll area, so the page stepper leaves them alone */
+.try{all:unset;cursor:pointer;color:var(--text);border-bottom:1px dotted var(--mute)}
+.res{position:absolute;right:32px;bottom:64px;width:min(600px,46vw);max-height:72svh;overflow:auto;overscroll-behavior:contain;background:rgba(5,7,10,.94);border:1px solid var(--edge)} /* no backdrop-filter: it stops wheel scrolling of this panel in Chromium */
+.res[hidden]{display:none}
+.res header{padding:20px 22px;border-bottom:1px solid var(--edge)}
+.res header strong{display:block;font:300 clamp(36px,4vw,56px)/1 var(--disp);letter-spacing:-.03em;margin:8px 0 6px}
+.res .lost{color:var(--atk)} .res .clean{color:#3DDC97}
+.res table{width:100%;border-collapse:collapse;font:400 12px var(--mono)}
+.res th,.res td{padding:10px 16px 10px 0;border-bottom:1px solid var(--edge);text-align:left;white-space:nowrap}
+.res th:first-child,.res td:first-child{padding-left:22px}
+.res th{font-weight:400;color:var(--mute)} .res a{color:var(--text)} .res .yes{color:#3DDC97} .res .no{color:var(--mute)}
+.res footer{padding:14px 22px;display:grid;gap:6px}
+.res .more{all:unset;cursor:pointer;color:var(--seal);font:400 12px var(--mono);margin-top:4px}
+.busy::after{content:"";animation:dots 1.2s steps(4) infinite}
+@keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+@media (max-width:900px){.res{position:static;width:auto;max-height:42svh;margin-top:18px}}
+@media (max-width:760px){.hero,.end{padding-inline:18px}.hero{padding-top:72px;padding-bottom:28px} h1{font-size:44px} .hero p{font-size:15px;margin:12px 0 16px} .res{max-height:40svh}.card{left:18px;bottom:18px} nav a{display:none}}
 </style>
 </head>
 <body>
-<h1>have i been sandwiched?</h1>
-<div class="ph">[placeholder: hero copy]</div>
-
-<form id="f">
-  <label for="q" hidden>Ethereum tx hash or wallet address</label>
-  <input id="q" name="q" placeholder="0x… tx hash or wallet address" autocomplete="off" required>
-  <button>Check</button>
-</form>
-
-<div id="out" aria-live="polite"></div>
-
-<div class="ph">[placeholder: how Blindfold + Court prevent and refund this]</div>
+<canvas id="cv" aria-hidden="true"></canvas>
+<nav><b><i></i>Blindfold</b><span class="sp"></span><a href="#story">How it works</a><a href="#">Open demo</a></nav>
+<main>
+  <section class="hero">
+    <div class="lbl" style="margin-bottom:16px">Every line is a swap · every square a slot in the block</div>
+    <h1>Have you been sandwiched?</h1>
+    <p>Paste a transaction or a wallet. We replay its Ethereum blocks and show what bots took from your swaps.</p>
+    <form class="look" id="look"><input id="q" name="q" required aria-label="Transaction hash or wallet address" placeholder="0x… transaction hash or wallet" autocomplete="off" spellcheck="false"><button>Check</button></form>
+    <div class="hint lbl">Try <button type="button" class="try" id="demo">0xcf36…4be5</button> · or scroll to see how a sandwich works, and how Blindfold stops it ↓</div>
+    <section class="res" id="res" aria-live="polite" hidden></section>
+  </section>
+  <div id="story"></div>
+  <section class="end">
+    <div class="lbl">MEV protection without a middleman to trust</div>
+    <h2>Prevented by construction. Punished by proof.</h2>
+    <div><a href="#">Open the demo</a><a href="#">Read the contracts</a></div>
+  </section>
+</main>
+<div class="card" id="card" aria-live="polite">
+  <span class="lbl count" id="count"></span>
+  <div class="swap" id="swap"><div class="lbl" id="ph"></div><h2 id="h"></h2><p id="p"></p></div>
+  <div class="bar" id="bar"></div>
+</div>
 
 <script>
-const $ = (s) => document.querySelector(s)
-const short = (h) => h ? `${h.slice(0, 8)}…${h.slice(-4)}` : '—'
-const usd = (x) => x == null ? 'unpriced' : `$${x.toFixed(2)}`
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`)
+// The swap lifecycle. Segment k animates while progress u runs from k to k+1, and rests at k + REST.
+const PH = ['Ethereum mempool', 'The attack', 'Blindfold · sealed', 'Blindfold · one price']
+const SEGS = [
+  [0, 'Wallets broadcast their swaps.', 'Every line is a pending swap from a different wallet, waiting to land in a block.'],
+  [0, 'Yours is public too.', 'Its size, direction and slippage are readable by anyone watching the mempool.'],
+  [1, 'A bot reads your swap.', 'It watches the mempool for swaps worth squeezing, and tracks yours.'],
+  [1, 'It buys first.', 'Its front-run lands just ahead of you and pushes the price up.'],
+  [1, 'You fill at its price.', 'The red gap is what you pay above the price you were quoted.'],
+  [1, 'It sells right after.', "The back-run brings the price back down. The gap leaves as the bot's profit."],
+  [2, 'Same swaps, sealed.', 'Your browser encrypts each order to a future drand round and commits it to a batch.'],
+  [2, 'The bot sees ciphertext.', 'Direction, size and limit are hidden. There is nothing to front-run.'],
+  [2, 'Locked until round R.', 'drand publishes a round every 3 s. Before round R, nobody can decrypt, you included.'],
+  [3, 'Round R opens the batch.', 'Any keeper decrypts and reveals the orders. A commitment nobody reveals is slashed.'],
+  [3, 'Everyone clears at p*.', 'One price for the whole batch. An order fills only if its limit holds at p*.'],
+  [3, 'The contract checks it.', 'The leftover is one swap on a pool only the batch can touch. Its price must land on p*, or settle reverts.'],
+]
+const N = SEGS.length, SEG_VH = 0.9, REST = 0.96
+const DEMO = '0xcf36363eea51f669c391eafc2ec2c3ff1b7a4be5' // a real victim wallet, see fixtures.json
+const story = document.getElementById('story')
 
-$('#f').onsubmit = async (e) => {
-  e.preventDefault()
-  $('#out').textContent = 'Checking…'
-  const r = await (await fetch('/api/check?q=' + encodeURIComponent($('#q').value))).json()
-  if (r.error) return ($('#out').textContent = r.error)
-  const rows = r.txs.flatMap((t) => t.sandwiches.length
-    ? t.sandwiches.map((s) => `<tr><td><code>${short(t.txHash)}</code></td><td>${s.block}</td><td><code>${short(s.attacker)}</code></td>
-        <td>${s.amount != null ? `${s.amount.toPrecision(4)} ${esc(s.symbol)}` : `${s.profitRaw} raw`}</td><td>${usd(s.usd)}</td>
-        <td>${s.courtProvable ? 'yes' : 'no (older than 8191 blocks)'}</td></tr>`)
-    : [`<tr><td><code>${short(t.txHash)}</code></td><td>${t.block}</td><td colspan="4">${t.project ? `Dune: sandwiched on ${esc(t.project)} v${esc(t.version)}; ` : ''}no Uniswap v3/v4 sandwich detected by our checker</td></tr>`])
-  $('#out').innerHTML = `
-    <h2>${r.sandwichCount ? `Sandwiched ${r.sandwichCount}×. Lost at least ${usd(r.lostUsd)}${r.unpriced ? ` (+${r.unpriced} unpriced)` : ''}.` : 'No v3/v4 sandwich found.'}</h2>
-    ${r.sandwichCount ? `<p>With Blindfold: <b>${usd(r.lostUsd)} saved</b>. Sealed batches hide your order, so there is nothing to front-run.</p>` : ''}
-    ${r.fixture ? '<p><small>Cached result (OFFLINE=1).</small></p>' : ''}
-    ${r.scannedTxs != null ? `<p><small>Checked ${r.swapTxs} Uniswap v3/v4 swaps in this address's last ${r.scannedTxs} sent txs${r.failed ? ` (${r.failed} lookups failed, retry for a full result)` : ''}.</small></p>` : ''}
-    <table><tr><th>tx</th><th>block</th><th>attacker</th><th>attacker profit</th><th>USD</th><th>Court can prove</th></tr>${rows.join('')}</table>
-    <p><small>"Lost" is the attacker's gross profit: a lower bound on your loss.</small></p>`
+// ---- grid: every cell is a slot in the block. A frame is a pure function of progress u.
+const cv = document.getElementById('cv'), g = cv.getContext('2d')
+let W, H, S, cols, rows, pRow, base, ER, EG, EB, lanes
+const YOU = 2, BAD = 5, TAIL = 18
+const BLUE = [0.16, 0.27, 1], WHITE = [0.86, 0.9, 0.95], RED = [1, 0.2, 0.32], GREY = [0.32, 0.36, 0.42], GREEN = [0.2, 0.84, 0.55], VIOLET = [0.45, 0.3, 1]
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x)), ease = (x) => x * x * (3 - 2 * x), lerp = (a, b, t) => a + (b - a) * t
+const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t)
+const hash = (a, b, c = 0) => { let h = (a * 374761393 + b * 668265263 + c * 2147483647) | 0; h = (h ^ (h >>> 13)) * 1274126177; return ((h ^ (h >>> 16)) >>> 0) / 4294967296 }
+function seeded(n) { return () => (n = (n * 16807) % 2147483647) / 2147483647 }
+
+function resize() {
+  const d = devicePixelRatio || 1; W = innerWidth; H = innerHeight
+  cv.width = W * d; cv.height = H * d; g.setTransform(d, 0, 0, d, 0, 0)
+  S = W < 700 ? 14 : 18; cols = Math.ceil(W / S); rows = Math.ceil(H / S); pRow = Math.round(rows * 0.5)
+  ER = new Float32Array(cols * rows); EG = new Float32Array(cols * rows); EB = new Float32Array(cols * rows)
+  base = document.createElement('canvas'); base.width = W * d; base.height = H * d
+  const b = base.getContext('2d'); b.setTransform(d, 0, 0, d, 0, 0); b.fillStyle = '#0B1017'
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) b.fillRect(c * S + 1, r * S + 1, S - 2, S - 2)
+  const rnd = seeded(20261106)
+  lanes = Array.from({ length: 6 }, (_, i) => ({
+    base: rows * 0.2 + i * (rows * 0.6 / 5), a1: 1.6 + rnd() * 2.4, f1: 0.05 + rnd() * 0.06, p1: rnd() * 6, a2: 0.6 + rnd() * 1.2, f2: 0.16 + rnd() * 0.12, p2: rnd() * 6,
+    v: 0.5 + rnd() * 0.35, o: [rnd(), rnd()],
+  }))
+  story.style.height = N * SEG_VH * H + H + 'px' // one extra screen so the last segment finishes before the footer
+  dirty = true
 }
+function paint(c, r, col, a = 1) {
+  c = Math.round(c); r = Math.round(r); if (c < 0 || r < 0 || c >= cols || r >= rows || a <= 0.01) return
+  const i = r * cols + c; ER[i] = Math.max(ER[i], col[0] * a); EG[i] = Math.max(EG[i], col[1] * a); EB[i] = Math.max(EB[i], col[2] * a)
+}
+const laneRow = (l, c) => l.base + l.a1 * Math.sin(c * l.f1 + l.p1) + l.a2 * Math.sin(c * l.f2 + l.p2)
+const geo = () => ({ c0: Math.round(cols * 0.4), c1: Math.round(cols * 0.66), top: Math.round(rows * 0.12), bot: Math.round(rows * 0.88) })
+
+function render(u) {
+  ER.fill(0); EG.fill(0); EB.fill(0)
+  const G = geo(), s = u + 2, fl = Math.floor(s * 26) // fl: ciphertext re-scrambles while moving, and freezes at rest
+  const stage = clamp((u - 1) * 2) * (1 - clamp((u - 5.85) * 3)), blind = clamp((u - 5.9) * 3)
+  const seal = ease(clamp((u - 6) * 1.5)), open = ease(clamp((u - 9) * 1.6)), conv = ease(clamp((u - 10) * 1.4)), pool = ease(clamp((u - 11) * 1.4))
+  const rounds = clamp((u - 8) * 4.5, 0, 4), sealed = seal > 0.3 && open < 0.5
+  const noise = (c, r) => mix(BLUE, VIOLET, hash(c, r, fl))
+
+  // where lane i shows a cell at column c once Blindfold is on: [row, colour, alpha], or null while held in the batch
+  function sealedCell(i, l, c) {
+    const r0 = laneRow(l, c), dead = i === BAD && open >= 0.5
+    if (pool > 0.01 && c >= cols - 10) return null // the line ends inside the pool
+    if (seal < 0.3 || c < G.c0) return [r0, BLUE, 1]
+    if (c <= G.c1) {
+      if (sealed) return [r0 + (hash(c, i, fl) - 0.5) * 4, noise(c, i), 0.9]
+      return [r0, dead ? GREY : mix(GREEN, BLUE, conv), 1]
+    }
+    if (sealed || dead) return null
+    return [lerp(r0, pRow, conv * ease(clamp((c - G.c1) / 8))), mix(BLUE, WHITE, conv), 1]
+  }
+
+  // lanes: a faint track, plus shooting-star swaps whose heads move only as progress moves
+  lanes.forEach((l, i) => {
+    const a = i === YOU ? 1 - stage : 1
+    for (let c = 0; c < cols; c++) { // track; hidden where the batch holds ciphertext
+      const cell = blind < 0.5 ? [laneRow(l, c), BLUE] : sealedCell(i, l, c), inBatch = sealed && c >= G.c0 && c <= G.c1
+      const cleared = c > G.c1 ? conv : 0 // the converged p* line reads brighter
+      if (cell && !inBatch) paint(c, cell[0], cleared ? mix(BLUE, WHITE, conv) : BLUE, 0.07 * a + 0.18 * cleared)
+    }
+    const span = cols + TAIL + 6
+    l.o.forEach((o) => {
+      const hx = ((s * l.v * cols * 0.55 + o * span) % span) - 3
+      for (let k = 0; k <= TAIL; k++) {
+        const c = Math.round(hx - k), fade = Math.pow(1 - k / (TAIL + 1), 1.6)
+        const cell = blind < 0.5 ? [laneRow(l, c), BLUE, 1] : sealedCell(i, l, c)
+        if (!cell) continue
+        const [r, col, ca] = cell
+        paint(c, r, k < 2 ? mix(col, WHITE, 0.6) : col, ca * fade * a)
+      }
+    })
+  })
+
+  // the attack: your swap's price path, the bot's front-run and back-run
+  const you = lanes[YOU], ghost = (c) => laneRow(you, c), yxAt = (v) => cols * (0.1 + 0.13 * (v - 1))
+  const fx = yxAt(3.2), bx = yxAt(5.3)
+  const liftAmt = ease(clamp((u - 3) * 1.5)), backAmt = ease(clamp((u - 5) * 1.5)), lossAmt = ease(clamp((u - 4) * 1.5))
+  const lift = (c) => 4 * liftAmt * ease(clamp((c - fx) / 3)) * (1 - backAmt * ease(clamp((c - bx) / 3)))
+  if (stage > 0.01) {
+    const yx = yxAt(clamp(u, 0.5, 6.5))
+    for (let c = 0; c < cols; c++) paint(c, ghost(c), WHITE, 0.1 * stage) // the price you were quoted
+    for (let c = Math.round(fx); c <= Math.min(yx, bx); c++) for (let r = Math.round(ghost(c) - lift(c)); r < Math.round(ghost(c)); r++) paint(c, r, RED, 0.4 * lossAmt * stage)
+    for (let c = 0; c <= yx; c++) { const near = clamp(1 - (yx - c) / TAIL); paint(c, ghost(c) - lift(c), mix(BLUE, WHITE, 0.35 + 0.65 * near), stage * (0.45 + 0.55 * near)) }
+    const botAt = (v) => {
+      const x0 = yxAt(v); let x, r
+      if (v < 3) { x = x0 - 5; r = ghost(x) + 3 }
+      else if (v < 4) { const e = ease(clamp((v - 3) * 1.3)); x = lerp(x0 - 5, x0 + 6, e); r = lerp(ghost(x) + 3, ghost(x) - lift(x), e) }
+      else if (v < 5) { x = x0 + 6; r = ghost(x) - lift(x) }
+      else { const e = ease(clamp((v - 5) * 1.3)); x = lerp(x0 + 6, x0 - 6, e); r = lerp(ghost(x) - lift(x), ghost(x) + 3, e) }
+      return [x, r]
+    }
+    const botA = ease(clamp((u - 2) * 2)) * stage
+    if (botA > 0.01) for (let k = 0; k <= 12; k++) { const v = u - k * 0.03; if (v < 2) break; const [x, r] = botAt(v); paint(x, r, k < 2 ? mix(RED, WHITE, 0.3) : RED, botA * Math.pow(1 - k / 13, 1.4)) }
+    labels.you = [yx, ghost(yx) - lift(yx), stage]; labels.bot = [...botAt(Math.max(2, u)), botA]
+  } else labels.you = labels.bot = null
+
+  if (blind > 0.01) {
+    // a bot that probes the sealed batch and finds nothing it can read
+    const probe = clamp((u - 6.8) * 3) * (1 - clamp((u - 8.9) * 3))
+    if (probe > 0.01) for (let k = 0; k <= 10; k++) {
+      const v = u - k * 0.03, x = clamp((v - 6.8) / 1.6) * (G.c1 + 14) - 6, inside = x > G.c0
+      const r = lanes[1].base + 1.5 + (inside ? (hash(Math.round(x), 3, Math.floor(v * 26)) - 0.5) * 5 : 0), fade = inside ? clamp(1 - (x - G.c0) / (G.c1 - G.c0)) : 1
+      paint(x, r, fade > 0.5 ? RED : mix(GREY, RED, fade * 2), probe * Math.max(fade, 0.2) * Math.pow(1 - k / 11, 1.4))
+    }
+    // the batch window: frame, drand rounds, and the ciphertext it holds
+    for (let c = G.c0 - 1; c <= G.c1 + 1; c++) for (const r of [G.top, G.bot]) if (hash(c, r) > open && hash(c, r, 9) < seal) paint(c, r, BLUE, 0.6)
+    for (let r = G.top; r <= G.bot; r++) for (const c of [G.c0 - 1, G.c1 + 1]) if (hash(c, r) > open && hash(c, r, 9) < seal) paint(c, r, BLUE, 0.6)
+    for (let i = 0; i < 4; i++) for (let dc = 0; dc < 2; dc++) { const on = rounds > i + 0.5; paint(G.c0 + i * 3 + dc, G.top - 3, on ? (i === 3 ? GREEN : WHITE) : GREY, seal * (1 - open * 0.6) * (on ? 1 : 0.5)) }
+    if (open < 0.5) for (let c = G.c0; c <= G.c1; c++) for (let r = G.top + 1; r < G.bot; r++) if (hash(c, r, fl) > 1 - 0.07 * seal) paint(c, r, noise(c, r), 0.7)
+    if (pool > 0.01) { // the sealed v4 pool the residual swap goes through
+      const x0 = cols - 10, x1 = cols - 3, y0 = pRow - 4, y1 = pRow + 4
+      for (let c = x0; c <= x1; c++) for (let r = y0; r <= y1; r++) if ((c === x0 || c === x1 || r === y0 || r === y1) && hash(c, r, 5) < pool * 1.1) paint(c, r, mix(BLUE, GREEN, clamp(pool * 2 - 1)), 1)
+      for (let k = 0; k < 4; k++) paint(x0 + 1 + ((s * 9 + k) % (x1 - x0 - 1)), pRow, WHITE, pool * (1 - k / 4))
+    }
+  }
+  labels.blind = [seal, open, conv, pool]
+}
+
+const labels = {}
+function drawLabels() {
+  g.font = '500 11px "Spline Sans Mono", monospace'; g.textBaseline = 'bottom'
+  const say = (txt, c, r, col, a) => { if (!(a > 0.05)) return; g.globalAlpha = Math.min(1, a); g.fillStyle = col; g.fillText(txt, c * S, r * S - 4); g.globalAlpha = 1 }
+  if (labels.you) say('YOU', labels.you[0] - 1, labels.you[1] - 0.6, '#E8EDF2', labels.you[2])
+  if (labels.bot) say('BOT', labels.bot[0] - 1, labels.bot[1] + 1.8, '#FF3B5C', labels.bot[2])
+  const [seal, open, conv, pool] = labels.blind || [0, 0, 0, 0], G = geo()
+  ;['R-3', 'R-2', 'R-1', 'R'].forEach((x, i) => say(x, G.c0 + i * 3, G.top - 3.4, '#6B7684', seal * (1 - open * 0.6)))
+  say('batch 4,812 · sealed to round R', G.c0, G.top - 0.4, '#8FA0FF', seal * (1 - open))
+  say('p*', G.c1 + 4, pRow - 0.6, '#E8EDF2', conv * (1 - pool))
+  say('sealed v4 pool · price = p* ✓', cols - 18, pRow - 4.6, '#3DDC97', clamp(pool * 2 - 1))
+}
+
+function draw() {
+  g.clearRect(0, 0, W, H); g.drawImage(base, 0, 0, W, H)
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c; if (ER[i] + EG[i] + EB[i] < 0.03) continue
+    g.fillStyle = `rgb(${11 + ER[i] * 244 | 0},${16 + EG[i] * 239 | 0},${23 + EB[i] * 232 | 0})`
+    g.fillRect(c * S + 1, r * S + 1, S - 2, S - 2)
+  }
+  drawLabels()
+}
+
+// ---- card: phase label, copy, and one bar cell per segment of the phase
+const card = document.getElementById('card'), bar = document.getElementById('bar'), swap = document.getElementById('swap')
+let shown = -2
+function updateCard(u) {
+  const on = u > -0.25 && u < N + 0.3
+  card.classList.toggle('on', on); if (!on) return
+  const s = clamp(Math.floor(u), 0, N - 1), [ph, h, p] = SEGS[s], inPh = SEGS.map((x, i) => i).filter((i) => SEGS[i][0] === ph)
+  if (s !== shown) {
+    const first = shown === -2; shown = s
+    swap.classList.add('out'); card.classList.toggle('red', ph === 1)
+    const fill = () => { document.getElementById('ph').textContent = PH[ph]; document.getElementById('h').textContent = h; document.getElementById('p').textContent = p; swap.classList.remove('out') }
+    first ? fill() : setTimeout(fill, 150)
+    document.getElementById('count').textContent = String(s + 1).padStart(2, '0') + ' / ' + N
+    bar.innerHTML = inPh.map(() => '<i><b></b></i>').join('')
+  }
+  bar.querySelectorAll('b').forEach((b, j) => b.style.setProperty('--f', clamp((u - inPh[j]) / REST)))
+}
+
+// ---- stepping: one wheel gesture, swipe or key press moves exactly one phase, however fast or far you scroll.
+// Stops: 0 = hero, 1..N = segments (each resting once its animation is done), N+1 = footer.
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+const QUIET_MS = 220 // a gesture ends after this long without wheel events, so trackpad momentum can't trigger a second step
+let step = 0, tween = null, lastInput = 0, u = null, dirty = true, last = performance.now()
+const stops = () => { const top = story.offsetTop, seg = SEG_VH * innerHeight; return [0, ...SEGS.map((_, k) => top + (k + REST) * seg), top + story.offsetHeight] }
+const progress = () => (scrollY - story.offsetTop) / (SEG_VH * innerHeight)
+const nearest = () => { const p = stops(); return p.reduce((b, y, i) => (Math.abs(y - scrollY) < Math.abs(p[b] - scrollY) ? i : b), 0) }
+const inZone = () => scrollY <= stops()[N + 1] + 1
+function go(k) {
+  const p = stops(); k = clamp(k, 0, N + 1)
+  if (k === step) return
+  step = k; tween = { from: scrollY, to: p[k], t0: performance.now(), dur: reduce ? 1 : 1100 }
+}
+addEventListener('wheel', (e) => {
+  const panel = e.target.closest?.('.res') // results scroll on their own until they reach an end
+  if (panel && (e.deltaY > 0 ? panel.scrollTop + panel.clientHeight < panel.scrollHeight - 1 : panel.scrollTop > 0)) return
+  if (!inZone() || (step === N + 1 && e.deltaY > 0)) return // past the footer the page scrolls normally
+  e.preventDefault()
+  const fresh = !tween && performance.now() - lastInput > QUIET_MS
+  lastInput = performance.now()
+  if (fresh && Math.abs(e.deltaY) >= 1) go(step + Math.sign(e.deltaY))
+}, { passive: false })
+let touchY = null
+addEventListener('touchstart', (e) => { const p = e.target.closest('.res'); touchY = p && p.scrollHeight > p.clientHeight ? null : e.touches[0].clientY }, { passive: true })
+addEventListener('touchmove', (e) => { if (inZone() && touchY !== null) e.preventDefault() }, { passive: false })
+addEventListener('touchend', (e) => {
+  if (touchY === null) return
+  const dy = touchY - e.changedTouches[0].clientY; touchY = null
+  if (inZone() && !tween && Math.abs(dy) > 40) go(step + Math.sign(dy))
+})
+addEventListener('keydown', (e) => {
+  if (!inZone() || e.target.closest('input, textarea, button, .res')) return
+  const d = { ArrowDown: 1, PageDown: 1, ' ': e.shiftKey ? -1 : 1, ArrowUp: -1, PageUp: -1 }[e.key]
+  if (!d) return
+  e.preventDefault(); if (!tween) go(step + d)
+})
+addEventListener('scroll', () => { if (!tween) step = nearest() }, { passive: true }) // scrollbar drags and anchor links
+document.querySelector('a[href="#story"]').onclick = (e) => { e.preventDefault(); go(1) }
+
+// ---- lookup: /api/check replays the blocks (check.mjs) and returns every sandwich it finds
+const res = document.getElementById('res'), q = document.getElementById('q')
+const esc = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+const short = (h) => (h ? `${h.slice(0, 8)}…${h.slice(-4)}` : '—')
+const usd = (x) => (x == null ? 'unpriced' : `$${x.toFixed(2)}`)
+const scan = (kind, h) => `<a href="https://etherscan.io/${kind}/${esc(h)}" target="_blank" rel="noopener">${esc(short(h))}</a>`
+function show(html) { res.hidden = false; res.innerHTML = html; res.scrollTop = 0 }
+function result(r) {
+  if (r.error) return `<header><div class="lbl">Lookup failed</div><p>${esc(r.error)}</p></header>`
+  const rows = r.txs.flatMap((t) => t.sandwiches.length
+    ? t.sandwiches.map((s) => `<tr><td>${scan('tx', t.txHash)}</td><td>${s.block.toLocaleString('en-US')}</td><td>${scan('address', s.attacker)}</td>
+        <td>${s.amount != null ? `${s.amount.toPrecision(4)} ${esc(s.symbol)} · ${usd(s.usd)}` : `${esc(s.profitRaw)} raw${s.v4 ? ' (v4)' : ''}`}</td>
+        <td class="${s.courtProvable ? 'yes' : 'no'}" title="${s.courtProvable ? 'Within the 8,191-block L1 anchor window' : 'Older than 8,191 blocks'}">${s.courtProvable ? 'yes' : 'no'}</td></tr>`)
+    : [`<tr><td>${scan('tx', t.txHash)}</td><td>${t.block?.toLocaleString('en-US') ?? '—'}</td><td colspan="3" class="no">${t.project ? `Dune: sandwiched on ${esc(t.project)} v${esc(t.version)}; ` : ''}no Uniswap v3/v4 sandwich found by our checker</td></tr>`])
+  const n = r.sandwichCount
+  const scope = r.scannedTxs != null ? `Checked ${r.swapTxs} Uniswap v3/v4 swaps in this wallet's last ${r.scannedTxs} sent transactions.`
+    : r.duneHits != null ? `Dune lists ${r.duneHits} sandwiched swaps for this wallet. We re-checked the latest 10.` : ''
+  return `<header><div class="lbl">${r.kind === 'tx' ? 'Transaction' : 'Wallet'} ${esc(short(r.input))}${r.cached ? ' · cached' : ''}</div>
+      ${n ? `<strong class="lost">Lost at least ${usd(r.lostUsd)}</strong><div class="lbl">${n} sandwich${n > 1 ? 'es' : ''}${r.unpriced ? `, ${r.unpriced} unpriced` : ''}. That's the bots' gross profit, so your loss is at least this.</div>`
+        : `<strong class="clean">No sandwich found</strong><div class="lbl">${r.kind === 'tx' ? 'No front-run and back-run wrapped this swap in its block.' : 'None of the swaps we checked were sandwiched.'}</div>`}
+    </header>
+    ${rows.length ? `<table><tr><th>Tx</th><th>Block</th><th>Bot</th><th>Bot took</th><th title="Can Court prove it onchain? Only within the 8,191-block L1 anchor window.">Court</th></tr>${rows.join('')}</table>` : ''}
+    <footer>${scope ? `<span class="lbl">${scope}</span>` : ''}${r.failed ? `<span class="lbl">${r.failed} lookups failed. Check again for a full result.</span>` : ''}${r.fixture ? '<span class="lbl">Saved result (OFFLINE=1).</span>' : ''}
+      <button class="more" type="button" onclick="go(1)">${n ? 'See how this happened, and how Blindfold stops it ↓' : 'See how a sandwich works ↓'}</button></footer>`
+}
+let asked = 0
+document.getElementById('look').onsubmit = async (e) => {
+  e.preventDefault()
+  const id = ++asked // only the latest lookup gets to draw
+  show('<header><div class="lbl busy">Replaying blocks on Ethereum mainnet</div><p class="lbl">A wallet takes a few seconds the first time.</p></header>')
+  let r
+  try { r = await (await fetch('/api/check?q=' + encodeURIComponent(q.value))).json() } catch (err) { r = { error: `Couldn't reach the lookup server (${err.message}).` } }
+  if (id === asked) show(result(r))
+}
+document.getElementById('demo').onclick = () => { q.value = DEMO; document.getElementById('look').requestSubmit() }
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now
+  if (tween) {
+    const x = clamp((now - tween.t0) / tween.dur), e = x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2
+    scrollTo(0, tween.from + (tween.to - tween.from) * e)
+    if (x >= 1) tween = null
+  }
+  const T = progress()
+  if (u === null || reduce) u = T
+  if (Math.abs(T - u) > 0.0004 || dirty) { u += (T - u) * (1 - Math.exp(-dt * 14)); dirty = false; render(u); draw(); updateCard(u) }
+  requestAnimationFrame(frame)
+}
+addEventListener('resize', () => { resize(); if (!tween) scrollTo(0, stops()[step]) })
+resize(); step = nearest(); requestAnimationFrame(frame)
 </script>
 </body>
 </html>
