@@ -64,6 +64,7 @@ export function consumePreparation(state, expected, persist) {
   if (!state.preparation) return undefined
   const prepared = validatePreparation(state.preparation, expected)
   delete state.preparation
+  state.consumedPreparation = { batch: prepared.batch, round: prepared.round } // for status (T06)
   persist(state)
   return prepared
 }

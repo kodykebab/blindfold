@@ -1,4 +1,5 @@
 // Pure logic behind the CLI: balance views, commit preflight, deadlines and commitment tracking.
+import { formatEther } from 'viem'
 
 /** Vault balances as the user sees them. Any open commitment blocks every withdrawal (BlindfoldVault.withdraw). */
 export function balances({ balance, locked, open }) {
@@ -35,6 +36,12 @@ export function preflight({ order, tokenIn, depositToken, depositAmount, fee, fr
   return { ok: problems.length === 0, problems, funding }
 }
 
+/** One planned transaction's gas: an estimate with its unit and cost, or why it is unavailable. Never shown as zero (T04). */
+export function gasLine({ what, gas, gasPrice, why }) {
+  if (gas == null) return `${what}: unavailable ${why ?? ''}`.trimEnd()
+  return `${what}: ~${gas} gas ≈ ${formatEther(gas * gasPrice)} ETH`
+}
+
 /** Schedule of one batch, with what each deadline means for the user. */
 export function deadlines(v, admissionRequired = false) {
   return [
@@ -48,26 +55,49 @@ export function deadlines(v, admissionRequired = false) {
 /**
  * Status of each of an account's commitments from settlement events (viem parseEventLogs output, in order).
  * Returns Map(commitId → {id, batchId, state, ...}); state is one of
- * committed | revealed | padding | unfunded | slashed | released | filled | unfilled | expired.
+ * committed | revealed | padding | unfunded | slashed | released | filled | partial | unfilled | expired.
+ * A fill or no-fill also carries its batch's clearing price (priceX96) and settlement transaction (settleTx); a reveal or
+ * slash records who sent it (by), since that account received the bounty.
  */
 export function track(logs, owner) {
   const mine = new Map()
   const expired = new Set()
+  const settled = new Map()
   const lower = owner.toLowerCase()
-  for (const { eventName: e, args: a } of logs) {
+  for (const { eventName: e, args: a, transactionHash } of logs) {
     if (e === 'Committed' && a.committer.toLowerCase() === lower) mine.set(a.commitId, { id: a.commitId, batchId: a.batchId, state: 'committed', round: a.round, hash: a.hash })
     if (e === 'Expired') expired.add(a.batchId)
+    if (e === 'Settled') settled.set(a.batchId, a.priceX96)
     const c = a?.commitId != null ? mine.get(a.commitId) : a?.id != null ? mine.get(a.id) : undefined
     if (!c) continue
-    if (e === 'Revealed') Object.assign(c, { state: a.order.amountIn === 0n ? 'padding' : 'revealed', order: a.order })
-    if (e === 'RevealedUnfunded') Object.assign(c, { state: 'unfunded', order: a.order })
-    if (e === 'Slashed') c.state = 'slashed'
+    if (e === 'Revealed') Object.assign(c, { state: a.order.amountIn === 0n ? 'padding' : 'revealed', order: a.order, by: a.revealer })
+    if (e === 'RevealedUnfunded') Object.assign(c, { state: 'unfunded', order: a.order, by: a.revealer })
+    if (e === 'Slashed') Object.assign(c, { state: 'slashed', by: a.caller })
     if (e === 'Released') c.state = 'released'
-    if (e === 'Filled') Object.assign(c, { state: 'filled', amountIn: a.amountIn, amountOut: a.amountOut })
-    if (e === 'Unfilled') c.state = 'unfilled'
+    // Filled carries the input actually spent: less than the order's input is a proportional (partial) fill.
+    if (e === 'Filled') Object.assign(c, { state: c.order && a.amountIn < c.order.amountIn ? 'partial' : 'filled', amountIn: a.amountIn, amountOut: a.amountOut, settleTx: transactionHash })
+    if (e === 'Unfilled') Object.assign(c, { state: 'unfilled', settleTx: transactionHash })
   }
-  for (const c of mine.values()) if (c.state === 'revealed' && expired.has(c.batchId)) c.state = 'expired'
+  for (const c of mine.values()) {
+    if (c.state === 'revealed' && expired.has(c.batchId)) c.state = 'expired'
+    if (c.settleTx !== undefined && settled.has(c.batchId)) c.priceX96 = settled.get(c.batchId)
+  }
   return mine
+}
+
+/**
+ * Where a commitment's deposit went (BatchAuction.reveal and slashUnrevealed), in deposit-token units (T11). The fee is
+ * separate: charged at commit and never returned. A bounty the owner earned by revealing or slashing it themselves comes
+ * back to them, so it is counted as returned. held: still escrowed; lost: sent to the treasury.
+ */
+export function depositOutcome(c, { depositAmount, bountyBps, owner }) {
+  const bounty = (depositAmount * BigInt(bountyBps)) / 10_000n
+  const paid = c.by?.toLowerCase() === owner.toLowerCase() ? 0n : bounty
+  const none = { held: 0n, returned: 0n, bounty: 0n, lost: 0n }
+  if (c.state === 'committed') return { ...none, held: depositAmount }
+  if (c.state === 'released') return { ...none, returned: depositAmount }
+  if (c.state === 'unfunded' || c.state === 'slashed') return { ...none, returned: bounty - paid, bounty: paid, lost: depositAmount - bounty }
+  return { ...none, returned: depositAmount - paid, bounty: paid }
 }
 
 /** Commitments still holding the account's vault open: never revealed, or revealed and not yet settled/expired. */
