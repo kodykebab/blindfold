@@ -32,8 +32,8 @@ contract RouteEthereumForkTest is Test {
         if (at == 0) vm.createSelectFork(rpc);
         else vm.createSelectFork(rpc, at);
         forkTime = block.timestamp;
-        start = uint64(forkTime - 60);
-        start -= (start - 1_692_803_367) % 3; // MisalignedSchedule: start on a drand round boundary
+        // Align the fresh fork fixture with the auction's drand schedule.
+        start = uint64(forkTime - 60 - (forkTime - 60 - 1692803367) % 3);
         emit log_named_uint("routing fork block", block.number);
         vault = new BlindfoldVault();
         PoolManager manager = new PoolManager(address(this));

@@ -32,8 +32,8 @@ contract ExternalEthereumForkTest is Test {
         else vm.createSelectFork(rpc, forkBlock);
         emit log_named_uint("external market fork block", block.number);
         forkTime = block.timestamp;
-        start = uint64(forkTime - 60);
-        start -= (start - 1_692_803_367) % 3; // MisalignedSchedule: start on a drand round boundary
+        // Match the auction's drand-aligned schedule at any fresh fork timestamp.
+        start = uint64(forkTime - 60 - (forkTime - 60 - 1692803367) % 3);
         vault = new BlindfoldVault();
         PoolManager manager = new PoolManager(address(this));
         s = new BlindfoldSettlement(
