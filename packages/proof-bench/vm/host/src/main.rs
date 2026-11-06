@@ -9,6 +9,31 @@ fn main() -> Result<()> {
     std::env::set_var("RISC0_EXECUTOR", "ipc");
     std::env::set_var("RISC0_DEV_MODE", "0");
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.as_slice() == ["--execute-matrix"] {
+        let mut samples = Vec::new();
+        for (direction, amount, step) in [
+            (true, 0, 0),
+            (true, 100, 0),
+            (false, 100, 1),
+            (true, u128::MAX, 63),
+        ] {
+            let (s, w) = sample(1000, direction, amount, step)?;
+            let env = ExecutorEnv::builder().write(&(s.clone(), w))?.build()?;
+            let start = Instant::now();
+            let info = default_executor().execute(env, ADMISSION_GUEST_ELF)?;
+            ensure!(
+                serde_json::to_vec(&info.journal.decode::<Statement>()?)?
+                    == serde_json::to_vec(&s)?,
+                "journal mismatch"
+            );
+            samples.push(serde_json::json!({"direction":direction,"amount":amount.to_string(),"step":step,"cycles":info.cycles(),"elapsed_s":start.elapsed().as_secs_f64()}));
+        }
+        println!(
+            "{}",
+            serde_json::json!({"mode":"guest_execution_matrix_not_proof", "image_id":format!("{}", Digest::from(ADMISSION_GUEST_ID)), "samples":samples})
+        );
+        return Ok(());
+    }
     if args.as_slice() == ["--reject-invalid"] {
         let (s, w) = sample(1000, true, 100, 0)?;
         let env = ExecutorEnv::builder()

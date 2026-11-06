@@ -7,3 +7,6 @@ publish = false
 [dependencies]
 risc0-zkvm = { version = "=3.0.6", default-features = false, features = ["std"] }
 blindfold-proof-bench = { path = "../../.." }
+
+[features]
+accelerated = ["blindfold-proof-bench/accelerated"]

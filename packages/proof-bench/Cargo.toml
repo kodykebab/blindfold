@@ -16,5 +16,18 @@ sha3 = "0.10"
 tlock = { path = ".deps/tlock-rs/tlock" }
 tlock_age = { path = ".deps/tlock-rs/tlock_age" }
 
+[features]
+accelerated = ["dep:bls12_381", "dep:sha2_09"]
+
+[dependencies.bls12_381]
+path = ".deps/bls12-381"
+optional = true
+features = ["experimental"]
+
+[dependencies.sha2_09]
+package = "sha2"
+version = "=0.9.9"
+optional = true
+
 [workspace]
-exclude = [".deps/tlock-rs", ".deps/tlock-rs/tlock", ".deps/tlock-rs/tlock_age"]
+exclude = [".deps/bls12-381", ".deps/tlock-rs", ".deps/tlock-rs/tlock", ".deps/tlock-rs/tlock_age"]

@@ -16,3 +16,11 @@ if [[ ! -d .deps/risc0-ethereum ]]; then
 fi
 [[ "$(git -C .deps/risc0-ethereum rev-parse HEAD)" == "$verifier_revision" ]]
 git -C .deps/risc0-ethereum diff --exit-code
+
+bls_revision=a3192e1bc58921d42d03d99957abf3be55f9d435
+if [[ ! -d .deps/bls12-381 ]]; then
+  git clone --depth 1 --branch bls12_381/v0.8.0-risczero.1 https://github.com/risc0/zkcrypto-bls12_381.git .deps/bls12-381
+  git -C .deps/bls12-381 apply ../../bls-serialization.patch
+fi
+[[ "$(git -C .deps/bls12-381 rev-parse HEAD)" == "$bls_revision" ]]
+git -C .deps/bls12-381 apply --reverse --check ../../bls-serialization.patch

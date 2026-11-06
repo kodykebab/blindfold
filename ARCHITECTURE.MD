@@ -207,6 +207,8 @@ This allows AGE to generate its ordinary file key and payload randomness while p
 
 The deployment context must bind the token pair, deposit rules, proof program and network configuration. The caller's owner, current batch, scheduled round, current root and actual budget coverage are contract-side checks. A proof of a self-consistent statement is accepted only when that statement matches current contract state.
 
+The benchmark also offers an optional accelerated BLS12-381 backend. It preserves quicknet key-wrapper bytes and uses the same AGE and funding checks. Its adapter is compared against the pinned tlock implementation over varied keys, randomness and rounds; each guest variant has a distinct program identity. See the [benchmark commands](packages/proof-bench/README.md#optional-accelerated-curve-backend).
+
 The CLI runs proving on a user-controlled machine. The benchmark host forces local IPC and disables development receipts. The guest runs the native checker and journals the public statement. The host supports receipt persistence, verification, tampered-journal rejection and a separate Groth16 wrapping command. Its journal currently follows the Rust SDK serialization used by the prototype.
 
 ## 7. Commit-to-settlement sequence

@@ -1,0 +1,26 @@
+diff --git a/src/pairings.rs b/src/pairings.rs
+index 23c913d..c2e67d6 100644
+--- a/src/pairings.rs
++++ b/src/pairings.rs
+@@ -246,6 +246,21 @@ impl PartialEq for Gt {
+ }
+ 
+ impl Gt {
++    /// Canonical big-endian Fp12 coefficients in drand/kyber order.
++    /// Blindfold adapter: serialization only; arithmetic is unchanged.
++    pub fn to_tlock_bytes(&self) -> [u8; 576] {
++        let fields = [self.0.c1.c2.c1, self.0.c1.c2.c0,
++            self.0.c1.c1.c1, self.0.c1.c1.c0,
++            self.0.c1.c0.c1, self.0.c1.c0.c0,
++            self.0.c0.c2.c1, self.0.c0.c2.c0,
++            self.0.c0.c1.c1, self.0.c0.c1.c0,
++            self.0.c0.c0.c1, self.0.c0.c0.c0];
++        let mut bytes = [0; 576];
++        for (index, field) in fields.iter().enumerate() {
++            bytes[index * 48..(index + 1) * 48].copy_from_slice(&field.to_bytes());
++        }
++        bytes
++    }
+     /// Returns the group identity, which is $1$.
+     pub fn identity() -> Gt {
+         Gt(Fp12::one())

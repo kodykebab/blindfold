@@ -66,3 +66,16 @@ node packages/proof-bench/interop.mjs packages/proof-bench/results/matrix.json
 ```
 
 Keep generated receipts and measurements under the ignored `results/` directory. Measure guest execution, proof generation, wrapping and Solidity verification separately. Preserve toolchain versions and program identity with benchmark results. Only completed end-to-end runs can supply an end-to-end latency sample.
+
+## Optional accelerated curve backend
+
+The `accelerated` feature uses the RISC Zero BLS12-381 fork pinned at `a3192e1bc58921d42d03d99957abf3be55f9d435`. The serialization patch exposes the existing pairing-result coefficients in the standard tlock order; it does not change curve arithmetic. The fork retains its MIT/Apache-2.0 licenses. The adapter implements the same quicknet key-wrapper relation and compares its output byte for byte against the pinned tlock implementation over 64 key/randomness/round cases. AGE payload processing and funding arithmetic are shared by both variants.
+
+```sh
+cargo test --manifest-path packages/proof-bench/Cargo.toml --locked --release --features accelerated
+cargo build --manifest-path packages/proof-bench/vm/Cargo.toml --locked --release --features accelerated
+packages/proof-bench/vm/target/release/proof-bench-host --execute-matrix
+packages/proof-bench/vm/target/release/proof-bench-host --reject-invalid
+```
+
+The feature changes the guest program identity. Keep each variant's host binary with its receipts and use that binary for wrapping and export. A host compiled for one guest rejects the other guest's receipt. `--execute-matrix` records the program identity, cycles and execution time for padding, both directions, and the maximum-size final-step case. These measurements are guest execution, not completed proof benchmarks.
