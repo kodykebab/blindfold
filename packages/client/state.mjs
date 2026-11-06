@@ -1,6 +1,6 @@
 // Local private state: the order and salt behind each commitment. Without them nobody but a drand-equipped keeper can
 // reveal, so the client writes them before it reports a commit as done.
-import { mkdirSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, unlinkSync, fsyncSync, fchmodSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, unlinkSync, fsyncSync, fchmodSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateFunding } from './admission-state.mjs'
@@ -86,7 +86,24 @@ export async function withStateLock(dep, owner, action) {
   const path = `${statePath(dep, owner)}.lock`
   let fd
   try { fd = openSync(path, 'wx', 0o600) }
-  catch (e) { if (e.code === 'EEXIST') throw new Error(`private state is locked: ${path}; if its process has exited, remove that lock and run resume-admission`); throw e }
+  catch (e) {
+    if (e.code !== 'EEXIST') throw e
+    const holder = lockHolder(path)
+    if (holder.alive) throw new Error(`private state is locked by running process ${holder.pid}; wait for that command to finish`)
+    if (holder.fresh) throw new Error(`private state is locked by a starting command; try again in a minute (${path})`)
+    // The writer exited mid-command. State writes are atomic, so the file is whole; only the lock is stale.
+    unlinkSync(path)
+    console.error(`client: removed a stale state lock left by ${holder.pid ? `exited process ${holder.pid}` : 'an interrupted command'}; run status (and resume-admission if an admission was in flight) to check its result`)
+    fd = openSync(path, 'wx', 0o600)
+  }
   try { writeFileSync(fd, String(process.pid)); return await action() }
   finally { closeSync(fd); unlinkSync(path) }
+}
+
+/** Who holds a lock: a live pid means wait; no pid yet and a recent file means another command is starting. */
+export function lockHolder(path, now = Date.now()) {
+  const pid = Number(readFileSync(path, 'utf8').trim()) || 0
+  let alive = false
+  if (pid > 0) try { process.kill(pid, 0); alive = true } catch (e) { alive = e.code === 'EPERM' }
+  return { pid, alive, fresh: !pid && now - statSync(path).mtimeMs < 60_000 }
 }

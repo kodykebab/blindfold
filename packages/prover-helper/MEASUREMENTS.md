@@ -46,3 +46,21 @@ The sell admission job took 210.9 seconds; the buy admission job took 199.1 seco
 helper calls, proof generation, ciphertext checks and wallet submission. `node:test` reported 414.33 seconds for the
 completed E3 test. These timings use the same prover and manifest identities above; fixtures use recorded drand
 round 1000000 and an isolated anvil with explicit chain time.
+
+## Helper round trip and setup
+
+`TestRealProofsVerifyOnchain` (I4) sends one order through the helper over native-messaging framing and verifies both
+proofs with the generated Solidity verifiers on anvil: `prepare` (fixture plus preparation proof) took 95.8 seconds and
+`online` took 148.4 seconds; the whole test process took 247.5 seconds wall, 1,359 CPU-seconds and 5,065,048,064 bytes
+maximum resident memory. The 1-minute load average on the shared machine was between 22 and 60 during these runs, so
+wall times are upper bounds; each proof needs roughly 620 to 750 CPU-seconds.
+
+Each `prove-local` re-hashes its mode's parameter files for the manifest check: `shasum -a 256` over them took 6.9 s
+(preparation: 772,235,345-byte `pk`, 233,094,089-byte `r1cs`) and 11.2 s (online: 652,454,937-byte `pk`,
+229,707,260-byte `r1cs`) with a warm cache. The first `check-admission.sh` run, including `setup-local` for both
+circuits, took 1,007 seconds and 6,855,802,880 bytes maximum resident memory.
+
+```bash
+(cd packages/prover-helper && ADMISSION_PARAMS=$PWD/../proof-bench/results/admission-params \
+  /usr/bin/time -l go test -count=1 -v -run TestRealProofsVerifyOnchain -timeout 30m .)
+```

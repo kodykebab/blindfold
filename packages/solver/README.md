@@ -1,6 +1,6 @@
 # Solver
 
-Run `npm ci --ignore-scripts`, then `npm test` for the offline search tests. Run `npm start -- --once` to process currently eligible batches once, or `npm start` to poll. The service reads its settlement address from `deployments/blindfold.local.json` and its ABI from the generated settlement artifact. Existing `RPC_URL`, `DEPLOYMENTS`, `SETTLEMENT_ARTIFACT`, `POLL_MS`, and account environment variables configure those inputs.
+Run `npm ci --ignore-scripts`, then `npm test` for the offline search tests. Run `npm start -- --once` to process currently eligible batches once, or `npm start` to poll. Use `npm start -- --json` (or add `--once`) for one JSON status object per cycle, including due batches, settlements and errors. The service reads its settlement address from `deployments/blindfold.local.json` and its ABI from the generated settlement artifact. Existing `RPC_URL`, `DEPLOYMENTS`, `SETTLEMENT_ARTIFACT`, `POLL_MS`, and account environment variables configure those inputs.
 
 When the deployment has a configured external market, the solver reads the
 validated reference ending at the batch reveal deadline. With zero active sealed

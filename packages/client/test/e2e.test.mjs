@@ -2,8 +2,10 @@
 //   CLIENT_E2E=1 npm test
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseEther } from 'viem'
 import { localChain, user, DEPOSIT } from './chain.mjs'
 
@@ -258,5 +260,79 @@ test('released commitment: real CLI cleanup, repeat cleanup, next batch and with
       assert.equal(r.code, 0, r.err)
     }
     assert.equal(await c.read(c.token1, 'MockERC20', 'balanceOf', [u]), parseEther('100') - fee)
+  } finally { c.stop() }
+})
+
+test('vault-only trading refuses shortfalls and does not auto-fund the chosen side', { skip: !enabled, timeout: 120_000 }, async () => {
+  const c = await localChain({ schedule: { batchLength: 300 } })
+  const env = { PRIVATE_KEY: '', MNEMONIC: 'test test test test test test test test test test test junk' }
+  try {
+    const owner = user(10).address
+    for (const token of [c.token0, c.token1]) await c.mint(owner, token, parseEther('100'))
+    const count = () => c.pub.getTransactionCount({ address: owner, blockTag: 'latest' })
+    let nonce = await count()
+    let result = await c.cli(10, ['commit', 'sell', '1', '0.9', '--vault-only', '--both-funded'], env)
+    assert.equal(result.code, 1); assert.match(result.err, /fund both tokens/)
+    assert.equal(await count(), nonce, 'an unfunded order must not approve, deposit or commit')
+    assert.equal((await c.cli(10, ['deposit', 'token0', '10'], env)).code, 0)
+    assert.equal((await c.cli(10, ['deposit', 'token1', '1'], env)).code, 0)
+    nonce = await count()
+    result = await c.cli(10, ['commit', 'sell', '1', '0.9', '--vault-only', '--both-funded'], env)
+    assert.equal(result.code, 1); assert.match(result.err, /automatic deposits are disabled/)
+    assert.equal(await count(), nonce, 'a partial shortfall must not cause a transaction')
+    assert.equal((await c.cli(10, ['deposit', 'token1', '9'], env)).code, 0)
+    const before = await Promise.all([c.token0, c.token1].map((token) => c.read(token, 'MockERC20', 'balanceOf', [owner])))
+    nonce = await count()
+    result = await c.cli(10, ['commit', 'sell', '1', '0.9', '--vault-only', '--both-funded'], env)
+    assert.equal(result.code, 0, result.err); assert.match(result.out, /committed #0/)
+    assert.equal(await count(), nonce + 1, 'only the commitment is sent')
+    assert.deepEqual(await Promise.all([c.token0, c.token1].map((token) => c.read(token, 'MockERC20', 'balanceOf', [owner]))), before)
+  } finally { c.stop() }
+})
+
+test('client refuses a mismatched chain, vault or pair before signing', { skip: !enabled, timeout: 120_000 }, async () => {
+  const c = await localChain({ schedule: { batchLength: 300 } })
+  const env = { PRIVATE_KEY: '', MNEMONIC: 'test test test test test test test test test test test junk' }
+  try {
+    const owner = user(10).address
+    await c.mint(owner, c.token0, parseEther('10'))
+    const dep = JSON.parse(readFileSync(c.deployments, 'utf8'))
+    const nonce = await c.pub.getTransactionCount({ address: owner })
+    for (const [change, expected] of [
+      [{ chainId: 1 }, /RPC network differs/],
+      [{ vault: user(5).address }, /deployment vault differs/],
+      [{ token0: c.token1 }, /deployment token0 differs/],
+      [{ depositToken: c.token0 }, /deployment depositToken differs/],
+    ]) {
+      const file = join(c.dir, 'wrong-deployment.json')
+      writeFileSync(file, JSON.stringify({ ...dep, ...change }))
+      const result = await c.cli(10, ['deposit', 'token0', '1'], { ...env, DEPLOYMENTS: file })
+      assert.equal(result.code, 1); assert.match(result.err, expected)
+      assert.equal(await c.pub.getTransactionCount({ address: owner }), nonce)
+      assert.equal(await c.read(c.token0, 'MockERC20', 'allowance', [owner, change.vault || c.vault]), 0n)
+    }
+  } finally { c.stop() }
+})
+
+test('a fee-on-transfer token is refused before the vault is credited', { skip: !enabled, timeout: 120_000 }, async () => {
+  const fixtures = fileURLToPath(new URL('./fixtures/', import.meta.url))
+  // e2e.sh and CI set FOUNDRY_OUT for the main contracts; it overrides even --out, so build without it.
+  const { FOUNDRY_OUT, FOUNDRY_CACHE_PATH, ...env } = process.env
+  execFileSync('forge', ['build', '--root', fixtures], { stdio: 'pipe', env })
+  const artifact = JSON.parse(readFileSync(join(fixtures, 'out/FeeToken.sol/FeeToken.json'), 'utf8'))
+  const c = await localChain({ tokenArtifact: artifact })
+  try {
+    const owner = user(10).address
+    const symbol = async (token) => c.read(token, 'MockERC20', 'symbol')
+    const feeSide = (await symbol(c.token0)) === 'FEE' ? 'token0' : 'token1'
+    const feeToken = c[feeSide]
+    await c.mint(owner, feeToken, parseEther('100'))
+    const before = await c.pub.getTransactionCount({ address: owner })
+    const result = await c.cli(10, ['deposit', feeSide, '10'])
+    assert.equal(result.code, 1)
+    assert.match(result.err, /this token takes a fee or rebases on transfer; Blindfold doesn't support it \(arrived 5 FEE\)/)
+    assert.equal(await c.pub.getTransactionCount({ address: owner }), before, 'no approval or deposit was sent')
+    assert.equal(await c.read(feeToken, 'MockERC20', 'balanceOf', [c.vault]), 0n)
+    assert.equal(await c.read(c.vault, 'BlindfoldVault', 'balanceOf', [owner, feeToken]), 0n)
   } finally { c.stop() }
 })

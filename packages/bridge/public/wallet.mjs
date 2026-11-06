@@ -56,6 +56,25 @@ export async function ensureChain(provider, chain) {
   if (!(await on())) throw fail('WRONG_CHAIN', `wallet is not on chain ${chain.chainId}`)
 }
 
+/**
+ * Before anything is signed: can `from` pay gas and value for `call`? Returns {need, balance} when it can't, null when
+ * it can or when the wallet can't answer (it then reports the problem itself). Later calls may depend on earlier ones
+ * (approve, then deposit), so only the first is estimated.
+ */
+export async function fundsShortfall(provider, from, call) {
+  try {
+    const [balance, gasPrice, gas] = await Promise.all([
+      provider.request({ method: 'eth_getBalance', params: [from, 'latest'] }),
+      provider.request({ method: 'eth_gasPrice' }),
+      provider.request({ method: 'eth_estimateGas', params: [{ from, ...call }] }),
+    ]).then((v) => v.map(BigInt))
+    const need = gas * gasPrice + BigInt(call.value ?? 0)
+    return balance < need ? { need: String(need), balance: String(balance) } : null
+  } catch {
+    return null
+  }
+}
+
 async function poll(fn, done, { interval, timeout }) {
   for (const end = Date.now() + timeout; ;) {
     const v = await fn()
@@ -73,7 +92,15 @@ async function poll(fn, done, { interval, timeout }) {
  */
 export async function sendCalls(provider, { from, chainId, calls, atomic }, { interval = 1000, timeout = 600_000, onSent = () => {} } = {}) {
   const hashes = [], receipts = []
-  const wrap = (e) => ({ ...fail(e?.code ?? 'INTERNAL', e?.message ?? String(e)), hashes, receipts })
+  const wrap = (e) => {
+    const message = e?.message ?? String(e)
+    if (e?.code !== 'INSUFFICIENT_FUNDS' && /insufficient funds/i.test(message + (e?.data?.message ?? ''))) {
+      return { ...fail('INSUFFICIENT_FUNDS', `not enough ETH on ${from} for gas and value; add ETH and try again (${message})`), hashes, receipts }
+    }
+    return { ...fail(e?.code ?? 'INTERNAL', message), hashes, receipts }
+  }
+  const short = await fundsShortfall(provider, from, calls[0])
+  if (short) throw wrap(fail('INSUFFICIENT_FUNDS', `not enough ETH on ${from}: the first transaction needs about ${short.need} wei for gas and value, the account has ${short.balance} wei; add ETH and try again`))
   if (atomic && calls.length > 1) {
     let id, unsupported = false
     try {

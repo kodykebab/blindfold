@@ -69,6 +69,16 @@ export function track(logs, owner) {
   return mine
 }
 
+/** Render actual input and output without treating a partial execution as a full fill. */
+export function fillDescription(commitment, format) {
+  if (commitment.state !== 'filled' || !commitment.order) return ''
+  const order = commitment.order
+  const input = order.zeroForOne ? 'token0' : 'token1'
+  const output = order.zeroForOne ? 'token1' : 'token0'
+  const kind = commitment.amountIn < order.amountIn ? 'partial fill' : 'full fill'
+  return ` → got ${format(output, commitment.amountOut)} [${kind}: ${format(input, commitment.amountIn)} of ${format(input, order.amountIn)}]`
+}
+
 /** Commitments still holding the account's vault open: never revealed, or revealed and not yet settled/expired. */
 export const isOpen = (c) => c.state === 'committed' || c.state === 'revealed'
 
@@ -87,7 +97,7 @@ export function exitPlan(open, { now, sched, saved, admissionRequired = false })
       if (now < s.revealCloses) {
         return saved.has(c.hash)
           ? { c, action: 'reveal', why: 'own saved order: revealing it yourself keeps the bounty' }
-          : { c, action: 'wait', at: s.revealCloses, why: 'order and salt not saved here: a keeper must reveal it, or it can be slashed' }
+          : { c, action: 'wait', at: s.revealCloses, why: admissionRequired ? 'order and salt not saved here: a keeper can reveal it; otherwise the deposit can be released after the window' : 'order and salt not saved here: a keeper must reveal it, or it can be slashed' }
       }
       if (admissionRequired) return { c, action: 'release', why: 'never revealed: release returns the deposit, retains the fee and closes the commitment' }
       return { c, action: 'slash', why: 'never revealed: slashing forfeits its deposit and releases the account' }

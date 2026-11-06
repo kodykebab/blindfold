@@ -1,0 +1,6 @@
+[profile.default]
+src = "."
+out = "out"
+solc = "0.8.26"
+evm_version = "cancun"
+optimizer = false

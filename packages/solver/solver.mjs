@@ -4,12 +4,15 @@
 //   npm start            # keep settling, polling every POLL_MS
 //   npm start -- --once  # settle what is due now, then exit (non-zero if a due batch can't be settled)
 import { readFileSync } from 'node:fs'
+import { errorText, rpcOrigin } from '../client/rpc-error.mjs'
 import { BaseError, ContractFunctionRevertedError, createPublicClient, createWalletClient, defineChain, http } from 'viem'
 import { mnemonicToAccount, privateKeyToAccount } from 'viem/accounts'
 import { solve } from './price.mjs'
 import { solveExternal } from './external.mjs'
 import { solvePeer } from './peer.mjs'
 import { artifactPath } from './artifacts.mjs'
+import { createArkiv } from '../arkiv/index.mjs'
+import { mirrorSettlement } from './mirror.mjs'
 
 const E = process.env
 const RPC_URL = E.RPC_URL || 'http://127.0.0.1:8545'
@@ -116,30 +119,46 @@ async function settleBatch({ b, ids }) {
   const hash = await wallet.writeContract({ address, abi, functionName: sol.peer ? 'settlePeer' : sol.external ? 'settleExternal' : 'settle', args })
   const receipt = await pub.waitForTransactionReceipt({ hash })
   if (receipt.status !== 'success') throw new Error(`batch ${b}: settle tx ${hash} reverted`)
+  await mirrorSettlement({
+    batchId: String(b),
+    pair: `${dep.token0}/${dep.token1}`,
+    clearingPrice: String(sol.priceX96),
+    orderCount: String(orders.length),
+    settleTx: hash,
+  }, createArkiv())
   const price = Number((sol.priceX96 * 10n ** 6n) / 2n ** 96n) / 1e6
   const how = sol.external ? 'public-pool residual route' : sol.peer ? `peer-only match, group ${sol.peer.id}` : sol.marginal ? `limit group represented by ${sol.marginal.id}, representative input ${sol.marginal.amountIn}` : `band midpoint`
-  console.log(`settled batch ${b}: ${orders.length} orders at ${price} token1/token0, ${how}, tx ${hash}`)
+  if (!jsonMode) console.log(`settled batch ${b}: ${orders.length} orders at ${price} token1/token0, ${how}, tx ${hash}`)
+  return { batch: String(b), orders: orders.length, priceX96: String(sol.priceX96), route: how, transaction: hash }
 }
 
 const once = process.argv.includes('--once')
+const jsonMode = process.argv.includes('--json')
 const reported = new Map() // batch -> last error, so a stuck batch is logged once, not every poll
 for (;;) {
   let failed = false
+  const status = { at: new Date().toISOString(), solver: account.address, settlement: address, due: 0, settled: [], errors: [] }
   try {
-    for (const d of await dueBatches()) {
+    const due = await dueBatches()
+    status.due = due.length
+    for (const d of due) {
       try {
-        await settleBatch(d)
+        status.settled.push(await settleBatch(d))
       } catch (e) {
         failed = true
-        const msg = e.shortMessage ?? e.message
-        if (reported.get(d.b) !== msg) console.error(msg)
+        const msg = errorText(e, RPC_URL)
+        status.errors.push({ batch: String(d.b), message: msg })
+        if (!jsonMode && reported.get(d.b) !== msg) console.error(msg)
         reported.set(d.b, msg)
       }
     }
   } catch (e) {
     failed = true
-    console.error(`solver: ${e.shortMessage ?? e.message} (RPC_URL ${RPC_URL})`)
+    const msg = errorText(e, RPC_URL)
+    status.errors.push({ message: msg })
+    if (!jsonMode) console.error(`solver: ${msg} (RPC ${rpcOrigin(RPC_URL)})`)
   }
+  if (jsonMode) console.log(JSON.stringify(status))
   if (once) process.exit(failed ? 1 : 0)
   await new Promise((r) => setTimeout(r, POLL_MS))
 }

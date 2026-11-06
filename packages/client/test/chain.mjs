@@ -20,7 +20,7 @@ export const DRAND = fileURLToPath(new URL('./fixtures/drand.json', import.meta.
 export const DEPOSIT = 5n * 10n ** 18n
 export const user = (i) => mnemonicToAccount(TEST_MNEMONIC, { addressIndex: i })
 
-export async function localChain({ timestamp, schedule = {}, settlementContract = 'BlindfoldSettlement', fee = 0n, admission, configureMarket = true } = {}) {
+export async function localChain({ timestamp, schedule = {}, settlementContract = 'BlindfoldSettlement', fee = 0n, admission, configureMarket = true, timestampInterval, tokenArtifact = null } = {}) {
   const port = await new Promise((r) => { const s = createServer().listen(0, () => { const p = s.address().port; s.close(() => r(p)) }) })
   const rpc = `http://127.0.0.1:${port}`
   const args = ['--silent', '--port', String(port), '--accounts', '20', '--gas-limit', '300000000']
@@ -33,6 +33,8 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
   for (let i = 0; ; i++) {
     try { await pub.getChainId(); break } catch { if (i > 100) throw new Error('anvil did not start'); await sleep(50) }
   }
+  // Recorded-round fixtures may advance one second per mined block while local proofs run.
+  if (timestampInterval != null) await pub.request({ method: 'anvil_setBlockTimestampInterval', params: [timestampInterval] })
   const wait = async (hash) => {
     const r = await pub.waitForTransactionReceipt({ hash })
     if (r.status !== 'success') throw new Error(`reverted ${hash}`)
@@ -44,7 +46,8 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
   const read = (address, name, functionName, a = []) => pub.readContract({ address, abi: art(name).abi, functionName, args: a })
 
   try {
-  const [ta, tb] = [await deploy('MockERC20', ['Token A', 'TKA', 18]), await deploy('MockERC20', ['Token B', 'TKB', 18])]
+  const deployCustom = async (artifact) => (await wait(await wallet.deployContract({ abi: artifact.abi, bytecode: artifact.bytecode.object, args: artifact.args ?? [] }))).contractAddress
+  const [ta, tb] = [tokenArtifact ? await deployCustom(tokenArtifact) : await deploy('MockERC20', ['Token A', 'TKA', 18]), await deploy('MockERC20', ['Token B', 'TKB', 18])]
   const [token0, token1] = [ta, tb].sort((x, y) => (BigInt(x) < BigInt(y) ? -1 : 1))
   const vault = await deploy(admission ? 'AdmissionVault' : 'BlindfoldVault', admission ? [token0, token1] : [])
   const deployBlock = await pub.getBlockNumber()

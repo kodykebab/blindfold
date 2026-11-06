@@ -93,12 +93,12 @@ const SEGS = [
   [1, 'It buys first.', 'Its front-run lands just ahead of you and pushes the price up.'],
   [1, 'You fill at its price.', 'The red gap is what you pay above the price you were quoted.'],
   [1, 'It sells right after.', "The back-run brings the price back down. The gap leaves as the bot's profit."],
-  [2, 'Same swaps, sealed.', 'Your browser encrypts each order to a future drand round and commits it to a batch.'],
+  [2, 'Same swaps, sealed.', 'Your local client encrypts each order to a future drand round and commits it to a batch.'],
   [2, 'The bot sees ciphertext.', 'Direction, size and limit are hidden. There is nothing to front-run.'],
   [2, 'Locked until round R.', 'drand publishes a round every 3 s. Before round R, nobody can decrypt, you included.'],
-  [3, 'Round R opens the batch.', 'Any keeper decrypts and reveals the orders. A commitment nobody reveals is slashed.'],
+  [3, 'Round R opens the batch.', 'Any keeper can decrypt and reveal the orders. Unrevealed commitments follow the deployment’s recovery policy.'],
   [3, 'Everyone clears at p*.', 'One price for the whole batch. An order fills only if its limit holds at p*.'],
-  [3, 'The contract checks it.', 'The leftover is one swap on a pool only the batch can touch. Its price must land on p*, or settle reverts.'],
+  [3, 'The contract checks it.', 'Settlement checks order limits and routes any residual under the deployment’s rules.'],
 ]
 const N = SEGS.length, SEG_VH = 0.9, REST = 0.96
 const DEMO = '0xcf36363eea51f669c391eafc2ec2c3ff1b7a4be5' // a real victim wallet, see fixtures.json
