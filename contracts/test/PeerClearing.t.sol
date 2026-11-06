@@ -5,7 +5,17 @@ import {BatchAuction} from "../src/BatchAuction.sol";
 import {BlindfoldSettlement} from "../src/BlindfoldSettlement.sol";
 import {BlindfoldTest} from "./Blindfold.t.sol";
 
+import {MockExternalMarket} from "./utils/MockExternalMarket.sol";
+
 contract PeerClearingTest is BlindfoldTest {
+    MockExternalMarket market;
+
+    function setUp() public virtual override {
+        super.setUp();
+        market = new MockExternalMarket(address(s), address(t0), address(t1));
+        s.configureExternal(market);
+    }
+
     function _ready(BatchAuction.Order[] memory os, bool removeLiquidity)
         internal
         returns (uint64 b, uint256[] memory ids)
@@ -136,6 +146,7 @@ contract PeerClearingTest is BlindfoldTest {
         s.reveal(moveId, move, "move");
         vm.warp(s.revealCloses(first));
         s.settle(first, Q96 * 985 / 1000);
+        market.setPrice(s.poolPriceX96());
     }
 
     function test_peer_roundingSurplusPaidAndRevealOrderDoesNotChooseRecipient() public {

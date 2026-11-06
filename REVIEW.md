@@ -516,7 +516,7 @@ Validation: 198 passing test executions across ten suites with `forge test --fuz
 
 The user selected peer-only matching first, without mandatory LP lockups. Implemented on `kritarth/peer-clearing`, with consumer integration on `kritarth/peer-solver`, pending shared-seam review. This permits an uneven opposing batch (for example, 100 selling against 50 buying at p=1) to cross 50/50 even when the AMM has no active liquidity.
 
-The price is the existing stored pool price, not a solver-selected price or a new external feed. It can be stale; enforced user limits remain the price protection. The mode requires zero active liquidity and conserved budgets for both tokens, and never routes an AMM residual. Zero active liquidity does not establish that all other tick ranges are empty. A one-sided batch still needs an external counterparty; expiration remains available. This implements a liquidity-independent crossing option, not a universal execution guarantee or a committed-capital backstop.
+The initial peer implementation used the stored pool price. The external-market follow-up below replaces it with a validated historical v3 reference; user limits still apply. The mode requires zero active liquidity and conserved budgets for both tokens, and never routes an AMM residual. Zero active liquidity does not establish that all other tick ranges are empty. A one-sided batch still needs an external counterparty; expiration remains available. This implements a liquidity-independent crossing option, not a universal execution guarantee or a committed-capital backstop.
 
 The shared settlement lifecycle and allocation machinery are reused. No persistent queue, liquidity lock, extra collateral, oracle service, or proof input was added. An additive liquidity view and settlement entry point are the only new calls. Rounding is accounted for entirely: surplus goes to output recipients proportionally, with a commitment-ID tie-break for indivisible remainder, and no batch-created balance remains in settlement. Solver selection still has the previously tracked price/quantity-policy limitations; this feature does not claim maximum-volume completeness for all integer cases.
 
@@ -529,3 +529,22 @@ Peer-only validation (2026-11-06):
 - Local peer candidate search: one simulation, approximately 2 ms in each direction. This excludes setup, state reads, the CLI's fresh pre-send check, submission, and confirmation, and is not a live-network latency claim.
 - The local 64-order settlement call consumed 1,577,677 gas in warm test state. This excludes setup and is not a cold transaction gas estimate. The size check reported 18,513 runtime bytes for the selected build.
 - Touched Solidity files pass formatting checks; both patches pass `git diff --check`.
+
+
+#### External market review gate (S12/S13/S18)
+The Ethereum WETH/USDC implementation adds a fixed-window v3 reference and a
+public-pool residual route; peer execution no longer uses the stored sealed price.
+Production window, liquidity and deviation thresholds still need calibration
+across volatile and quiet periods. Latest observation age is an activity check,
+not proof of an economically fresh or manipulation-resistant price. A single
+pool TWAP can be manipulated; user limits and liquidity checks bound some effects
+but do not establish oracle security.
+
+Public liquidity remains withdrawable and changes before inclusion. Full fills
+are conditional on executable liquidity and user limits, not guaranteed. The
+solver's first external search tries full fills in one-basis-point steps and
+peer-only proportional matching; it does not yet search external partial-fill
+fractions or prove infeasibility. It must be benchmarked against a production RPC
+and the chosen batch deadline. Aqua routing is still a separate integration.
+These changes are unmerged seams pending teammate review and do not integrate
+the parallel admission-proof work.
