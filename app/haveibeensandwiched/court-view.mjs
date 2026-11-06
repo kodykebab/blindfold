@@ -49,6 +49,17 @@ function text(value) {
   return value
 }
 
+/** Decode the ledger's events; the registry's other events (IncidentOpened, UnbondRequested, Unbonded) are skipped, not errors. */
+export function decodeCourtLogs(logs, decodeEventLog) {
+  const events = []
+  for (const log of logs) {
+    let decoded
+    try { decoded = decodeEventLog({ abi: COURT_ABI, data: log.data, topics: log.topics }) } catch { continue }
+    events.push({ event: decoded.eventName, args: Object.fromEntries(Object.entries(decoded.args).map(([key, value]) => [key, text(value)])) })
+  }
+  return events
+}
+
 /** Read BondRegistry events from a local RPC. Hidden when no Court deployment is configured. */
 export async function loadCourt(env = process.env) {
   const deployment = courtDeployment(env)
@@ -65,12 +76,7 @@ export async function loadCourt(env = process.env) {
     })
     const body = await response.json()
     if (body.error) throw new Error(body.error.message || 'court log read failed')
-    const events = (body.result ?? []).map((log) => {
-      const decoded = decodeEventLog({ abi: COURT_ABI, data: log.data, topics: log.topics })
-      const args = Object.fromEntries(Object.entries(decoded.args).map(([key, value]) => [key, text(value)]))
-      return { event: decoded.eventName, args }
-    })
-    return { hidden: false, unavailable: false, rows: courtRows(events) }
+    return { hidden: false, unavailable: false, rows: courtRows(decodeCourtLogs(body.result ?? [], decodeEventLog)) }
   } catch {
     return { hidden: false, unavailable: true, rows: [] }
   }
