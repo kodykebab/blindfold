@@ -5,5 +5,9 @@
   "scripts": {
     "start": "node cli.mjs",
     "test": "node --test"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "1.0.1",
+    "viem": "2.38.2"
   }
 }

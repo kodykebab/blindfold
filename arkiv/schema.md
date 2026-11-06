@@ -18,7 +18,7 @@ Other Arkiv entities in the product plan (`blindfold.commitment`, `court.verdict
 
 | Entity | Fields written here | Owner | Expires | Notes |
 |---|---|---|---|---|
-| `blindfold.batch` | `batchId`, `pair`, `clearingPrice`, `orderCount`, `settleTx` | settlement mirror | 30 days | Public only. `clearingPrice` is the onchain `priceX96` integer as a decimal string. `orderCount` is the event's fill count. |
+| `blindfold.batch` | `batchId` (u256), `pair` (str), `clearingPrice` (str), `orderCount` (u256), `settleTx` (str) | settlement mirror | 30 days | Public only. `clearingPrice` is the onchain `priceX96` integer as a decimal string. `orderCount` is how many orders the solver settled. `batchId` is indexed. |
 | `blindfold.commitment` | `batchId`, `status`, `commitHash`, `ctRef` | committer | reveal deadline + 1 hour | Not written by this package. `ctRef` is unused until Swarm is in. |
 | `court.verdict` | `rpcId`, `pool`, `block`, `refund`, `victimTx` | watcher | 1 year | Not written here. The page reads Court from `BondRegistry` logs when a deployment exists. |
 | `court.rpc` | `rpcId`, `bond`, `provenSandwiches` | watcher | refreshed hourly | Not written here. |
@@ -35,15 +35,48 @@ npm test --prefix packages/arkiv
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ARKIV` | `off` | `off` uses an in-memory fake in this process. `testnet` is the Arkiv network. |
-| `ARKIV_RPC` | unset | Arkiv endpoint. Required before a testnet write. Read from the repo `.env` by `npm start` in the web app. |
-| `ARKIV_KEY` | unset | Arkiv access key. Never put it in the page or in a commit. |
+| `ARKIV` | `off` | `off` writes a local JSON file. `testnet` uses the Arkiv network. |
+| `ARKIV_FILE` | `$CLIENT_STATE/arkiv-local.json` | File used when `ARKIV=off`. The trading page and the solver must share `CLIENT_STATE` (or set the same `ARKIV_FILE`) to see the same rows. |
+| `ARKIV_RPC` | unset | Arkiv HTTP endpoint, for example `https://rpc.rabdi.db-chain.testnet.arkiv.network/<access-key>`. Required before a testnet write. |
+| `ARKIV_KEY` | unset | Hex private key that signs the write and pays testnet tGLM. Put it only in the repo `.env`. Never print it, never commit it, never send it to the page. |
 
-`ARKIV=off` does not read or write the network. `ARKIV=testnet` without both `ARKIV_RPC` and `ARKIV_KEY` is treated as down: `query` throws `history unavailable`. The SDK client is not bundled in this package, so a configured testnet currently reports the same outage instead of sending a partial write. Chain state is unchanged either way.
+`ARKIV=off` does not read or write the network. The file is appended on each settled batch and read back oldest first; `recentBatches` reverses that, so the page sees the newest row first. `ARKIV=testnet` without both `ARKIV_RPC` and `ARKIV_KEY`, or with an endpoint that does not answer, throws `history unavailable`. Chain state is unchanged either way.
+
+Testnet entities use `@arkiv-network/sdk` 1.0.1. The schema name is `blindfold.batch`. Columns:
+
+| Column | Arkiv type | Indexed | Value |
+|---|---|---|---|
+| `batchId` | `u256` | yes | batch id |
+| `pair` | `str` | no | `token0/token1` addresses from the deployment |
+| `clearingPrice` | `str` | no | onchain `priceX96` as a decimal string |
+| `orderCount` | `u256` | no | orders in the settled batch |
+| `settleTx` | `str` | no | settlement transaction hash |
+
+A named schema tags each entity with `arkiv.schema = blindfold.batch`, so a query through the schema does not see other projects' rows. Entities expire after 30 days. The SDK cannot sort by `$createdAt`, so the adapter reads that block number and sorts in process: oldest first from `query`, newest first from `recentBatches`.
+
+```js
+import { createPublicClient, defineSchema, str, u256 } from '@arkiv-network/sdk'
+import { rabdi } from '@arkiv-network/sdk/chains'
+import { http } from 'viem'
+
+const Batch = defineSchema('blindfold.batch', {
+  batchId: u256().indexed(),
+  pair: str(),
+  clearingPrice: str(),
+  orderCount: u256(),
+  settleTx: str(),
+})
+const client = createPublicClient({ chain: rabdi({ accessKey: '' }), transport: http(process.env.ARKIV_RPC) })
+const { entities } = await client.select({
+  batchId: true, pair: true, clearingPrice: true, orderCount: true, settleTx: true,
+}).from(Batch).fetch()
+```
+
+The access key belongs in `ARKIV_RPC` (Rabdi puts it in the URL path). `rabdi({ accessKey: '' })` only supplies the chain id; the transport URL is `ARKIV_RPC`. Do not pass `ARKIV_KEY` as the access key. `ARKIV_KEY` is the writer account. Get tGLM for that account from the Arkiv faucet. Get an access key from hub.arkiv.network/access-keys and keep it inside `ARKIV_RPC` in `.env`.
 
 ## Query examples
 
-In-memory round trip, offline:
+Local file round trip, offline. A second process with the same `ARKIV_FILE` reads the same rows:
 
 ```bash
 ARKIV=off node --input-type=module -e '

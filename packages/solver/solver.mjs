@@ -11,6 +11,8 @@ import { solve } from './price.mjs'
 import { solveExternal } from './external.mjs'
 import { solvePeer } from './peer.mjs'
 import { artifactPath } from './artifacts.mjs'
+import { createArkiv } from '../arkiv/index.mjs'
+import { mirrorSettlement } from './mirror.mjs'
 
 const E = process.env
 const RPC_URL = E.RPC_URL || 'http://127.0.0.1:8545'
@@ -117,6 +119,13 @@ async function settleBatch({ b, ids }) {
   const hash = await wallet.writeContract({ address, abi, functionName: sol.peer ? 'settlePeer' : sol.external ? 'settleExternal' : 'settle', args })
   const receipt = await pub.waitForTransactionReceipt({ hash })
   if (receipt.status !== 'success') throw new Error(`batch ${b}: settle tx ${hash} reverted`)
+  await mirrorSettlement({
+    batchId: String(b),
+    pair: `${dep.token0}/${dep.token1}`,
+    clearingPrice: String(sol.priceX96),
+    orderCount: String(orders.length),
+    settleTx: hash,
+  }, createArkiv())
   const price = Number((sol.priceX96 * 10n ** 6n) / 2n ** 96n) / 1e6
   const how = sol.external ? 'public-pool residual route' : sol.peer ? `peer-only match, group ${sol.peer.id}` : sol.marginal ? `limit group represented by ${sol.marginal.id}, representative input ${sol.marginal.amountIn}` : `band midpoint`
   if (!jsonMode) console.log(`settled batch ${b}: ${orders.length} orders at ${price} token1/token0, ${how}, tx ${hash}`)
