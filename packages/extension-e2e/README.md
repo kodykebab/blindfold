@@ -27,9 +27,12 @@ extension with the same dev key (same ID), used to test the bridge page on its o
 | Case | File | What |
 | --- | --- | --- |
 | harness | `chain.e2e.test.mjs` | the E2 deployment settles a crossing batch at price 1 without the extension |
-| bridge | `bridge.e2e.test.mjs` | discovery, connect, account/chain events, approve+deposit one by one and as an EIP-5792 batch, 4001, wrong chain (switch, 4902 add, refused), wrong account, reconnect |
-| I1, S4 | `origin.e2e.test.mjs` | only the bridge origin can connect; other sites can't reach the extension |
-| I2, E1, E2, S5, F1, F2, E3 | `extension.e2e.test.mjs` | through the real extension (see `extension-team/STATUS.md` for what runs today) |
+| bridge | `bridge.e2e.test.mjs` | stand-in extension: discovery, connect, account/chain events, approve+deposit one by one and as an EIP-5792 batch, 4001, wrong chain (switch, 4902 add, refused), wrong account, port drop mid-request, two tabs |
+| I1, S4 | `origin.e2e.test.mjs` | only the bridge origin gets `chrome.runtime`; wrong port names are dropped; one-shot messages get no answer; two bridge tabs don't fight (B1) |
+| I2, E1, E2, S5, F1, F2 | `extension.e2e.test.mjs` | real extension: wallet list and account/chain changes; deposit and withdraw; commit, reveal, settle at price 1, withdraw, with no plaintext order or salt in `chrome.storage`; wrong chain and wrong vault refused before signing; crash before send keeps the order, crash before inclusion is recovered and revealed |
+| helper | `helper.e2e.test.mjs` | real native messaging from the real extension to `prover-helper` installed into the test profile (stub prover): host manifest, `hello`, error codes |
+| IDs | `interfaces.test.mjs` (offline) | extension ID from the manifest key = INTERFACES.md = bridge `config.mjs`; `externally_connectable` is the bridge origin only |
+| E3 | not yet | real-proof admission through the extension: needs `local-prover` and its parameters (`bash packages/proof-bench/check-admission.sh`); `chain.mjs` already deploys `AdmittedSettlement` with `startChain({ admission })` |
 
 ## C1: MetaMask, by hand
 MetaMask is never downloaded by the harness. With MetaMask installed in Chrome (or Brave/Edge for C6):

@@ -1,7 +1,14 @@
 # Interfaces
 
 Owned by agent 3 (QA lead). Agents 1 and 2 propose under "Proposals"; agent 3 merges them into the spec. Every format
-here has a test in `packages/extension-e2e` or in the owning package.
+here has a test in `packages/extension-e2e` or in the owning package:
+
+| Section | Unit tests | End to end (`packages/extension-e2e`, `npm run e2e`) |
+| --- | --- | --- |
+| Extension ID | `packages/extension` manifest test | `interfaces.test.mjs` (offline: key -> ID = this file = bridge `config.mjs`) |
+| Prover helper | `packages/prover-helper/main_test.go`, `packages/extension/test` helper client | `helper.e2e.test.mjs` (real native messaging, stub prover: manifest, `hello`, error codes); `prepare`/`online` with real proofs: E3, not yet run |
+| Bridge | `packages/bridge/test/protocol.test.mjs` (one test per row), `wallet.test.mjs`; `packages/extension/test/bridge.test.mjs` | `bridge.e2e.test.mjs`, `origin.e2e.test.mjs`, `extension.e2e.test.mjs` |
+| Pages <-> service worker | `packages/extension/test` | `extension.e2e.test.mjs` drives `session`, `setup`, `unlock`, `lock`, `config`, `connect` and the `status`, `track`, `blockers`, `preflight`, `commit`, `deposit`, `cleanup`, `withdraw`, `export` jobs |
 
 ## Extension ID
 `eaoidifkamkmkbcomcbpldjlhipogdgo` (from the dev public key in `packages/extension/manifest.json` `key`; the private key

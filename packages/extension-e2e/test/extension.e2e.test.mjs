@@ -48,7 +48,14 @@ test('I2: the extension sees the wallet list, the account and chain changes from
   await until(async () => (await call(app, 'session')).wallet.chainId === '0x1', 'chain change')
   await b.wallet.setChain('0x7a69')
   await until(async () => (await call(app, 'session')).wallet.chainId === '0x7a69', 'chain back')
-  s = await call(app, 'session')
+  // the extension asks the bridge to connect (Pages <-> SW `connect` -> bridge `connect`)
+  const n = b.wallet.log.filter((x) => x.method === 'eth_requestAccounts').length
+  assert.deepEqual(await call(app, 'connect', { rdns: RDNS }), { requested: true })
+  await until(() => b.wallet.log.filter((x) => x.method === 'eth_requestAccounts').length > n, 'eth_requestAccounts from the extension')
+  // lock / wrong passphrase / unlock
+  assert.deepEqual(await call(app, 'lock'), { unlocked: false })
+  await assert.rejects(call(app, 'unlock', { passphrase: 'wrong' }), /wrong passphrase/)
+  assert.deepEqual(await call(app, 'unlock', { passphrase: PASSPHRASE }), { unlocked: true })
   assert.match(await app.locator('#session').textContent(), new RegExp(`account ${me.address.toLowerCase()} on chain 31337`))
 })
 
@@ -88,6 +95,9 @@ async function counterparty(i, batch, order, salt) {
 
 test('E2: commit, reveal, settle and withdraw without proofs; no plaintext order or salt in storage', { skip }, async () => {
   const app = await openApp(b)
+  const sent = b.wallet.sent.length
+  const pre = await run(app, 'preflight', { side: 'sell', amountIn: '10', minOut: '9' })
+  assert.deepEqual([pre.state, pre.result.ok, b.wallet.sent.length], ['done', true, sent], pre.error) // preflight sends nothing
   await app.locator('#side').selectOption('sell')
   await app.locator('#amount-in').fill('10')
   await app.locator('#min-out').fill('9')
