@@ -56,6 +56,8 @@ Shared (small PR, tell the others): `foundry.toml`, `.gitmodules`, `.gitignore`,
 ## Seams
 Additive changes only (new key, event, overload, optional attribute, CLI flag). A breaking change needs the consumers' OK and an update to this table in the same PR.
 
+Client account selection: `CLIENT_ACCOUNT_INDEX` selects the local Anvil account (default 10). Existing numeric `USER` values remain supported; ordinary OS usernames do not override the default. `PRIVATE_KEY` continues to take precedence.
+
 ### Contracts (producer → consumers)
 | Seam | Producer | Consumers | Exact shape |
 |---|---|---|---|
