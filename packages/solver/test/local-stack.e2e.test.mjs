@@ -128,6 +128,9 @@ test('web order reaches the real keeper and solver and both traders withdraw', {
     assert.equal(solverStatus.due, 1); assert.equal(solverStatus.settled.length, 1)
     assert.equal(solverStatus.settled[0].batch, String(batch)); assert.deepEqual(solverStatus.errors, [])
     assert.equal(await read(settlement, 'BlindfoldSettlement', 'finalized', [batch]), true)
+    const history = await (await fetch(`${origin}/api/history`)).json()
+    assert.equal(history.unavailable, false, JSON.stringify(history))
+    assert.ok(history.batches.some((row) => row.batchId === String(batch) && row.settleTx === solverStatus.settled[0].transaction), JSON.stringify(history))
     // A restarted solver does not settle the finalized batch twice.
     const rerun = JSON.parse((await command(join(root, 'packages/solver/solver.mjs'), ['--once', '--json'], { ...env, SETTLEMENT_ARTIFACT: artifactPath(out, contract) })).trim())
     assert.equal(rerun.due, 0); assert.deepEqual(rerun.settled, []); assert.deepEqual(rerun.errors, [])

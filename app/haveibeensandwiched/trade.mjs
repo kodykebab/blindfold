@@ -1,5 +1,5 @@
 import {
-  amountLimits, balanceFields, batchPhase, displayPair, explainClientError, fundFirst, liquidityNote, mempoolView,
+  amountLimits, balanceFields, batchPhase, displayPair, explainClientError, fundFirst, liquidityNote, mempoolView, quoteLine,
   parseBlockers, parsePreflight, parseStatus, parseTrack, presentJob, preparedBatch, reviewChanges,
   stampQuote, transferCheck, validateAmount,
 } from './status.mjs'
@@ -430,6 +430,14 @@ function showStatus(text) {
     depositWatch = null
   }
   document.querySelector('#balances').hidden = false
+  const quoteEl = document.querySelector('#quote-line')
+  if (quoteEl) {
+    const stamped = stampQuote(parsed.quote)
+    quoteEl.textContent = quoteLine(stamped, parsed.quoteRaw)
+    quoteEl.classList.toggle('stale', Boolean(stamped?.stale))
+  }
+  const liquidityEl = document.querySelector('#liquidity-line')
+  if (liquidityEl) liquidityEl.textContent = liquidityNote(parsed.liquidity)
 }
 function labelSide(selector, title, small) {
   const node = document.querySelector(selector)
@@ -483,7 +491,7 @@ function showReview(text, finished) {
       panel.hidden = false
       panel.classList.add('blocked')
       panel.textContent = `The order changed since the last review.\n${changes.join('\n')}\nReview it again, then confirm.`
-      quote.textContent = stamped.quote ? `${stamped.quote.label}: ${stamped.quote.price}, ${stamped.quote.ageSeconds}s old${stamped.quote.stale ? ' (stale)' : ''}.` : 'Public pool price is not in the client preview, so it is not shown as a live quote.'
+      quote.textContent = quoteLine(stamped.quote, stamped.quoteRaw)
       quote.classList.toggle('stale', Boolean(stamped.quote?.stale))
       liquidity.textContent = liquidityNote(stamped.liquidity)
       document.querySelector('#batch-rule').textContent = stamped.oneBatch || 'One batch at a time per account. A new order waits until the current one settles or is released.'
@@ -497,9 +505,7 @@ function showReview(text, finished) {
   panel.hidden = false
   panel.classList.toggle('blocked', !stamped.ok || Boolean(block) || Boolean(stamped.quote?.stale))
   panel.textContent = presentJob({ state: 'done', action: 'preflight', output: text }).body
-  quote.textContent = stamped.quote
-    ? `${stamped.quote.label}: ${stamped.quote.price} token1 per token0, ${stamped.quote.ageSeconds}s old${stamped.quote.stale ? ' (stale)' : ''}. Shown next to your minimum of ${stamped.minimum}.`
-    : 'Public pool price is not in the client preview, so it is not shown as a live quote.'
+  quote.textContent = `${quoteLine(stamped.quote, stamped.quoteRaw)} Shown next to your minimum of ${stamped.minimum}.`
   quote.classList.toggle('stale', Boolean(stamped.quote?.stale))
   liquidity.textContent = liquidityNote(stamped.liquidity)
   document.querySelector('#batch-rule').textContent = stamped.oneBatch || 'One batch at a time per account. A new order waits until the current one settles or is released.'

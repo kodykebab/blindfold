@@ -38,6 +38,8 @@ test('developer stack deploys real admission contracts and serves a funded local
     }
     const status = await readStatus()
     assert.ok(status?.account); assert.equal(status.rows.length, 2)
+    assert.equal(status.tokens?.[0]?.decimals, 18, 'status --json reports token decimals')
+    assert.equal(status.tokens?.[1]?.decimals, 18)
     assert.ok(status.rows.every((row) => /^100 /.test(row.wallet)), 'both local test tokens are funded')
     assert.equal(status.preparation, 'preparation: none')
     let solverStatus

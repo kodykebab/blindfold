@@ -12,14 +12,15 @@ export function command(input) {
   const { action, side, amount, minimum, token, batch } = input
   if (action === 'prepare-admission' && typeof batch === 'string' && /^(0|[1-9]\d{0,19})$/.test(batch) && BigInt(batch) < (1n << 64n)) return ['prepare-admission', batch]
   if (['track', 'blockers'].includes(action)) return [action, '--json']
-  if (['status', 'resume-admission'].includes(action)) return [action]
+  if (action === 'status') return ['status', '--json']
+  if (action === 'resume-admission') return [action]
   if (action === 'cleanup') return ['cleanup', '--json']
   if (action === 'cleanup-preview') return ['cleanup', '--dry-run', '--json']
   if (['deposit', 'withdraw'].includes(action)) {
     if (!['token0', 'token1'].includes(token)) throw Error('not supported in this deployment')
     if (number(amount) || (action === 'withdraw' && amount === 'all')) return [action, token, amount]
   }
-  if (['preflight', 'commit'].includes(action) && ['buy', 'sell'].includes(side) && number(amount) && number(minimum)) return ['commit', side, amount, minimum, ...(action === 'preflight' ? ['--dry-run'] : []), '--vault-only', '--both-funded']
+  if (['preflight', 'commit'].includes(action) && ['buy', 'sell'].includes(side) && number(amount) && number(minimum)) return ['commit', side, amount, minimum, ...(action === 'preflight' ? ['--dry-run', '--json'] : []), '--vault-only', '--both-funded']
   throw Error('Invalid action or arguments')
 }
 

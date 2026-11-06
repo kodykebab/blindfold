@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream'
 import { command, createJobs } from './trading-server.mjs'
 
 test('only structured supported commands and numeric amounts reach the CLI', () => {
-  assert.deepEqual(command({ action: 'preflight', side: 'sell', amount: '1.2', minimum: '0.5' }), ['commit', 'sell', '1.2', '0.5', '--dry-run', '--vault-only', '--both-funded'])
+  assert.deepEqual(command({ action: 'preflight', side: 'sell', amount: '1.2', minimum: '0.5' }), ['commit', 'sell', '1.2', '0.5', '--dry-run', '--json', '--vault-only', '--both-funded'])
   assert.deepEqual(command({ action: 'withdraw', token: 'token1', amount: 'all' }), ['withdraw', 'token1', 'all'])
   assert.throws(() => command({ action: 'commit', side: 'sell', amount: '1; echo bad', minimum: '1' }))
   assert.deepEqual(command({ action: 'prepare-admission', batch: '42' }), ['prepare-admission', '42'])
@@ -21,7 +21,7 @@ test('jobs serialize, capture output and release the slot on completion', () => 
   let args
   const jobs = createJobs({ start: (a) => { args = a; return child } })
   const id = jobs.start({ action: 'status' })
-  assert.deepEqual(args, ['status']); assert.equal(jobs.get(id).state, 'running')
+  assert.deepEqual(args, ['status', '--json']); assert.equal(jobs.get(id).state, 'running')
   assert.throws(() => jobs.start({ action: 'track' }), /running/)
   child.stdout.write('account example'); child.emit('close', 0)
   const { startedAt, ...job } = jobs.get(id)
