@@ -29,6 +29,7 @@ echo 'Local tier (admission off): real client, web service, keeper, solver and v
 WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs
 STACK_E2E=1 node --test packages/solver/test/local-stack.e2e.test.mjs
 CLIENT_E2E=1 node --test packages/client/test/e2e.test.mjs
+KEEPER_E2E=1 node --test packages/keeper/test/e2e.test.mjs
 SOLVER_E2E=1 node --test packages/solver/test/integration.test.mjs
 if [ "$real_proof" = 1 ]; then
   export ADMISSION_PARAMS="${ADMISSION_PARAMS:-$root/packages/proof-bench/results/admission-params}"

@@ -118,12 +118,19 @@ test('web order reaches the real keeper and solver and both traders withdraw', {
     const keeper = JSON.parse((await command(join(root, 'packages/keeper/keeper.mjs'), ['--once'], { ...env, KEEPER_INDEX: '1' })).trim().split('\n').at(-1))
     assert.equal(keeper.revealed, 2, JSON.stringify(keeper)); assert.deepEqual(keeper.errors, [])
     t.diagnostic('Real keeper decrypted and revealed both commitments')
+    // A restarted (or second) keeper finds nothing left to reveal and keeps the recorded spend.
+    const again = JSON.parse((await command(join(root, 'packages/keeper/keeper.mjs'), ['--once'], { ...env, KEEPER_INDEX: '1' })).trim().split('\n').at(-1))
+    assert.equal(again.revealed, 0, JSON.stringify(again)); assert.deepEqual(again.errors, [])
+    assert.ok(BigInt(again.spentWei) >= BigInt(keeper.spentWei), 'spend survives the restart')
     await until(await read(settlement, 'BlindfoldSettlement', 'revealCloses', [batch]))
     const result = await command(join(root, 'packages/solver/solver.mjs'), ['--once', '--json'], { ...env, SETTLEMENT_ARTIFACT: artifactPath(out, contract) })
     const solverStatus = JSON.parse(result.trim())
     assert.equal(solverStatus.due, 1); assert.equal(solverStatus.settled.length, 1)
     assert.equal(solverStatus.settled[0].batch, String(batch)); assert.deepEqual(solverStatus.errors, [])
     assert.equal(await read(settlement, 'BlindfoldSettlement', 'finalized', [batch]), true)
+    // A restarted solver does not settle the finalized batch twice.
+    const rerun = JSON.parse((await command(join(root, 'packages/solver/solver.mjs'), ['--once', '--json'], { ...env, SETTLEMENT_ARTIFACT: artifactPath(out, contract) })).trim())
+    assert.equal(rerun.due, 0); assert.deepEqual(rerun.settled, []); assert.deepEqual(rerun.errors, [])
     for (const index of [10, 11]) {
       assert.equal(await read(vault, 'BlindfoldVault', 'openCommitments', [user(index).address]), 0n)
       const token = index === 10 ? token1 : token0
