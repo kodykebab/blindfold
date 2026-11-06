@@ -33,12 +33,13 @@ contract RouteEthereumForkTest is Test {
         else vm.createSelectFork(rpc, at);
         forkTime = block.timestamp;
         start = uint64(forkTime - 60);
+        start -= (start - 1_692_803_367) % 3; // MisalignedSchedule: start on a drand round boundary
         emit log_named_uint("routing fork block", block.number);
         vault = new BlindfoldVault();
         PoolManager manager = new PoolManager(address(this));
         s = new BlindfoldSettlement(
             BlindfoldSettlement.Config(
-                manager, vault, USDC, 1e6, 0, address(123), BatchAuction.Schedule(start, 30, 24, 30), 100
+                manager, vault, USDC, 1e6, 0, address(123), 0, BatchAuction.Schedule(start, 30, 24, 30), 100
             )
         );
         vault.setOperator(address(s));
