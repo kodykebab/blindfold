@@ -47,6 +47,15 @@ test('developer stack deploys real admission contracts and serves a funded local
     }
     assert.ok(solverStatus, 'solver emits a JSON status cycle')
     assert.deepEqual(solverStatus.errors, [])
+    const healthPath = log.match(/Service health: (.+)/)?.[1]
+    assert.ok(healthPath, 'the stack reports where its service health is written')
+    let health
+    for (let i = 0; i < 100 && !health?.services?.solver?.detail?.startsWith('last cycle'); i++) {
+      try { health = JSON.parse(readFileSync(healthPath, 'utf8')) } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    assert.equal(health?.ok, true, JSON.stringify(health))
+    assert.deepEqual(Object.keys(health.services), ['rpc', 'deployment', 'prover', 'keeper', 'solver'])
     const directory = log.match(/Local deployment and private state: (.+)/)?.[1]
     assert.ok(directory)
     const dep = JSON.parse(readFileSync(join(directory, 'blindfold.local.json'), 'utf8'))

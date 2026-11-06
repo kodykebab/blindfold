@@ -4,6 +4,20 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 source env.sh
+missing=0
+need() { # need <command> <how to install>
+  if ! command -v "$1" >/dev/null 2>&1; then echo "missing $1: $2" >&2; missing=1; fi
+}
+need node 'install Node 22 (nvm install 22) and check the PATH in env.sh'
+need npm 'comes with Node 22'
+need anvil 'install Foundry: curl -L https://foundry.paradigm.xyz | bash && foundryup'
+need forge 'install Foundry: curl -L https://foundry.paradigm.xyz | bash && foundryup'
+[ -n "${ADMISSION_PROVER:-}" ] || need go 'install Go 1.22+ (brew install go), or set ADMISSION_PROVER to a built local-prover'
+[ "$missing" = 0 ] || exit 1
+node_major="$(node -p 'process.versions.node.split(".")[0]')"
+[ "$node_major" -ge 22 ] || { echo "Node $node_major found; the stack needs Node 22 or newer (nvm install 22)" >&2; exit 1; }
+[ -n "${ADMISSION_PROVER:-}" ] && [ ! -x "$ADMISSION_PROVER" ] && { echo "ADMISSION_PROVER=$ADMISSION_PROVER is not an executable file; unset it to build one" >&2; exit 1; }
+[ -f contracts/lib/v4-core/src/PoolManager.sol ] || { echo 'contracts/lib is empty: run git submodule update --init --recursive' >&2; exit 1; }
 for pkg in packages/client packages/court-watcher packages/keeper packages/solver; do
   if [ ! -d "$pkg/node_modules" ]; then npm ci --prefix "$pkg" --ignore-scripts; fi
 done

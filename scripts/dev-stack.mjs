@@ -13,6 +13,7 @@ const require = createRequire(new URL('../packages/solver/package.json', import.
 const { createPublicClient, createWalletClient, defineChain, getCreate2Address, http, toHex } = require('viem')
 const { mnemonicToAccount } = require('viem/accounts')
 const { artifactPath } = await import('../packages/solver/artifacts.mjs')
+const { stackHealth, formatHealth, readJsonFile } = await import('./stack-health.mjs')
 const params = process.env.ADMISSION_PARAMS, prover = process.env.ADMISSION_PROVER
 if (!params || !prover) throw Error('Set ADMISSION_PARAMS and ADMISSION_PROVER to the prepared local development artifacts')
 const manifest = JSON.parse(readFileSync(join(params, 'manifest.json'), 'utf8'))
@@ -91,19 +92,38 @@ try {
   const env = { ...process.env, RPC_URL: rpc, DEPLOYMENTS: deployment, CONTRACTS_OUT: out, ADMISSION_PARAMS: params, ADMISSION_PROVER: prover,
     PRIVATE_KEY: '', SOLVER_KEY: '', KEEPER_KEY: '', KEEPER_INDEX: '1', KEEPER_STATUS: join(dir, 'keeper-status.json'),
     KEEPER_BUDGET_WEI: '1000000000000000000', KEEPER_MIN_BALANCE_WEI: '1000000000000000', MNEMONIC: mnemonic, DRAND: '', CLIENT_ACCOUNT_INDEX: '10', CLIENT_STATE: join(dir, 'state'),
-    SETTLEMENT_ARTIFACT: artifactPath(out, 'AdmittedSettlement'), PORT: String(webPort), OFFLINE: '', ADMISSION_MIN_LEAD_SECONDS: '120' }
+    SETTLEMENT_ARTIFACT: artifactPath(out, 'AdmittedSettlement'), PORT: String(webPort), OFFLINE: '', ADMISSION_MIN_LEAD_SECONDS: '120', STACK_HEALTH: join(dir, 'health.json') }
   const web = launch(process.execPath, ['server.mjs'], { cwd: join(root, 'app/haveibeensandwiched'), env, stdio: ['ignore', 'pipe', 'inherit'] })
   await new Promise((resolve, reject) => { web.stdout.once('data', resolve); web.once('error', reject); web.once('exit', (code) => reject(Error(`web service exited (${code})`))) })
   web.stdout.pipe(process.stdout)
   const keeper = launch(process.execPath, ['packages/keeper/keeper.mjs'], { cwd: root, env, stdio: 'inherit' })
-  const solver = launch(process.execPath, ['packages/solver/solver.mjs', '--json'], { cwd: root, env, stdio: 'inherit' })
+  const solver = launch(process.execPath, ['packages/solver/solver.mjs', '--json'], { cwd: root, env, stdio: ['ignore', 'pipe', 'inherit'] })
+  let solverStatus = null, pending = ''
+  solver.stdout.on('data', (chunk) => {
+    process.stdout.write(chunk)
+    const lines = (pending + chunk).split('\n'); pending = lines.pop()
+    for (const line of lines) { try { const value = JSON.parse(line); if (value.solver) solverStatus = value } catch {} }
+  })
   for (const [name, child] of [['anvil', anvil], ['web', web], ['keeper', keeper], ['solver', solver]]) {
     child.once('exit', (code) => { console.error(`${name} exited (${code}); stopping the local stack`); stop(); process.exitCode = 1 })
     child.once('error', (error) => { console.error(`${name}: ${error.message}`); stop(); process.exitCode = 1 })
   }
   await sleep(500)
   if ([anvil, web, keeper, solver].some((child) => child.exitCode !== null)) throw Error('A local service stopped during startup')
+  // Service health for the terminal and the page (STACK_HEALTH); printed again whenever a service goes down or recovers.
+  const health = () => stackHealth({ pub, dep: JSON.parse(readFileSync(deployment, 'utf8')), prover,
+    keeper: { child: keeper, status: readJsonFile(env.KEEPER_STATUS) }, solver: { child: solver, status: solverStatus } })
+  let shown = null
+  const report = async () => {
+    const h = await health()
+    writeFileSync(env.STACK_HEALTH, JSON.stringify(h, null, 2), { mode: 0o600 })
+    const down = Object.entries(h.services).filter(([, s]) => !s.ok).map(([name]) => name).join(',')
+    if (down !== shown) { shown = down; console.log(`stack health:\n${formatHealth(h)}`) }
+  }
+  await report()
+  setInterval(() => report().catch((e) => console.error(`stack health: ${e.message}`)), 3000).unref()
   console.log(`LOCAL_WEB_URL=${url}/trade`)
+  console.log(`Service health: ${env.STACK_HEALTH}`)
   console.log(`Local deployment and private state: ${dir}`)
   console.log('Proof-enforced development chain 31337; Anvil test accounts and local test tokens only. Ctrl-C stops this stack.')
 } catch (error) { stop(); console.error(`local stack: ${error.message}`); process.exitCode = 1 }
