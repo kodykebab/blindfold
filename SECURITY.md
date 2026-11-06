@@ -1,6 +1,6 @@
 # Security policy and research backlog
 
-Updated: 2026-11-07. Evidence baseline: `6dc083e` on `kritarth/sandwich-experiment`, with production sources inherited from `8b5f8ca`. This document consolidates the concerns discussed during integration and execution-security research. It is not a completed repository audit, an assurance of production readiness, or approval to deploy funds.
+Updated: 2026-11-07. Evidence baseline: `6dc083e` on `kritarth/sandwich-experiment`, with production sources inherited from `8b5f8ca`. E2/E3/M1 use the same production sources, with only new test-side files added. This document consolidates the concerns discussed during integration and execution-security research. It is not a completed repository audit, an assurance of production readiness, or approval to deploy funds.
 
 The requested research backlog is intentionally recorded here. [REVIEW.md](REVIEW.md) remains the historical design-review record; [PLAN.md](PLAN.md) remains the implementation and ownership tracker. Historical issue titles are not evidence that the current version still contains the original bug. Revalidate against explicit commits before changing statuses.
 
@@ -63,9 +63,56 @@ No blanket “MEV-proof,” “sandwich-proof,” optimal-execution, guaranteed-
 
 **Evidence limits:** E1 uses contract-permitted band-edge clearing proposals, not the solver CLI's selected proposals. It does not include gas, builder payments, capital costs, LP fee recovery, multi-hop strategies or live benign-motion rejection rates. The guard is a bypassable test wrapper, not a deployed invariant. The sampled grid is not an exhaustive profit bound. Later uncommitted harness files are not covered by the 557-test result.
 
-### Unfinished experiment E2
+### Completed experiment E2 (SEC-01): the unchanged solver CLI
 
-The actual-solver follow-up is unfinished. Local draft files `contracts/test/ExternalSandwichActor.sol` and `contracts/test/solver-sandwich.mjs` were created, but produced no validated solver-level result. The attempted run stopped at a local fork chain-ID mismatch before the scenario executed. Review and repair the harness under SEC-01; do not cite it as evidence for protection or vulnerability of the CLI.
+[solver-sandwich.mjs](contracts/test/solver-sandwich.mjs) starts its own anvil fork (chain ID 31337), deploys the unchanged contracts with E1's market and schedule settings, and runs the unchanged `packages/solver/solver.mjs --once`. It routes the CLI's RPC through a logging proxy, so every settlement simulation, the input block and the final simulation are recorded without modifying the solver. Block timestamps advance exactly one second per block, and every compared scenario starts from the same snapshot. An empty block stands in for the front-run in the clean controls. Results record the commit, dirty files, file hashes, artifact compiler profiles and runtime hashes, tool versions, fork block and hash, base fee, and pool `slot0`/liquidity. Main run: fork block **26,358,964** (`0xdb1859…50da`), source `3b1d861` with the solver and `contracts/src` unchanged, and only the new harness files untracked.
+
+Earlier draft failure, diagnosed from the deployment receipt and a call trace: `BlindfoldSettlement` reverted with `InvalidSettlementWindow(600, 300)`. The draft used `settleLength` 600 with `batchLength` 300. This was a harness configuration error, not a contract or solver result.
+
+Modes on identical attacked states, with the attacker trading on the same pool in the victim's direction and then closing its inventory exactly:
+
+- **replay-selected**: the clean CLI transaction's exact calldata executes after the movement.
+- **retry-after-revert**: after that transaction reverts, the CLI runs again, as on its next poll.
+- **search-after-front**: the CLI searches after the movement.
+- **band-edge-settler**: a permissionless caller settles at the reference ±1%, as in E1.
+
+Findings (main run: 8 cases, 222 scenario rows):
+
+- The CLI chooses the executable 1-bps grid price nearest the reference. Its clean floor sits 0.22–1.26 bps below the clean output. Replaying that exact candidate therefore acts as a slippage check of about 1 bps: it settled in only 3 of 57 attacked replays, all at the smallest front, and every rejection left vault, reservation and adapter state identical.
+- That check does not persist. On retry, and on a fresh search, the CLI accepts the moved state: 40/53 and 43/56 attacked rows settled. On every row where a retry ran, its outcome and fill match the fresh search.
+- For one-sided batches the user receives the whole route output, because surplus is returned. The settler's price therefore changes only whether settlement is accepted, not the payout. Wherever the band-edge call settled, its payout equals the CLI's. E1's band-edge proposals do not overstate per-scenario loss relative to normal solver operation, and the closest-to-reference search does not reduce exposure after a movement.
+- Profitability matches E1 on a different block. With 30,000 USDC and 10 WETH orders, all 14 settled fresh-search sandwiches lose after pool fees. With 90,000 USDC and 40 WETH orders, all 14 settled ones profit before gas. The largest observed gross profit was 348 USDC against a 90,000-USDC order, with 72 bps victim loss, and 0.0995 WETH against a 40-WETH order, with 50 bps loss. Fronts at 200 and 500 units were rejected by the market's spot-to-reference check (`PriceDeviation`).
+- Gas for both attacker swaps was 0.22–1.9 M gas. At the fork's base fee of 0.065 gwei this is negligible (at most 0.00012 ETH), so net profit before builder payment is still positive in all 14 profitable rows. A base fee in the tens of gwei would remove the smallest-front profits. Builder payments, capital cost and inventory risk across blocks were not measured.
+- **Size-aware user limits** set the minimum to the simulated output at commit time minus 10 bps. Profitable sandwiches still settled when the induced loss fit inside the tolerance: at most 9.99 bps, including one partial fill of 52,678 of 90,000 USDC. Larger movements made the CLI's search exhaust, leaving the batch for expiry, so those attacks lost.
+- **A band-edge settler at the settle-time reference can violate a limit derived from the commit-time reference.** The batch then finalizes with no fill and releases the order. This happened in all WETH-direction and limited cases.
+- **The CLI's partial search can settle a dust fill.** For the 1,000-WETH order on a clean state, it settled 2.35×10⁻⁷ WETH for 525 raw USDC units at the reference price, finalized the batch and released the rest. The search returns the first executable lot at the nearest anchor and rejects only an all-zero allocation. This is solver behaviour (Bhoumik's lane); the contract permits it.
+- Controls: in every case, repeating the CLI from the same state produced identical calldata, and replaying the clean calldata reproduced the clean fill. Expiry after an unsettled window released the full reservation. All 222 rows passed accounting assertions: input debited only by the fill, the Filled amount credited, vault ERC-20 conservation, limit pro rata, commitment closed, and no stranded adapter or settlement balances.
+
+**Evidence limits:** this covers one pool, one block per run, sampled front sizes and single-order batches, plus E3 for discretion in multi-order batches. The 3,000,000-USDC partial case did not complete in the main run: the CLI hit its 15 s RPC timeout while the fork fetched uncached state, which is an RPC failure, not a search result. The main run then stopped at a local receipt timeout about 128 blocks after the fork block, consistent with public RPC state pruning. The rest ran on a second fork at block **26,359,136**, which replicated the large-order result: 14/14 settled fresh-search sandwiches profitable, with a largest gross profit of 343 USDC at 71 bps victim loss and 0.0995 WETH at 50 bps loss.
+
+With 25 bps size-aware limits, 11 of 14 settled. All were profitable, with induced loss up to 24.9 bps; the other three exhausted the search. The 3,000,000-USDC partial case again hit the CLI's RPC timeout, so it remains unmeasured and needs an archive or faster RPC.
+
+The second run added 128 rows, all of which passed the accounting assertions. A finite grid is not a profit bound, and a search failure is not infeasibility.
+
+### Completed offline test E3 (SEC-02/SEC-06): settler discretion
+
+[ExternalDiscretion.t.sol](contracts/test/ExternalDiscretion.t.sol) uses the mock external market. Its five tests characterise current behaviour; none is a protection claim.
+
+1. In a one-sided batch, every accepted price yields the same payout.
+2. In a mixed batch, the in-band price moves about 0.45 token of 50 crossed between the two sides, so a route-output floor does not bound the peer side.
+3. A settler can choose an in-band price below a user's limit, finalizing with no fill and blocking further settlement.
+4. A settler can exclude one of two same-side orders even though one price fills both.
+5. Even with a loose limit, the partial entry point lets a settler fill 0.001 of a 100-token order and finalize.
+
+The user's own limit is enforced pro rata through `_fill` on every settlement entry point. Fill inclusion, fill quantity and the split between sides are settler choices within the band.
+
+### Measurement M1 (SEC-03/SEC-07): benign motion, one recent period
+
+[sandwich-benign-motion.mjs](contracts/test/sandwich-benign-motion.mjs) reads public Swap logs for blocks 26,349,196–26,358,996: 32.8 h, 7,692 swaps, 9,761 samples at 12 s spacing. The samples are autocorrelated, cover one period and are not a stress sample. It compares spot against the 600 s time-weighted mean tick:
+
+- Absolute spot-to-reference deviation one block after reveal close: median 7.7 bps, p90 26 bps, p99 72 bps. At 120 s (the default `maxDelay`) the p99 is 88 bps.
+- With execution cost of 5–25 bps, honest band rejection is 0–1.3% at a 100 bps band, 1–8% at 50 bps, and 7–54% at 25 bps. The lag in the 600 s reference consumes much of the band, so a tighter band mostly costs availability.
+- A size-aware limit fixed at commit fails to fill under benign adverse drift: at a 150 s horizon, 14–19% with 10 bps tolerance, 3–4% with 25 bps, and 0.4–1% with 50 bps.
 
 ### Previously implemented controls requiring regression review
 
@@ -73,17 +120,24 @@ Current integration includes enforced admission, cumulative private funding stat
 
 ## Research task backlog
 
-Priorities describe investigation order, not vulnerability severity. **P0** covers funds, proof soundness, timing assumptions and claims needed for the proposed release. **P1** covers broader adversarial economics, availability and configuration. **P2** covers separately gated extensions. Owners are suggested from PLAN lanes, not newly accepted assignments. All checkboxes remain open until an evidence artifact and explicit disposition exist.
+Priorities describe investigation order, not vulnerability severity. **P0** covers funds, proof soundness, timing assumptions and claims needed for the proposed release. **P1** covers broader adversarial economics, availability and configuration. **P2** covers separately gated extensions. Owners are suggested from PLAN lanes, not newly accepted assignments. All checkboxes remain open until an evidence artifact and explicit disposition exist. A ticked box means only that the task's research completion criterion is met; it never means the risk is fixed. Each task's **Status** line states research and remediation separately.
 
 ### Execution and MEV
 
-- [ ] **SEC-01 — Actual solver behavior (P0; Bhoumik + Kritarth; #7/#12/#30).** Run the unchanged CLI on isolated forks; record its exact calldata, price, fill allocation, input snapshot and last simulation. Compare an unchanged submitted candidate with a fresh search after intervening market movement. Assert user accounting, partial fills and failed-submission recovery. **Done:** reproducible results separate contract acceptance from actual operator behavior, with positive and negative controls.
+- [x] **SEC-01 — Actual solver behavior (P0; Bhoumik + Kritarth; #7/#12/#30).** Run the unchanged CLI on isolated forks; record its exact calldata, price, fill allocation, input snapshot and last simulation. Compare an unchanged submitted candidate with a fresh search after intervening market movement. Assert user accounting, partial fills and failed-submission recovery. **Done:** reproducible results separate contract acceptance from actual operator behavior, with positive and negative controls.
+  - **Status:** research complete (E2): reproducible harness, positive/negative controls, contract acceptance separated from CLI behaviour. **Remediation: none.** Disposition: findings (non-persistent replay protection, dust partial fill) await owner decisions; solver changes belong to Bhoumik's lane.
 - [ ] **SEC-02 — Output-floor semantics (P0; Kritarth + Bhoumik; needs SEC-01).** Determine whether the proposed floor protects route output, aggregate payouts or each user's outcome. Test multiple orders, mixed directions, partial groups, rounding, surplus, direct-call bypasses and stale or manipulated quote origins. **Done:** specify the enforceable property and show whether every applicable entry point enforces it; otherwise classify it as an operator policy. Do not equate lower exposure with immunity.
+  - **Status:** research in progress (E2, E3). Established: the user limit is the only enforced per-user property, and it holds pro rata on every entry point. A route-output floor bounds only the residual side's aggregate payout and is bypassable by calling `settleExternal` directly. Open: rounding/partial-group interaction under sandwich, and a stale or manipulated quote origin for client limits. **Remediation: none.**
 - [ ] **SEC-03 — Realistic profitability and tolerance (P1; Bhoumik + Kritarth; needs SEC-01).** Expand sizes, pool depths, fee tiers, directions and market states. Include transaction costs, execution failures, builder payments and capital assumptions; distinguish gross token profit from net profit. Measure benign price movement under the same thresholds. **Done:** report sampled profitable regions, user loss and rejection/fill tradeoffs with uncertainty; no universal “safe threshold” from a sampled search.
+  - **Status:** research in progress (E2 gas at base fee, M1 one-period benign motion). Open: builder payments, capital and inventory risk, other pools/fee tiers, stress periods. **Remediation: none.**
 - [ ] **SEC-04 — LP/trader collusion and liquidity timing (P0 for the sealed-pool protection claim; Kritarth + Bhoumik; R5/#18).** Analyze fees and surplus when the executor also owns in-range liquidity, including additions/removals across blocks and batches. Compare against the same LP inventory without the strategy. Test removal-induced expiry and withdrawal availability. **Done:** account for capital and LP inventory, and distinguish actual protection from merely preventing same-block actions.
+  - **Status:** not started. E2 used the public v3 route with no sealed-pool liquidity; no conclusion about JIT/LP fee recovery.
 - [ ] **SEC-05 — Multi-hop and mixed-batch exposure (P1; Kritarth + Bhoumik; #43).** Check each hop and coordinated hop movements, mixed-direction batches, intermediate token balances, per-hop references and final output. Compare peer crossing and residual routing without assuming minimum routed volume maximizes user welfare. **Done:** end-to-end token conservation and measured execution outcomes for each supported route; pair/single-hop conclusions are not generalized.
+  - **Status:** not started for multi-hop; E3 covers single-pair mixed batches only.
 - [ ] **SEC-06 — Clearing discretion and completeness (P0; Kritarth + Bhoumik; R1/R4/R11, #7/#12/#30).** Review price bands, marginal selection, equal-limit priorities, dust and surplus recipients. Compare bounded search with an independent small-domain reference model. **Done:** distinguish an executable solution, best solution under a stated objective, search exhaustion and true infeasibility. Identify any contract-allowed operator advantage separately from honest solver conventions.
+  - **Status:** research in progress (E3). Contract-allowed settler advantages demonstrated: price-dependent value transfer in mixed batches, zero-fill finalization, selective exclusion, and negligible partial fills. Independent reference-model comparison is not done. **Remediation: none.**
 - [ ] **SEC-07 — Oracle integrity and quote provenance (P0; Kritarth + Bhoumik + Khush; #19/#24).** Examine the reference window ending at reveal close, spot checks, liquidity floors, stale observations, RPC freshness, decimals and compounded route bounds. Include manipulation before quoting and across the reference window. Separate indicative reference quotes from size-aware executable quotes. **Done:** supported configurations have justified bounds and fail-closed tests, with quote trust assumptions stated.
+  - **Status:** research in progress (M1). The 600 s reference lags spot by a median of 7.7 bps and a p99 of 72 bps in the sample; the spot check rejected the largest E2 fronts. With the optional activity check enabled (`maxObservationAge` 120 s, as in the fork tests), honest settlement fails during quiet minutes, because v3 writes observations only when the tick changes; the default deployment disables the check. Not covered: manipulation during the reveal window, or quote provenance for client limits. **Remediation: none.**
 
 ### Confidentiality, admission and custody
 
