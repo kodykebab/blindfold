@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -16,20 +17,33 @@ import (
 	"github.com/consensys/gnark/std/math/uints"
 )
 
+type localPreparation struct {
+	ChainID    string `json:"chainId"`
+	Settlement string `json:"settlement"`
+	Owner      string `json:"owner"`
+	Batch      string `json:"batch"`
+	Round      string `json:"round"`
+	Key        string `json:"key"`
+	Sigma      string `json:"sigma"`
+	Blind      string `json:"blind"`
+	Wrapper    string `json:"wrapper"`
+}
+
 type localRequest struct {
-	ChainID    string    `json:"chainId"`
-	Settlement string    `json:"settlement"`
-	Owner      string    `json:"owner"`
-	Batch      string    `json:"batch"`
-	Round      string    `json:"round"`
-	Step       string    `json:"step"`
-	Totals     [2]string `json:"totals"`
-	Budgets    [2]string `json:"budgets"`
-	OldBlind   string    `json:"oldBlind"`
-	ZeroForOne bool      `json:"zeroForOne"`
-	Amount     string    `json:"amount"`
-	Minimum    string    `json:"minimum"`
-	Salt       string    `json:"salt"`
+	Preparation *localPreparation `json:"preparation,omitempty"`
+	ChainID     string            `json:"chainId"`
+	Settlement  string            `json:"settlement"`
+	Owner       string            `json:"owner"`
+	Batch       string            `json:"batch"`
+	Round       string            `json:"round"`
+	Step        string            `json:"step"`
+	Totals      [2]string         `json:"totals"`
+	Budgets     [2]string         `json:"budgets"`
+	OldBlind    string            `json:"oldBlind"`
+	ZeroForOne  bool              `json:"zeroForOne"`
+	Amount      string            `json:"amount"`
+	Minimum     string            `json:"minimum"`
+	Salt        string            `json:"salt"`
 }
 
 func bounded(s string, bits int) *big.Int {
@@ -123,26 +137,27 @@ func localFixture(r localRequest) []any {
 			panic("cumulative private input exceeds budget")
 		}
 	}
-	key, blind, newBlind, nonce := randomBytes(16), randomBytes(32), randomBytes(32), randomBytes(16)
-	var sigma, wrapper []byte
-	for {
-		sigma = randomBytes(16)
-		var ok bool
-		wrapper, ok = quicknetWrapper(round.Uint64(), key, sigma)
-		if ok {
-			break
-		}
+	preparation := r.Preparation
+	if preparation == nil {
+		preparation = prepareLocal(r)
 	}
+	if preparation.ChainID != r.ChainID || !strings.EqualFold(preparation.Settlement, r.Settlement) || !strings.EqualFold(preparation.Owner, r.Owner) || preparation.Batch != r.Batch || preparation.Round != r.Round {
+		panic("preparation context mismatch")
+	}
+	key, sigma, wrapper := fixedHex(preparation.Key, 16), fixedHex(preparation.Sigma, 16), fixedHex(preparation.Wrapper, 128)
+	expected, ok := quicknetWrapper(round.Uint64(), key, sigma)
+	if !ok || !bytes.Equal(expected, wrapper) {
+		panic("invalid prepared wrapper")
+	}
+	newBlind, nonce := randomBytes(32), randomBytes(16)
 	addr := func(b []byte) []byte { return append(make([]byte, 12), b...) }
-	commitment := hashParts(nativeHashBytes("blindfold.prepared-key.v1"), nativeABI(chain), addr(settlement), addr(owner), nativeABI(batch), nativeABI(round), nativeHashBytes(chainHash), nativeHashBytes(publicKey), hashParts(wrapper), key, blind)
 	orderHash := hashParts(nativeABI(chain), addr(settlement), nativeABI(batch), addr(owner), nativeABI(direction), nativeABI(amount), nativeABI(minimum), salt)
 	oldRoot := make([]byte, 32)
 	if step.Sign() != 0 {
 		oldRoot = hashParts(nativeABI(chain), addr(settlement), addr(owner), nativeABI(batch), nativeABI(totals[0]), nativeABI(totals[1]), oldBlind, nativeABI(step))
 	}
 	newRoot := hashParts(nativeABI(chain), addr(settlement), addr(owner), nativeABI(batch), nativeABI(next[0]), nativeABI(next[1]), newBlind, nativeABI(new(big.Int).Add(step, big.NewInt(1))))
-	prep := map[string]any{"context": map[string]any{"chain_id": chain.String(), "settlement": integerBytes(settlement), "owner": integerBytes(owner), "batch": batch.String(), "round": round.String()}, "commitment": integerBytes(commitment)}
-	privatePrep := map[string]any{"key": integerBytes(key), "sigma": integerBytes(sigma), "blind": integerBytes(blind), "wrapper": integerBytes(wrapper)}
+	prepared := preparationFixtureData(preparation)
 	admission := map[string]any{"chain_id": chain.String(), "settlement": integerBytes(settlement), "owner": integerBytes(owner), "batch": batch.String(), "step": step.String(), "old_root": integerBytes(oldRoot), "new_root": integerBytes(newRoot), "budgets": r.Budgets, "order_hash": integerBytes(orderHash)}
 	order := map[string]any{"zero_for_one": r.ZeroForOne, "amount": r.Amount, "minimum": r.Minimum, "totals": r.Totals, "salt": integerBytes(salt), "old_blind": integerBytes(oldBlind), "new_blind": integerBytes(newBlind)}
 	// Build the same canonical AGE payload as the circuit, without temporary witness files.
@@ -155,14 +170,56 @@ func localFixture(r localRequest) []any {
 	ct := canonicalCiphertext(p, f, nonce)
 	admission["ciphertext_hash"] = integerBytes(hashParts(ct))
 	order["ciphertext"] = integerBytes(ct)
-	return []any{prep, privatePrep, map[string]any{"admission": admission}, map[string]any{"order": order}}
+	return []any{prepared[0], prepared[1], map[string]any{"admission": admission}, map[string]any{"order": order}}
 }
-func fixtureCommand() {
+
+// Preparation has no order, funding opening or budget dependency.
+func prepareLocal(r localRequest) *localPreparation {
+	bounded(r.ChainID, 64)
+	bounded(r.Batch, 64)
+	round := bounded(r.Round, 64)
+	if round.Sign() == 0 {
+		panic("zero round")
+	}
+	fixedHex(r.Settlement, 20)
+	fixedHex(r.Owner, 20)
+	key, blind := randomBytes(16), randomBytes(32)
+	var sigma, wrapper []byte
+	for {
+		sigma = randomBytes(16)
+		var ok bool
+		wrapper, ok = quicknetWrapper(round.Uint64(), key, sigma)
+		if ok {
+			break
+		}
+	}
+	h := func(b []byte) string { return "0x" + hex.EncodeToString(b) }
+	return &localPreparation{r.ChainID, r.Settlement, r.Owner, r.Batch, r.Round, h(key), h(sigma), h(blind), h(wrapper)}
+}
+func preparationFixtureData(p *localPreparation) []any {
+	chain, batch, round := bounded(p.ChainID, 64), bounded(p.Batch, 64), bounded(p.Round, 64)
+	settlement, owner := fixedHex(p.Settlement, 20), fixedHex(p.Owner, 20)
+	key, sigma, blind, wrapper := fixedHex(p.Key, 16), fixedHex(p.Sigma, 16), fixedHex(p.Blind, 32), fixedHex(p.Wrapper, 128)
+	addr := func(b []byte) []byte { return append(make([]byte, 12), b...) }
+	commitment := hashParts(nativeHashBytes("blindfold.prepared-key.v1"), nativeABI(chain), addr(settlement), addr(owner), nativeABI(batch), nativeABI(round), nativeHashBytes(chainHash), nativeHashBytes(publicKey), hashParts(wrapper), key, blind)
+	public := map[string]any{"context": map[string]any{"chain_id": chain.String(), "settlement": integerBytes(settlement), "owner": integerBytes(owner), "batch": batch.String(), "round": round.String()}, "commitment": integerBytes(commitment)}
+	private := map[string]any{"key": integerBytes(key), "sigma": integerBytes(sigma), "blind": integerBytes(blind), "wrapper": integerBytes(wrapper)}
+	return []any{public, private}
+}
+func preparationOnlyFixture(r localRequest) map[string]any {
+	p := prepareLocal(r)
+	return map[string]any{"preparation": p, "fixture": preparationFixtureData(p)}
+}
+func fixtureCommand(prepare bool) {
 	var r localRequest
 	d := json.NewDecoder(os.Stdin)
 	d.DisallowUnknownFields()
 	must(d.Decode(&r))
-	must(json.NewEncoder(os.Stdout).Encode(localFixture(r)))
+	if prepare {
+		must(json.NewEncoder(os.Stdout).Encode(preparationOnlyFixture(r)))
+	} else {
+		must(json.NewEncoder(os.Stdout).Encode(localFixture(r)))
+	}
 }
 
 func copyU8(dst []uints.U8, src []byte) { copy(dst, uints.NewU8Array(src)) }

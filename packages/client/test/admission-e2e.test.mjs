@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { localChain, user, DEPOSIT, DRAND } from './chain.mjs'
 import { initialFunding } from '../admission-state.mjs'
-import { proveAdmission } from '../admission.mjs'
+import { proveAdmission, consumePreparation } from '../admission.mjs'
 import { loadState, writeState, parseState } from '../state.mjs'
 import { newSalt, decrypt, drandClient } from '../lib.mjs'
 
@@ -13,8 +13,8 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
   const params = process.env.ADMISSION_PARAMS
   const manifestSha256 = process.env.ADMISSION_MANIFEST_SHA256
   assert.match(manifestSha256 ?? '', /^[0-9a-f]{64}$/)
-  const timestamp = 1692803367n + (1000000n - 3n) * 3n - 900n
-  const c = await localChain({ timestamp, admission: { params, manifestSha256 }, schedule: { batchLength: 900, settleLength: 30 }, fee: 1n })
+  const timestamp = 1692803367n + (1000000n - 3n) * 3n - 600n
+  const c = await localChain({ timestamp, admission: { params, manifestSha256 }, schedule: { batchLength: 300, settleLength: 30 }, fee: 1n })
   const oldState = process.env.CLIENT_STATE
   try {
     process.env.CLIENT_STATE = join(c.dir, 'state')
@@ -24,12 +24,34 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
       await c.write(token, 'MockERC20', 'approve', [c.vault, 100n * 10n ** 18n], user(10))
       await c.write(c.vault, 'BlindfoldVault', 'deposit', [token, 100n * 10n ** 18n], user(10))
     }
+    assert.notEqual((await c.cli(10, ['prepare-admission', '-1'])).code, 0)
+    const advanced = await c.cli(10, ['prepare-admission', '1'])
+    assert.equal(advanced.code, 0, advanced.err)
+    assert.equal(loadState(dep, owner).preparation.batch, '1')
+    const beforeFailure = loadState(dep, owner).preparation
+    const failedPrep = await c.cli(10, ['prepare-admission', '1'], { ADMISSION_PROVER: '/usr/bin/false' })
+    assert.notEqual(failedPrep.code, 0)
+    assert.deepEqual(loadState(dep, owner).preparation, beforeFailure)
+    const wrongNetwork = join(c.dir, 'wrong-network.json')
+    writeFileSync(wrongNetwork, JSON.stringify({ ...dep, chainId: 1 }))
+    const foreign = await c.cli(10, ['prepare-admission', '1'], { DEPLOYMENTS: wrongNetwork })
+    assert.notEqual(foreign.code, 0); assert.match(foreign.err, /RPC network differs/)
+
+    // An early submit must not consume a preparation for a different batch.
+    const early = await c.cli(10, ['commit', 'sell', '1', '1'])
+    assert.notEqual(early.code, 0); assert.match(early.err, /batch or round changed/)
+    assert.ok(loadState(dep, owner).preparation)
+    await c.warp(await c.read(c.settlement, 'AdmittedSettlement', 'commitsClose', [0n]))
     const batch = await c.read(c.settlement, 'AdmittedSettlement', 'currentBatch')
     const round = await c.read(c.settlement, 'AdmittedSettlement', 'targetRound', [batch])
     const closes = await c.read(c.settlement, 'AdmittedSettlement', 'commitsClose', [batch])
     const funding = initialFunding(), salt = newSalt()
     const order = { owner, zeroForOne: true, amountIn: 10n ** 18n, minAmountOut: 1n }
-    const result = await proveAdmission({ dep, owner, batch, round, funding, budgets: [100n * 10n ** 18n, 100n * 10n ** 18n - DEPOSIT - 1n], order, salt })
+    const prepared = consumePreparation(loadState(dep, owner), { dep, owner, batch, round }, (state) => writeState(dep, owner, state))
+    const result = await proveAdmission({ dep, owner, batch, round, prepared, funding, budgets: [100n * 10n ** 18n, 100n * 10n ** 18n - DEPOSIT - 1n], order, salt })
+    assert.equal(result.timings.advancePreparation, true)
+    assert.equal(loadState(dep, owner).preparation, undefined)
+    console.log('advance preparation measurements:', JSON.stringify({ preparationSeconds: prepared.elapsedSeconds, ...result.timings }))
     assert.equal(round, 1000000n)
     assert.deepEqual(await decrypt(result.ciphertext, drandClient(DRAND)), { order, salt })
     const args = [batch, result.hash, result.ciphertext, result.proof]
@@ -49,16 +71,22 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
     saved.commitments.push({ id: null, batchId: batch, round, hash: result.hash, order, salt })
     saved.admission = { ...funding, pending: { ...result, batch, closes } }
     writeState(dep, owner, saved)
+    const submissionStart = performance.now()
     const resume = await c.cli(10, ['resume-admission'])
+    console.log('isolated Anvil resume/submission/inclusion seconds:', (performance.now() - submissionStart) / 1000)
     assert.equal(resume.code, 0, resume.err)
     assert.equal(await c.read(c.settlement, 'AdmittedSettlement', 'commitCount'), 1n)
     const again = await c.cli(10, ['resume-admission'])
     assert.equal(again.code, 0, again.err)
     assert.equal(await c.read(c.settlement, 'AdmittedSettlement', 'commitCount'), 1n)
     await assert.rejects(c.write(c.settlement, 'AdmittedSettlement', 'admit', args, user(10)))
+    const secondPrep = await c.cli(10, ['prepare-admission', String(batch)])
+    assert.equal(secondPrep.code, 0, secondPrep.err)
     const buy = await c.cli(10, ['commit', 'buy', '1', '0.000000000000000001'])
     assert.equal(buy.code, 0, buy.err)
     const final = loadState(dep, owner)
+    assert.equal(final.preparation, undefined)
+    assert.match(buy.out, /generating the online admission proof/)
     assert.deepEqual(final.admission.totals, [10n ** 18n, 10n ** 18n])
     assert.equal(final.admission.step, 2n)
     const exported = join(c.dir, 'backup.json')
@@ -71,6 +99,10 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
     const empty = await c.cli(10, ['commit', 'sell', '1', '1', '--dry-run'], { CLIENT_STATE: join(c.dir, 'empty') })
     assert.notEqual(empty.code, 0); assert.match(empty.err, /stale or missing/)
     // Exercise both ordinary execution and the unrevealed release policy from the same accepted state.
+    await c.warp(closes - 1n)
+    const late = await c.cli(10, ['commit', 'sell', '1', '1'])
+    assert.notEqual(late.code, 0); assert.match(late.err, /preflight failed/)
+    assert.equal(await c.read(c.settlement, 'AdmittedSettlement', 'commitCount'), 2n)
     const snapshot = await c.pub.request({ method: 'evm_snapshot' })
     await c.warp(await c.read(c.settlement, 'AdmittedSettlement', 'revealOpens', [batch]))
     for (const commitment of final.commitments) await c.write(c.settlement, 'AdmittedSettlement', 'reveal', [commitment.id, commitment.order, commitment.salt], user(10))

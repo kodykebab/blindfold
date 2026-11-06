@@ -92,3 +92,45 @@ func TestLocalFixtureKeepsUint128AsDecimalStrings(t *testing.T) {
 		t.Fatal("fixture parser changed integer")
 	}
 }
+
+func TestAdvancePreparationBinding(t *testing.T) {
+	r := localRequest{ChainID: "31337", Settlement: "0x0101010101010101010101010101010101010101", Owner: "0x0202020202020202020202020202020202020202", Batch: "7", Round: "1000"}
+	prepared := preparationOnlyFixture(r)
+	r.Preparation = prepared["preparation"].(*localPreparation)
+	// Order and funding values are chosen only after the preparation has been produced.
+	r.Step = "0"
+	r.Totals = [2]string{"0", "0"}
+	r.Budgets = [2]string{"1000", "1000"}
+	r.OldBlind = "0x" + string(bytes.Repeat([]byte("0"), 64))
+	r.Salt = r.OldBlind
+	r.Amount = "100"
+	r.Minimum = "90"
+	r.ZeroForOne = true
+	f := localFixture(r)
+	before, _ := json.Marshal(prepared["fixture"])
+	after, _ := json.Marshal(f[:2])
+	if !bytes.Equal(before, after) {
+		t.Fatal("online order changed the prepared statement or key")
+	}
+	for _, mutate := range []func(*localRequest){
+		func(r *localRequest) { r.ChainID = "1" }, func(r *localRequest) { r.Owner = r.Settlement },
+		func(r *localRequest) { r.Settlement = r.Owner }, func(r *localRequest) { r.Batch = "8" },
+		func(r *localRequest) { r.Round = "1001" },
+		func(r *localRequest) {
+			p := *r.Preparation
+			p.Key = "0x" + string(bytes.Repeat([]byte("0"), 32))
+			r.Preparation = &p
+		},
+	} {
+		bad := r
+		mutate(&bad)
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Error("foreign or corrupted preparation accepted")
+				}
+			}()
+			localFixture(bad)
+		}()
+	}
+}
