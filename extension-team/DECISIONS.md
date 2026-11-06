@@ -1,18 +1,19 @@
 # Decisions
 
-Defaults the agents build against until Bhoumik decides otherwise. Each one maps to an open question in the design doc.
+Bhoumik decided D1 to D7, D9 and D10 on 2026-11-06 (design doc open questions 1 to 9). D8 is a build convention.
 
-| # | Question | Default for this build | Why |
+| # | Question | Decision | What it means for the build |
 | --- | --- | --- | --- |
-| D1 | Where do proofs run? | Native helper (`packages/prover-helper`) wrapping the Go `local-prover`; no in-browser prover yet | Proofs are large; #60 measures before any browser prover |
-| D2 | Which Groth16 parameters? | Development parameters from `local-prover setup-local` (chain 31337), pinned by their manifest SHA-256 | Production parameters are #61 |
-| D3 | How does Court get receipts? | Out of scope for this build (Court phase 5 needs BondRegistry, not on `main` yet) | Keep the MVP to the auction |
-| D4 | How is the helper installed? | `packages/prover-helper/install.sh` registers the native host for Chrome and Chromium (macOS, Linux), dev only | Signed installers come at release |
-| D5 | Which chain? | Local anvil (31337) using `deployments/blindfold.local.json` and the admission deployment from `check-admission.sh` | Matches the existing real-proof gate |
-| D6 | State key | Passphrase only: PBKDF2-SHA256 (WebCrypto) to an AES-GCM key; no wallet-signature keys | Phishing-safe and simple |
-| D7 | Browsers | Chrome-family; automated tests use Playwright's Chromium (branded Chrome won't load unpacked extensions from the command line) | Testable in CI |
-| D8 | Extension ID | Fixed with a dev `key` in `manifest.json`; the ID is recorded in `INTERFACES.md` | The helper's `allowed_origins` and the bridge need a stable ID |
-| D9 | Bridge origin | Dev: `http://localhost:4317` served from `packages/bridge`; production: a Blindfold https origin (to decide) | `externally_connectable` needs a fixed origin |
+| D1 | Where do proofs run? | **Decided: native helper** (`packages/prover-helper`) wrapping the Go `local-prover` | No in-browser prover in this build |
+| D2 | Which Groth16 parameters? | **Decided: single-machine setup**, for this build and for production | This build uses `local-prover setup-local` parameters (chain 31337), pinned by manifest SHA-256. Whoever runs the production setup could forge proofs, so it must run on a trusted machine and its manifest hash is pinned in the release |
+| D3 | How does Court get receipts? | **Decided: a new protected-RPC method** that returns an account's receipts (e.g. `blindfold_getReceipts(address)`) | Court phase only, not in this build (BondRegistry isn't on `main` yet) |
+| D4 | How is the helper installed? | **Decided: a dev script** (`packages/prover-helper/install.sh`) | Signed per-OS installers come later, at release |
+| D5 | Which chain? | **Decided: local anvil (31337)** using `deployments/blindfold.local.json` and the admission deployment from `check-admission.sh` | Unichain and Court on Base come later |
+| D6 | State key | **Decided: passphrase only.** PBKDF2-SHA256 (WebCrypto) to an AES-GCM key; never a wallet-signature key | A forgotten passphrase means restoring from an export |
+| D7 | Browsers | **Decided: all Chromium browsers** (Chrome, Chromium, Brave, Edge, Arc where its folder is documented) | The helper installer registers the native host in each browser's NativeMessagingHosts folder. Automated tests use Playwright's Chromium |
+| D8 | Extension ID | Fixed with a dev `key` in `manifest.json`: `eaoidifkamkmkbcomcbpldjlhipogdgo` (recorded in `INTERFACES.md`) | The helper's `allowed_origins` and the bridge use it |
+| D9 | Bridge origin | **Decided: a static page on a Blindfold https web address** in production (domain to be chosen) | Dev stays `http://localhost:4317`; the page must work as plain static files |
+| D10 | Ownership | **Decided: co-ownership agreed with Khush (client, UI) and Kritarth (prover) now** | Bhoumik tells them before anything from this branch lands |
 
 ## Proposals
 Add a line: `agent N: proposal ... (why)`. Bhoumik decides.
