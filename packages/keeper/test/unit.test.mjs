@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { BaseError, ContractFunctionRevertedError, encodeErrorResult } from 'viem'
 import { decrypt, drandClient, encrypt, loadAbi, orderHash } from '../../client/lib.mjs'
-import { canSpend, due, lostRace, opened, revertName } from '../work.mjs'
+import { canSpend, due, lostRace, opened, revertName, settledBatches } from '../work.mjs'
 
 const owner = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
 const settlement = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
@@ -24,6 +24,25 @@ test('due: reveal inside the window, slash after it, expire unsettled batches wi
   assert.deepEqual(ids(due(cs, batches, 110n)), { reveal: [0n], slash: [], expire: [] })
   assert.deepEqual(ids(due(cs, batches, 140n)), { reveal: [2n], slash: [0n], expire: [] })
   assert.deepEqual(ids(due(cs, batches, 184n)), { reveal: [], slash: [0n, 2n], expire: [1n] }) // batch 2 has no orders, 3 is final
+})
+
+test('due: settle an unsettled batch once the grace period passes, only inside its settle window', () => {
+  const batches = new Map([
+    [1n, { revealOpens: 100n, revealCloses: 124n, settleCloses: 184n, finalized: false, orders: 2n }],
+    [2n, { revealOpens: 130n, revealCloses: 154n, settleCloses: 214n, finalized: false, orders: 0n }],
+    [3n, { revealOpens: 0n, revealCloses: 1n, settleCloses: 2n, finalized: true, orders: 1n }],
+  ])
+  assert.deepEqual(due([], batches, 130n).settle, [], 'no grace given: the keeper never settles')
+  assert.deepEqual(due([], batches, 138n, 15).settle, [])
+  assert.deepEqual(due([], batches, 139n, 15).settle, [1n]) // batch 2 has no orders, 3 is final
+  assert.deepEqual(due([], batches, 184n, 15).settle, [], 'past the window it expires instead')
+  assert.deepEqual(due([], batches, 184n, 15).expire, [1n])
+})
+
+test('settledBatches reads the solver CLI output', () => {
+  const out = 'settled batch 3: 2 orders at 1 token1/token0, peer-only match, group 0, tx 0xab\nbatch 4: search found no executable candidate\nsettled batch 12: 1 orders at 0.99 token1/token0, public-pool residual route, tx 0xcd\n'
+  assert.deepEqual(settledBatches(out), [3n, 12n])
+  assert.deepEqual(settledBatches(''), [])
 })
 
 test('opened: only a payload that matches its commitment becomes a reveal', () => {
