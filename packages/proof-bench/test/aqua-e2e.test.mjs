@@ -1,4 +1,4 @@
-// Real proof-bound pair orders, recorded drand decryption and the unmodified solver through Aqua + v4.
+// Real proof-bound pair orders, the unmodified keeper and solver through Aqua + v4.
 // Run after forge build --no-dynamic-test-linking with AQUA_E2E=1 and the existing admission parameter env vars.
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { createPublicClient, createWalletClient, defineChain, http, getCreate2Address, toHex, parseEventLogs, encodeAbiParameters } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
-import { ROOT, artifactPath, decrypt, drandClient } from '../../client/lib.mjs'
+import { ROOT, artifactPath } from '../../client/lib.mjs'
 
 const exec = promisify(execFile)
 const mnemonic = 'test test test test test test test test test test test junk'
@@ -19,7 +19,7 @@ const user = (i) => mnemonicToAccount(mnemonic, { addressIndex: i })
 const e18 = 10n ** 18n, Q96 = 1n << 96n
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-test('real admission -> recorded drand -> existing solver -> Aqua/v4 fills -> withdrawals', { skip: process.env.AQUA_E2E !== '1', timeout: 600000 }, async () => {
+test('real admission -> keeper -> solver -> Aqua/v4 fills and expiry -> withdrawals', { skip: process.env.AQUA_E2E !== '1', timeout: 600000 }, async () => {
   const params = process.env.ADMISSION_PARAMS
   assert.ok(params, 'ADMISSION_PARAMS is required')
   const manifestSha256 = createHash('sha256').update(readFileSync(join(params, 'manifest.json'))).digest('hex')
@@ -78,6 +78,8 @@ test('real admission -> recorded drand -> existing solver -> Aqua/v4 fills -> wi
     writeFileSync(deployments, JSON.stringify({ chainId: 31337, deployBlock: 0, settlement, vault, token0, token1, aquaRoute: route, mode: 'admitted', admission: { manifestSha256, preparationVerifier: verifiers[0], onlineVerifier: verifiers[1] } }))
     const fixture = join(ROOT, 'packages/client/test/fixtures/drand.json')
     const env = { ...process.env, CONTRACTS_OUT: out, RPC_URL: rpc, DEPLOYMENTS: deployments, DRAND: fixture, CLIENT_STATE: join(dir, 'state'), CLIENT_BACKUP_DIR: join(dir, 'backups'), QUOTE_MAX_AGE_S: 'off', ADMISSION_MANIFEST_SHA256: manifestSha256 }
+    const keeperEnv = { ...env, KEEPER_SETTLE_GRACE_S: 'off', KEEPER_STATUS: join(dir, 'keeper.json'), KEEPER_BUDGET_WEI: String(100n * e18), KEEPER_MIN_BALANCE_WEI: '0' }
+    const keeper = async () => { await exec(process.execPath, [join(ROOT, 'packages/keeper/keeper.mjs'), '--once'], { env: keeperEnv }); return JSON.parse(readFileSync(keeperEnv.KEEPER_STATUS, 'utf8')) }
     const cli = (i, args) => exec(process.execPath, [join(ROOT, 'packages/client/cli.mjs'), ...args], { env: { ...env, CLIENT_ACCOUNT_INDEX: String(i) }, maxBuffer: 2 ** 22 })
     // Two actual clients generate fresh proofs and fund/submit their own orders.
     assert.match((await cli(10, ['commit', 'sell', '10', '9'])).stdout, /admitted #/)
@@ -87,14 +89,41 @@ test('real admission -> recorded drand -> existing solver -> Aqua/v4 fills -> wi
     const committed = await pub.getContractEvents({ address: settlement, abi: art('AquaAdmittedSettlement').abi, eventName: 'Committed', fromBlock: 0n })
     assert.equal(committed.length, 2)
     await warp(await read(settlement, 'AquaAdmittedSettlement', 'revealOpens', [0n]))
-    for (const event of committed) {
-      const { order: plaintext, salt: secret } = await decrypt(event.args.ciphertext, drandClient(fixture))
-      await write(settlement, 'AquaAdmittedSettlement', 'reveal', [event.args.commitId, plaintext, secret], user(1))
-    }
+    const revealed = await keeper()
+    assert.equal(revealed.revealed, 2)
+    assert.deepEqual(revealed.errors, [])
+    assert.deepEqual(revealed.waitingBeacon, [])
+    assert.deepEqual(revealed.unopenable, [])
+    assert.equal((await keeper()).revealed, 0, 'repeated keeper does not reveal twice')
+    console.log('main keeper discovered, decrypted and revealed both orders')
     await warp(await read(settlement, 'AquaAdmittedSettlement', 'revealCloses', [0n]))
+    // Reuse the freshly admitted batch to check a real service failure and its permissionless exit.
+    // This chain is isolated, and the keeper is a one-shot process, so fixture time travel is safe.
+    const snapshot = await pub.request({ method: 'evm_snapshot' })
+    const solverEnv = { ...env, SETTLEMENT_ARTIFACT: artifactPath(out, 'BlindfoldSettlement') }
+    const solve = () => exec(process.execPath, [join(ROOT, 'packages/solver/solver.mjs'), '--once'], { env: solverEnv })
+    await write(token1, 'MockERC20', 'approve', [registry, 0n])
+    await assert.rejects(solve(), 'missing maker allowance must stop the solver')
+    assert.equal(await read(settlement, 'AquaAdmittedSettlement', 'finalized', [0n]), false)
+    assert.equal(await read(vault, 'BlindfoldVault', 'lockedOf', [user(10).address, token0]), 10n * e18)
+    assert.equal(await read(vault, 'BlindfoldVault', 'lockedOf', [user(11).address, token1]), 5n * e18)
+    assert.equal((await pub.getContractEvents({ address: settlement, abi: art('AquaResidual').abi, fromBlock: 0n, eventName: 'AquaResidualFilled' })).length, 0)
+    await warp(await read(settlement, 'AquaAdmittedSettlement', 'settleCloses', [0n]))
+    const expired = await keeper()
+    assert.equal(expired.expired, 1)
+    assert.deepEqual(expired.errors, [])
+    for (const i of [10, 11]) {
+      assert.match((await cli(i, ['track'])).stdout, /: expired /)
+      for (const token of ['token0', 'token1']) await cli(i, ['withdraw', token, 'all'])
+      assert.equal(await read(vault, 'BlindfoldVault', 'openCommitments', [user(i).address]), 0n)
+    }
+    assert.equal(await read(token0, 'MockERC20', 'balanceOf', [user(10).address]), 100n * e18)
+    assert.equal(await read(token1, 'MockERC20', 'balanceOf', [user(11).address]), 99n * e18 - 1n)
+    assert.equal(await pub.request({ method: 'evm_revert', params: [snapshot] }), true)
+    console.log('revoked allowance blocked settlement; main keeper expired the batch and both clients withdrew')
     const maker0 = await read(token0, 'MockERC20', 'balanceOf', [user(0).address])
     const maker1 = await read(token1, 'MockERC20', 'balanceOf', [user(0).address])
-    const solved = await exec(process.execPath, [join(ROOT, 'packages/solver/solver.mjs'), '--once'], { env: { ...env, SETTLEMENT_ARTIFACT: artifactPath(out, 'BlindfoldSettlement') } })
+    const solved = await solve()
     assert.match(solved.stdout, /settled batch 0/)
     assert.equal(await read(settlement, 'AquaAdmittedSettlement', 'finalized', [0n]), true)
     assert.ok(await read(token0, 'MockERC20', 'balanceOf', [user(0).address]) > maker0)

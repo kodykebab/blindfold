@@ -683,5 +683,8 @@ AQUA_E2E=1 ADMISSION_PARAMS=/path/to/admission-params \
 ```
 
 The gate starts its own Anvil chain, uses recorded drand data, ships a funded strategy,
-accepts two freshly proved orders, decrypts/reveals, executes both venues through the
-solver, checks the actual Aqua taker and maker balances, and withdraws user proceeds.
+accepts two freshly proved orders, runs the keeper to decrypt/reveal, executes both
+venues through the solver, checks the actual Aqua taker and maker balances, and
+withdraws user proceeds. A snapshot of that isolated batch also tests revoked maker
+allowance, solver refusal, keeper expiry and client withdrawal before restoring the
+fixture for successful settlement.
