@@ -118,28 +118,37 @@ async function settleBatch({ b, ids }) {
   if (receipt.status !== 'success') throw new Error(`batch ${b}: settle tx ${hash} reverted`)
   const price = Number((sol.priceX96 * 10n ** 6n) / 2n ** 96n) / 1e6
   const how = sol.external ? 'public-pool residual route' : sol.peer ? `peer-only match, group ${sol.peer.id}` : sol.marginal ? `limit group represented by ${sol.marginal.id}, representative input ${sol.marginal.amountIn}` : `band midpoint`
-  console.log(`settled batch ${b}: ${orders.length} orders at ${price} token1/token0, ${how}, tx ${hash}`)
+  if (!jsonMode) console.log(`settled batch ${b}: ${orders.length} orders at ${price} token1/token0, ${how}, tx ${hash}`)
+  return { batch: String(b), orders: orders.length, priceX96: String(sol.priceX96), route: how, transaction: hash }
 }
 
 const once = process.argv.includes('--once')
+const jsonMode = process.argv.includes('--json')
 const reported = new Map() // batch -> last error, so a stuck batch is logged once, not every poll
 for (;;) {
   let failed = false
+  const status = { at: new Date().toISOString(), solver: account.address, settlement: address, due: 0, settled: [], errors: [] }
   try {
-    for (const d of await dueBatches()) {
+    const due = await dueBatches()
+    status.due = due.length
+    for (const d of due) {
       try {
-        await settleBatch(d)
+        status.settled.push(await settleBatch(d))
       } catch (e) {
         failed = true
         const msg = e.shortMessage ?? e.message
-        if (reported.get(d.b) !== msg) console.error(msg)
+        status.errors.push({ batch: String(d.b), message: msg })
+        if (!jsonMode && reported.get(d.b) !== msg) console.error(msg)
         reported.set(d.b, msg)
       }
     }
   } catch (e) {
     failed = true
-    console.error(`solver: ${e.shortMessage ?? e.message} (RPC_URL ${RPC_URL})`)
+    const msg = e.shortMessage ?? e.message
+    status.errors.push({ message: msg })
+    if (!jsonMode) console.error(`solver: ${msg} (RPC_URL ${RPC_URL})`)
   }
+  if (jsonMode) console.log(JSON.stringify(status))
   if (once) process.exit(failed ? 1 : 0)
   await new Promise((r) => setTimeout(r, POLL_MS))
 }
