@@ -127,27 +127,35 @@ CONTEXT.md's claim that "the solver chooses nothing else" does not hold.
 
 ## R6. Admission proofs limit an account to every other batch; proving time is unmeasured
 
-**Local integration measurement:** the first two-order admission/resume/export/release test completed in about 217 seconds, including fresh preparation and online proofs for both orders, parameter loading and transactions. This is not a per-proof timing sample. The current CLI generates both proofs sequentially during submission, using a 900-second batch in the integration fixture. Advance preparation, realistic latency budgets and validation against the intended production batch duration remain part of R6; passing this gate does not demonstrate a 30-second user flow.
+**Advance preparation (#60):** the native desktop helper now supports `prepare-admission <batch-id>` before order selection. It binds the ready key to the account, chain, settlement, batch, round and parameter manifest, consumes it durably before online encryption, and keeps completed submissions in the existing resume path. Ready keys are excluded from exports. The final fresh-proof gate passed in about 216 seconds with 300-second development batches, advance preparation through the real CLI, independent decryption, pending resume, repeated submission checks, failed preparation, network mismatch, deadline refusal, settlement, withdrawal and release. Two intermediate runs were cancelled after system sleep; the final run used a temporary idle-sleep assertion. The earlier 217-second two-order run measured the previous inline path as a whole, not per-proof latency. Desktop local helper is the selected first delivery target; browser/mobile proving is outside this increment. Production timing, representative device coverage, truly cold-disk loading and network inclusion tails remain separate evidence gates; these local samples do not demonstrate a 30-second flow.
+
+**Desktop samples (2026-11-06):** Apple M5, 10 logical CPUs, 16 GiB RAM, Darwin 25.4.0 arm64, Node 22.23.2, Go 1.27.1. Three fresh-process samples using the unchanged circuits and existing development parameters:
+
+| Phase | Total wall time | Parameter hashing/loading | Proof generation | Maximum process RSS |
+|---|---|---|---|---|
+| Advance preparation | 52.62–55.23 s | 43.17–45.50 s | 9.27–9.76 s | 4.52 GB |
+| Online order | 46.30–47.95 s | 40.77–42.19 s | 5.44–5.65 s | 4.20 GB |
+
+Native verification took 1.4–1.9 ms. Total times include process/fixture overhead. Each prover starts cold, while OS file-cache state is uncontrolled; these are not guaranteed cold-disk samples, a warm resident-worker benchmark or p95 estimates. No concurrent full-suite or other real-proof workload ran during the three samples. The raw ignored artifact is `packages/proof-bench/results/advance-preparation-measurements.json`; regenerate with `node packages/proof-bench/measure-admission.mjs 3` after building the local prover. The JSON records circuit/key hashes, executable SHA-256, source revision/diff identity and device metadata. Manifest SHA-256: `30086f2d95054c64aaeeee08ddff7bc91eda4ebbff6f2583303b637cebeaf688`; prover SHA-256: `0e068868c8558f58eb26837eb05b8b27347df7b6000c4284f00ca9188fd18ead`.
+
+The desktop development policy uses 300-second batches with preflight lead times of 120 seconds for prepared orders and 180 seconds for inline pairs. `ADMISSION_MIN_LEAD_SECONDS` allows a measured desktop to choose a different margin. The client still refuses submission after its deadline. Real-network inclusion tails, sequencer/wall-clock behavior under #31 and additional desktop measurements are required before a production timing claim. Browser/mobile proving and persistent parameter workers are separate scope decisions.
 
 **Where:** [`ReservationModel.t.sol`](contracts/test/ReservationModel.t.sol): `activeBatch` and `step == openCommitments`; [ARCHITECTURE.MD §5](ARCHITECTURE.MD).
 
 **Problem:**
 - **Throughput:** an account can't admit into a new batch until all its earlier commitments close. Batch b's orders close at the earliest when its settle window opens (`revealCloses(b)`), which is the moment batch b+1's commit window ends. So an account trades every other batch at best, and every fourth if settlement is late or the batch expires. The pricing design relies on arbitrageurs, who would need many accounts.
-- **Proving time:** the [proof-bench README](packages/proof-bench/README.md) has no completed end-to-end proving time yet. If proving takes longer than the 30-second commit window, users must fix their order before the batch opens, which ages it.
+- **Proving time:** the native helper samples above exceed a 30-second commit window even after advance preparation. Preparation avoids fixing the order early, but online parameter loading, proving and transaction inclusion still need a measured window.
 
-**In progress:** `main` @ `6b58167` splits the proof in two:
+**Historical split prototype:** `main` @ `6b58167` split the proof in two:
 - a **preparation** proof of the tlock key wrapper, which needs only the round and context, so it can run before the order is chosen;
 - an **online** proof of the payload and funding, per order.
 
-Both are bound together (see the [proof-bench README](packages/proof-bench/README.md#prepared-keys-and-online-admission)), so only the online proof has to fit the commit window. Its end-to-end time is still unmeasured.
+Both are bound together (see the [proof-bench README](packages/proof-bench/README.md#prepared-keys-and-online-admission)), so only the online path has to fit the commit window. The selected direct-Groth16 implementation is now measured above; the historical zkVM path is a separate prototype.
 
-**Fix:**
-- **Measure first:** execute, prove, wrap with Groth16, and verify onchain, end to end on a laptop, for both guest variants, timing the preparation and online proofs separately.
-- **Then pick a mode and write it in ARCHITECTURE.MD:**
-  - prove inside the window, if fast enough;
-  - precompute for batch b+2, accepting an older order;
-  - or batch-length guidance.
-- **Optional:** let a new admission chain from a root that already reflects the previous batch's settled totals, so an account can enter consecutive batches.
+**Remaining gates:**
+- Measure loading, proving, peak memory and submission/inclusion across the supported desktop configurations, explicitly separating process-cold, filesystem-cache and any resident-worker conditions.
+- Validate production batch timing with #31's sequencer/drand assumptions and representative inclusion tails; development margins are not production guarantees.
+- Keep any change to the one-active-batch throughput rule separate from this advance-preparation implementation.
 
 ## R7. Remaining trust in the sequencer and timestamps
 **Where:** `targetRound` ([`BatchAuction.sol:111`](contracts/src/BatchAuction.sol#L111)); the use of `block.timestamp` throughout.
