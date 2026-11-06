@@ -23,10 +23,14 @@ export function flows(ctx) {
   const now = async () => (await pub.getBlock()).timestamp
   const admissionRequired = async () => (has('admissionRequired') ? read(S, 'admissionRequired') : false)
 
+  // Tokens come from the settlement, and the deployment file must agree with the chain it names (S5): a pasted
+  // deployment with a foreign vault or the wrong RPC is refused before anything is read for display or signed.
   let tokenCache
   const tokens = () => (tokenCache ??= loadTokens())
   async function loadTokens() {
-    const [t0, t1, depositToken] = await Promise.all([read(S, 'token0'), read(S, 'token1'), read(S, 'depositToken')])
+    const [chainId, vault, t0, t1, depositToken] = await Promise.all([pub.getChainId(), read(S, 'vault'), read(S, 'token0'), read(S, 'token1'), read(S, 'depositToken')])
+    if (chainId !== Number(dep.chainId)) fail(`the RPC serves chain ${chainId}, the deployment is for ${dep.chainId}`)
+    if (!eq(vault, dep.vault)) fail(`deployment vault ${dep.vault} is not the settlement's vault ${vault}; check the deployment file`)
     const meta = async (address) => {
       const [symbol, decimals] = await Promise.all(['symbol', 'decimals'].map((f) => read(address, f, [], abi.erc20)))
       return { address, symbol, decimals }

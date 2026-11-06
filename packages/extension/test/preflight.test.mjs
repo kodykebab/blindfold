@@ -88,3 +88,13 @@ test('U2 amounts that do not fit uint128 or lack a minimum are refused', async (
   assert.match((await f.commit({ ...order, minOut: '0', dryRun: true })).problems.join(), /no price protection/)
   assert.deepEqual(calls, [])
 })
+
+test('S5: a deployment whose vault is not the settlement\'s, or an RPC on another chain, is refused before any call', async () => {
+  const foreign = await setup({ reads: { vault: '0x00000000000000000000000000000000000000ee' } })
+  await assert.rejects(foreign.f.deposit('token0', '1'), /is not the settlement's vault/)
+  await assert.rejects(foreign.f.commit(order), /is not the settlement's vault/)
+  assert.deepEqual(foreign.calls, [])
+  const other = await setup()
+  other.pub.getChainId = async () => 1
+  await assert.rejects(other.f.status(), /RPC serves chain 1, the deployment is for 31337/)
+})

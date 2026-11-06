@@ -52,7 +52,7 @@ export function committedLog({ commitId, batchId, hash, round = 1n, ciphertext =
 export function mockChain({ reads = {}, events = [], now = 1000n, receipts = {} } = {}) {
   const T = { [T0]: { symbol: 'TK0', decimals: 18 }, [T1]: { symbol: 'TK1', decimals: 18 } }
   const base = {
-    token0: T0, token1: T1, depositToken: T1, currentBatch: 3n, depositAmount: 5n, commitFee: 1n, MAX_COMMITS: 64n,
+    vault: dep.vault, token0: T0, token1: T1, depositToken: T1, currentBatch: 3n, depositAmount: 5n, commitFee: 1n, MAX_COMMITS: 64n,
     commitsClose: 1200n, commitIdsOf: [], targetRound: 42n, admissionRequired: true, admissionState: [0n, `0x${'00'.repeat(32)}`, 0n],
     start: 0n, batchLength: 300, revealLength: 24, settleLength: 30, openCommitments: 0n,
     freeBalance: () => 100n * 10n ** 18n, balanceOf: () => 0n, allowance: () => 0n, lockedOf: () => 0n,
@@ -67,6 +67,7 @@ export function mockChain({ reads = {}, events = [], now = 1000n, receipts = {} 
       return typeof v === 'function' ? v(args, address) : v
     },
     async getBlock() { return { timestamp: chain.now } },
+    async getChainId() { return 31337 },
     async getContractEvents() { return events },
     async simulateContract(req) { chain.simulated.push(req.functionName); return { request: req } },
     async waitForTransactionReceipt({ hash }) { return receipts[hash] ?? { status: 'success', logs: [] } },
