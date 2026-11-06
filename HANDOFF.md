@@ -30,6 +30,8 @@ Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEX
 | Submission docs: `FEEDBACK.md`, `arkiv/*.md`, README line pointers, video | ⬜ | — |
 
 ## Next steps
+The complete delivery backlog is [tracker #67](https://github.com/kodykebab/blindfold/issues/67), with new implementation/release issues #60–#66 and the retained solver, keeper, Court and integration issues. Follow [PLAN delivery issues](PLAN.md#product-delivery-issues) for ownership and ordering. The next proof task is #60; production parameter work is #61, while #62/#63 cover browser delivery and transaction/state recovery.
+
 The current merge results and remaining sequence are in [PLAN.md](PLAN.md#review-and-release-sequence-2026-11-06). The enforced local admission integration addresses #29/#17 using the selected two-proof design; advance preparation and production release requirements remain in REVIEW R6 and PLAN. Current validation commands: `source env.sh`, `cd contracts && forge test --fuzz-runs 4096`, then build deployable test helpers with `forge build --no-dynamic-test-linking` and run `CLIENT_E2E=1 CLIENT_RELEASE_E2E=1 npm test` from `packages/client`. The release-policy fixture tests cleanup only. See REVIEW.md for implementation boundaries and tracked findings.
 
 ## Interfaces to build against

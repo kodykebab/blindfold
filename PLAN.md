@@ -41,6 +41,24 @@ The clean-clone auction target is deploy → fund → generate local proofs → 
 
 Run full Foundry and affected lane checks on the integrated tree. Include relevant fork/fuzz cases, model comparisons, actual proof-bound admission, independent decryption, client/keeper and solver CLI execution, and Court gates. Record offline and network-dependent results separately. Use generated artifacts and deployment manifests throughout.
 
+### Product delivery issues
+
+[Completion tracker #67](https://github.com/kodykebab/blindfold/issues/67) links the complete remaining backlog and its release acceptance evidence. Admission and cumulative local state landed in [PR #59](https://github.com/kodykebab/blindfold/pull/59); the following delivery work builds on that implementation.
+
+| Issue | Delivery outcome | Owner lane | Ordering |
+|---|---|---|---|
+| [#60](https://github.com/kodykebab/blindfold/issues/60) | Measured advance preparation and supported-device timing | Kritarth + Khush | First; coordinates with #31 |
+| [#61](https://github.com/kodykebab/blindfold/issues/61) | Authenticated production setup and parameter distribution | Kritarth | After frozen-source review; before real-funds deployment |
+| [#62](https://github.com/kodykebab/blindfold/issues/62) | Browser trading, tracking, cleanup and withdrawal | Khush | After proving/device decision; reuse #16/#19 |
+| [#63](https://github.com/kodykebab/blindfold/issues/63) | Finality, transaction replacement and device restoration | Khush + Kritarth | Alongside browser integration; reuse existing private state |
+| [#64](https://github.com/kodykebab/blindfold/issues/64) | Clean-clone actual-service E2E and CI | All lanes | Integrate solver/keeper; then browser and separate Court gates |
+| [#65](https://github.com/kodykebab/blindfold/issues/65) | Verified deployment and operated release | All lanes | After timing, config, review and production parameter gates |
+| [#66](https://github.com/kodykebab/blindfold/issues/66) | Independent review and final release handoff | All lanes | Review before setup/deployment; final handoff after staging |
+
+Keep existing issues authoritative: clearing/execution #7/#12/#18/#19/#30; client flow/exit #10/#16; keeper/timing #13/#14/#15/#31; domains/config #23/#24; integrations #25/#26; Court #11/#20/#21/#22/#27/#32; documentation #28. Routing #43 and global auctions #57 remain separate verification scopes with their existing PR stacks. The tracker links all of these rather than duplicating their implementation tasks.
+
+Complete the pair-auction journey with actual keeper/solver services, partial fills, supported outage recovery and browser acceptance. Court must independently demonstrate coverage through collection. Broader routing/global-auction readiness does not follow from the pair-auction gate. New deployment, recovery or custody architecture still requires an explicit scoped decision.
+
 ### Product completion milestones
 
 | Milestone | Owner(s) | Acceptance |
