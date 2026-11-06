@@ -12,6 +12,8 @@ import {BondRegistry} from "../src/court/BondRegistry.sol";
 ///         DeployBlindfold so the registry pins that deployment's PoolManager, or set V4_POOL_MANAGER.
 ///         To judge Ethereum from Base: L1_BLOCK=0x4200000000000000000000000000000000000015 SOURCE_CHAIN_ID=1,
 ///         plus Ethereum's WETH, V3_FACTORY and V4_POOL_MANAGER.
+///         COURT_POOLS: comma-separated pools to cover (v3 pool address left-padded to 32 bytes, or v4 PoolId);
+///         none by default, so every claim reverts UnsupportedPool until it is set (REVIEW R8).
 ///   forge script script/DeployCourt.s.sol --rpc-url http://127.0.0.1:8545 --broadcast
 contract DeployCourt is Script {
     string constant ANVIL_MNEMONIC = "test test test test test test test test test test test junk";
@@ -36,7 +38,8 @@ contract DeployCourt is Script {
                 v3InitCodeHash: vm.envOr("V3_INIT_CODE_HASH", V3_INIT_CODE_HASH),
                 v4PoolManager: vm.envOr("V4_POOL_MANAGER", _poolManager()),
                 unbondDelay: vm.envOr("UNBOND_DELAY", uint256(1 days)),
-                claimWindow: vm.envOr("CLAIM_WINDOW", uint256(10 minutes))
+                claimWindow: vm.envOr("CLAIM_WINDOW", uint256(10 minutes)),
+                pools: vm.envOr("COURT_POOLS", ",", new bytes32[](0))
             })
         );
         vm.stopBroadcast();

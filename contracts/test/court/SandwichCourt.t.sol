@@ -23,7 +23,7 @@ contract VerifierHarness is SandwichCourtVerifier {
         return _recover(raw, 0);
     }
 
-    function predicate(Swap memory f, Swap memory v, Swap memory b) external pure returns (bool, uint256) {
+    function predicate(Swap memory f, Swap memory v, Swap memory b) external pure returns (bool, uint256, uint256) {
         return _predicate(f, v, b);
     }
 }
@@ -101,6 +101,7 @@ abstract contract CourtFixtures is Test {
         assertEq(v.victim, j.readAddress(".victimFrom"));
         assertEq(v.victimTxHash, keccak256(j.readBytes(".victim.rawTx")));
         assertGt(v.profit, 0);
+        assertGt(v.frontIn, v.profit, "the front leg paid in more than the attacker made");
     }
 }
 
@@ -229,9 +230,10 @@ contract SandwichCourtTest is CourtFixtures {
         SandwichCourtVerifier.Swap memory f = SandwichCourtVerifier.Swap(bot, 50, -100);
         SandwichCourtVerifier.Swap memory v = SandwichCourtVerifier.Swap(user, 10, -18);
         SandwichCourtVerifier.Swap memory b = SandwichCourtVerifier.Swap(bot, -52, 100);
-        (bool z, uint256 profit) = court.predicate(f, v, b);
+        (bool z, uint256 profit, uint256 frontIn) = court.predicate(f, v, b);
         assertTrue(z);
         assertEq(profit, 2);
+        assertEq(frontIn, 50);
     }
 
     function test_predicate_rejections() public {
@@ -248,6 +250,13 @@ contract SandwichCourtTest is CourtFixtures {
         court.predicate(f, v, SandwichCourtVerifier.Swap(bot, -26, 50)); // closes only half
         vm.expectRevert(abi.encodeWithSelector(SandwichCourtVerifier.NotSandwich.selector, uint8(3)));
         court.predicate(f, v, SandwichCourtVerifier.Swap(bot, -49, 100)); // a loss
+        // a front that pays nothing in (here token1 = 0) is no sandwich, however much the back gets
+        vm.expectRevert(abi.encodeWithSelector(SandwichCourtVerifier.NotSandwich.selector, uint8(3)));
+        court.predicate(
+            SandwichCourtVerifier.Swap(bot, -100, 0),
+            SandwichCourtVerifier.Swap(user, -18, 10),
+            SandwichCourtVerifier.Swap(bot, 100, -52)
+        );
     }
 
     // ---- signer recovery for every tx type
