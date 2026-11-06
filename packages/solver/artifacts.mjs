@@ -6,7 +6,7 @@ import { join } from 'node:path'
  */
 export function artifactPath(out, name, sourceName = name) {
   const directory = join(out, `${sourceName}.sol`)
-  for (const file of [`${name}.0.8.26.json`, `${name}.json`]) {
+  for (const file of [`${name}.0.8.26.json`, `${name}.0.8.26.default.json`, `${name}.json`]) {
     const path = join(directory, file)
     if (existsSync(path)) return path
   }
