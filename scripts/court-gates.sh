@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Court's release gates (S21, #27), each checked on its own by the offline forge tests that prove it.
-# HANDOFF.md "Court release boundary" says what each gate enforces and its status (attribution waits on S5, #11).
+# HANDOFF.md "Court release boundary" says what each gate enforces and its status.
 #   scripts/court-gates.sh              # every gate, one PASS/FAIL line each
 #   scripts/court-gates.sh valuation    # one gate
 set -uo pipefail
@@ -12,7 +12,7 @@ source ../env.sh
 # gate|forge --match-test filter over test/court/*
 gates='
 issuance|test_rejects_(replay|receiptForAnotherTx|landedAfterMaxBlock|wrongChain|unbondedSigner|tamperedReceipt|noBeneficiary)|test_receiptMustPrecedeTheSandwichBlock|test_paysTheBeneficiary_notTheTxSigner|test_signature_|test_acceptedAt_boundary|test_receiptDigest_isEip712
-attribution|test_predicate|test_recover_allTxTypes|test_demoSandwich_shapeAndBudget
+attribution|test_predicate|test_recover_allTxTypes|test_v4_sharedRouter_victimIsAVictim|test_rejects_sharedRouter_unrelatedWallets|test_demoSandwich_shapeAndBudget
 evidence|test_v[34]_(blockhash|eip2935|anchor)|test_anchor_|test_rejects_(tamperedVictimTx|legsOutOfOrder|wrongV4PoolId|v4ClaimedAsV3|wrongLogHint|unknownBlock|localPathForAnotherChain)
 valuation|test_v3_local_paysTheFeeCappedBudget|test_v3_profitInUsdt_revertsUnpaid|test_v4_zeroFeePool_hasNoBudget|test_rejects_(unlistedPool|v3PoolNotFromFactory|v4NotCanonicalPoolManager|v4WrongPoolKey|zeroBudget|dynamicFeePool)|test_budget_frontFeeCapsTheProfit|test_profitToken_allFourSides|test_v4PoolKeyMustHashExactly|selfSandwich|test_jitLiquidity
 incidents|test_incident_|testFuzz_incidentConservation|test_oneFront_manyBacks|test_rejects_oneBackClosingTwoFronts|test_sameFrontTx_anotherSwapLog|invariant_incidentNeverOverpays

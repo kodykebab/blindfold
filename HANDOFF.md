@@ -3,7 +3,7 @@
 Current status and what to pick up next. Product and design: [CONTEXT.md](CONTEXT.md). Repo rules, setup and gotchas: [AGENTS.md](AGENTS.md).
 
 ## Status
-`forge test`: **146/146 passing** (19 local + 19 Unichain fork + 29 ReservationModel, which re-runs the 19 local + 4 SwapVM + 21 Court verifier + 51 BondRegistry + 3 self-sandwich model).
+`forge test`: **148/148 passing** (19 local + 19 Unichain fork + 29 ReservationModel, which re-runs the 19 local + 4 SwapVM + 21 Court verifier + 51 BondRegistry + 3 self-sandwich model + 2 demo sandwich).
 
 | Piece | State | Where |
 |---|---|---|
@@ -59,7 +59,7 @@ A claim pays only if it passes every gate. Each gate has its own offline tests: 
 | Gate | What a claim must pass | Status | Checked by |
 |---|---|---|---|
 | `issuance` (coverage issuance) | A `Protected` receipt for the victim tx, EIP-712-signed by an RPC with unreserved bond; it names a beneficiary and the chain this registry judges (through the matching block-hash path); the tx landed by `maxBlock`; `acceptedAt` is no later than the sandwich block; one claim per tx | ✅ Built | `BondRegistry.t.sol`, `BondRegistryUnit.t.sol`. Receipts from an RPC: `packages/demo-bots` `test/rpc.test.mjs`, and `court-demo.sh` (the registry accepts what the demo RPC signed) |
-| `attribution` | Front and back signed by one EOA, the victim by another; front and back Swap logs share a trader (v3 recipient, v4 sender), the victim's differs | ⏳ Pending S5 (#11): the trader check takes the Swap log's trader, often a router, as the economic actor, so a sandwich whose attacker and victim share a router is rejected | `SandwichCourt.t.sol` (`test_predicate*`, `test_recover_allTxTypes`); the demo's shape (bot legs through the bot's own contract, the victim through a shared router): `DemoSandwich.t.sol` |
+| `attribution` | Front and back signed by one EOA and swapped by one contract (the pool's caller: `sender` in v3 and v4 Swap events); the victim signed by another EOA, through any route (S5, #11) | ✅ Built | `SandwichCourt.t.sol` (`test_predicate*`, `test_recover_allTxTypes`, the shared-router fixtures); the demo's shape (bot legs through the bot's own contract, the victim through a shared router): `DemoSandwich.t.sol`, `court-demo.sh` |
 | `evidence` (cross-chain evidence) | The header hashes to a known block: BLOCKHASH, EIP-2935, or a checkpointed L1 anchor plus account and storage proofs of L1's EIP-2935 contract; front, victim and back proven into the tx and receipt tries in order; one Swap log each for the claimed pool | ✅ Built, tested on recorded mainnet sandwiches. Not yet run against a live Base deployment | `SandwichCourt.t.sol`, `BondRegistry.t.sol` (anchored claim, wrong path); `court-demo.sh` (BLOCKHASH on anvil) |
 | `valuation` | Profit counts 1:1 only in ETH or WETH (other tokens revert `UnvaluedProfit` and stay claimable); the budget is `min(profit, front leg's fee)`; only listed, static-fee pools from the canonical v3 factory or v4 PoolManager | ✅ Built for ETH/WETH profit; no oracle. The fee cap doesn't hold against a coalition that supplies most of the in-range liquidity (JIT) | `BondRegistry.t.sol`, `BondRegistryUnit.t.sol`, `SelfSandwich.t.sol` (including `test_jitLiquidity_breaksTheBound`) |
 | `incidents` (incident accounting) | Claims on one front swap share one budget; each back swap closes one incident; claims register inside the claim window; each weighs `min(maxPayout, budget)` and collects its share | ✅ Built | `BondRegistryUnit.t.sol` (unit, fuzz and the `incidentNeverOverpays` invariant) |
