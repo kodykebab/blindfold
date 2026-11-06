@@ -7,11 +7,14 @@ import {SandwichCourtVerifier} from "../../src/court/SandwichCourtVerifier.sol";
 import {BondRegistry} from "../../src/court/BondRegistry.sol";
 import {RLPReader} from "../../src/court/lib/RLPReader.sol";
 
-/// @notice BondRegistry against the real mainnet sandwiches in fixtures/: v4 (ETH/0x373c…, hooked; profit in ETH)
-///         and v3 (WETH/USDT 0.01%; profit in USDT, which is not valued).
+/// @notice BondRegistry against the real mainnet sandwiches in fixtures/: v3 USDC/WETH 0.01% (profit in WETH; the
+///         front leg's fee caps the budget below the profit), v4 (ETH/0x373c…, hooked, zero fee: no budget) and v3
+///         WETH/USDT 0.01% (profit in USDT, which is not valued).
 contract BondRegistryTest is CourtFixtures {
     using stdJson for string;
 
+    string constant V3_WETH = "test/court/fixtures/v3weth.json";
+    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     // Ethereum mainnet
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
@@ -41,12 +44,32 @@ contract BondRegistryTest is CourtFixtures {
 
     // ---- payouts
 
-    function test_v4_local_paysVictimTheProfit() public {
+    function test_v3_local_paysTheFeeCappedBudget() public {
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();
+        assertFalse(v.profitInToken0, "attacker profits in token1 = WETH");
+        uint256 budget = v.frontIn * 100 / 1e6; // the front leg's 0.01% fee
+        assertLt(budget, v.profit, "on this real sandwich the fee binds, not the profit");
+        uint256 paid = _claimAndCheck(c, _receipt(v, 100 ether), _wethKey(), budget);
+        assertEq(reg.bondOf(rpc), BOND - paid);
+    }
+
+    function test_v3_anchored_paysTheFeeCappedBudget() public {
+        (SandwichCourtVerifier.Claim memory c, string memory j) = _anchoredClaim(V3_WETH);
+        _checkpoint(j);
+        SandwichCourtVerifier.Verdict memory v = court.verify(c);
+        _claimAndCheck(c, _receipt(v, 100 ether), _wethKey(), v.frontIn * 100 / 1e6);
+    }
+
+    function test_v4_zeroFeePool_hasNoBudget() public {
+        // the real v4 sandwich ran in a zero-fee pool: faking one there costs only gas, so it pays nothing (R8)
         (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
         assertTrue(v.profitInToken0, "attacker profits in currency0 = native ETH");
-        uint256 paid = _claimAndCheck(c, _receipt(v, 100 ether), _v4Key(), v.profit);
-        assertEq(paid, v.profit);
-        assertEq(reg.bondOf(rpc), BOND - v.profit);
+        assertGt(v.profit, 0);
+        BondRegistry.Protected memory r = _receipt(v, 100 ether);
+        bytes memory sig = _sign(RPC_KEY, r);
+        vm.expectRevert(BondRegistry.ZeroBudget.selector);
+        reg.claim(c, r, sig, _v4Key());
+        assertFalse(_claimed(r.txHash));
     }
 
     function test_v3_profitInUsdt_revertsUnpaid() public {
@@ -63,56 +86,62 @@ contract BondRegistryTest is CourtFixtures {
         assertFalse(_claimed(r.txHash));
     }
 
-    function test_v4_anchored_paysVictimInNativeEth() public {
-        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _anchoredV4();
-        assertTrue(v.profitInToken0, "attacker profits in currency0 = native ETH");
-        _claimAndCheck(c, _receipt(v, 100 ether), _v4Key(), v.profit);
-    }
-
     function test_payoutCappedByReceipt() public {
-        // the self-sandwich bound (R8): whoever controls both sides gets at most the receipt's cap
-        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
-        uint256 cap = v.profit / 3;
-        _claimAndCheck(c, _receipt(v, cap), _v4Key(), cap);
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();
+        uint256 cap = v.frontIn * 100 / 1e6 / 3;
+        _claimAndCheck(c, _receipt(v, cap), _wethKey(), cap);
     }
 
     function test_payoutLimitedByBond() public {
-        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();
+        uint256 half = v.frontIn * 100 / 1e6 / 2;
         uint256 key = 0xB0B;
         address thin = vm.addr(key);
         vm.deal(thin, 1 ether);
         vm.prank(thin);
-        reg.bond{value: v.profit / 2}();
+        reg.bond{value: half}();
         BondRegistry.Protected memory r = _receipt(v, 100 ether);
-        _claimAndCheckSigned(c, r, _sign(key, r), _v4Key(), v.profit / 2);
+        _claimAndCheckSigned(c, r, _sign(key, r), _wethKey(), half);
         assertEq(reg.bondOf(thin), 0);
     }
 
     function test_proverGetsGasAtBasefee() public {
-        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();
+        uint256 budget = v.frontIn * 100 / 1e6;
         vm.fee(1 gwei);
         BondRegistry.Protected memory r = _receipt(v, 100 ether);
         bytes memory sig = _sign(RPC_KEY, r); // before the prank: _sign makes an external call
         vm.prank(prover);
-        reg.claim(c, r, sig, _v4Key());
+        reg.claim(c, r, sig, _wethKey());
         uint256 refund = prover.balance;
         assertGt(refund, 0, "the prover is refunded when the claim registers");
         assertEq(reg.bondOf(rpc), BOND - refund);
-        assertEq(reg.reservedOf(rpc), v.profit, "the payout is held until the window closes");
+        assertEq(reg.reservedOf(rpc), budget, "the payout is held until the window closes");
         vm.warp(block.timestamp + WINDOW);
         reg.collect(r.txHash);
-        assertEq(reg.bondOf(rpc), BOND - v.profit - refund);
+        assertEq(reg.bondOf(rpc), BOND - budget - refund);
+    }
+
+    function test_rejects_unlistedPool() public {
+        reg = _registryWith(new bytes32[](0)); // covers no pools
+        vm.prank(rpc);
+        reg.bond{value: BOND}();
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();
+        BondRegistry.Protected memory r = _receipt(v, 100 ether);
+        bytes memory sig = _sign(RPC_KEY, r);
+        vm.expectRevert(BondRegistry.UnsupportedPool.selector);
+        reg.claim(c, r, sig, _wethKey());
     }
 
     // ---- rejections
 
     function test_rejects_replay() public {
-        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();
         BondRegistry.Protected memory r = _receipt(v, 100 ether);
         bytes memory sig = _sign(RPC_KEY, r);
-        reg.claim(c, r, sig, _v4Key());
+        reg.claim(c, r, sig, _wethKey());
         vm.expectRevert(abi.encodeWithSelector(BondRegistry.AlreadyClaimed.selector, r.txHash));
-        reg.claim(c, r, sig, _v4Key());
+        reg.claim(c, r, sig, _wethKey());
     }
 
     function test_rejects_receiptForAnotherTx() public {
@@ -203,11 +232,11 @@ contract BondRegistryTest is CourtFixtures {
 
     function test_paysTheBeneficiary_notTheTxSigner() public {
         // a contract-mediated user: the tx was signed by one account, coverage names a smart wallet
-        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();
         BondRegistry.Protected memory r = _receipt(v, 100 ether);
         r.beneficiary = address(new SmartWallet());
         uint256 signerBefore = v.victim.balance;
-        _claimAndCheck(c, r, _v4Key(), v.profit);
+        _claimAndCheck(c, r, _wethKey(), v.frontIn * 100 / 1e6);
         assertEq(v.victim.balance, signerBefore, "the tx signer gets nothing");
     }
 
@@ -221,15 +250,15 @@ contract BondRegistryTest is CourtFixtures {
     }
 
     function test_receiptMustPrecedeTheSandwichBlock() public {
-        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();
         uint256 ts = _timestamp(c.header);
         BondRegistry.Protected memory r = _receipt(v, 100 ether);
         r.acceptedAt = uint64(ts + 1); // signed after the block that holds the sandwich
         bytes memory sig = _sign(RPC_KEY, r);
         vm.expectRevert(abi.encodeWithSelector(BondRegistry.IssuedAfterIncident.selector, ts + 1, ts));
-        reg.claim(c, r, sig, _v4Key());
+        reg.claim(c, r, sig, _wethKey());
         r.acceptedAt = uint64(ts); // accepted in the same second as the block: still before inclusion
-        _claimAndCheck(c, r, _v4Key(), v.profit);
+        _claimAndCheck(c, r, _wethKey(), v.frontIn * 100 / 1e6);
     }
 
     // ---- unbonding
@@ -241,14 +270,14 @@ contract BondRegistryTest is CourtFixtures {
         vm.expectRevert(abi.encodeWithSelector(BondRegistry.UnbondNotReady.selector, block.timestamp + DELAY));
         reg.unbond();
 
-        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV4();
-        _claimAndCheck(c, _receipt(v, 100 ether), _v4Key(), v.profit); // still pays during the delay
+        (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v) = _localV3Weth();
+        uint256 paid = _claimAndCheck(c, _receipt(v, 100 ether), _wethKey(), v.frontIn * 100 / 1e6); // during the delay
 
         vm.warp(block.timestamp + DELAY);
         uint256 before = rpc.balance;
         vm.prank(rpc);
         reg.unbond();
-        assertEq(rpc.balance - before, BOND - v.profit);
+        assertEq(rpc.balance - before, BOND - paid);
         assertEq(reg.bondOf(rpc), 0);
     }
 
@@ -261,6 +290,18 @@ contract BondRegistryTest is CourtFixtures {
     // ---- helpers
 
     function _registry(address weth, address pm) internal returns (BondRegistry) {
+        bytes32[] memory pools = new bytes32[](3);
+        pools[0] = bytes32(uint256(uint160(vm.readFile(V3_WETH).readAddress(".pool"))));
+        pools[1] = bytes32(uint256(uint160(vm.readFile(V3).readAddress(".pool"))));
+        pools[2] = vm.readFile(V4).readBytes32(".poolId"); // listed, so its zero fee is what stops it
+        return _registryWith(weth, pm, pools);
+    }
+
+    function _registryWith(bytes32[] memory pools) internal returns (BondRegistry) {
+        return _registryWith(WETH, V4_POOL_MANAGER, pools);
+    }
+
+    function _registryWith(address weth, address pm, bytes32[] memory pools) internal returns (BondRegistry) {
         return new BondRegistry(
             BondRegistry.Config({
                 verifier: SandwichCourtVerifier(address(court)),
@@ -270,12 +311,24 @@ contract BondRegistryTest is CourtFixtures {
                 v3InitCodeHash: V3_INIT_CODE_HASH,
                 v4PoolManager: pm,
                 unbondDelay: DELAY,
-                claimWindow: WINDOW
+                claimWindow: WINDOW,
+                pools: pools
             })
         );
     }
 
     /// @dev Registry on Ethereum itself: local BLOCKHASH path.
+    function _localV3Weth()
+        internal
+        returns (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v)
+    {
+        vm.chainId(1);
+        string memory j;
+        (c, j) = _claim(V3_WETH);
+        _installBlockhash(j);
+        v = court.verify(c);
+    }
+
     function _localV4()
         internal
         returns (SandwichCourtVerifier.Claim memory c, SandwichCourtVerifier.Verdict memory v)
@@ -308,6 +361,10 @@ contract BondRegistryTest is CourtFixtures {
         for (uint256 i; i < b.length; i++) {
             t = (t << 8) | uint8(b[i]);
         }
+    }
+
+    function _wethKey() internal pure returns (bytes memory) {
+        return abi.encode(USDC, WETH, uint24(100));
     }
 
     function _v4Key() internal pure returns (bytes memory) {

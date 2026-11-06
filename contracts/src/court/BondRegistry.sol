@@ -11,13 +11,23 @@ import {RLPReader} from "./lib/RLPReader.sol";
 ///         canonical Uniswap pool, landed by `maxBlock`, with the attacker's profit in ETH or WETH. That proves a
 ///         sandwich-shaped sequence and the attacker's profit; it does not prove the RPC leaked the tx, nor how
 ///         much the victim lost, so coverage is capped and profit-based rather than a loss refund.
-///         Payouts per incident (S14): every claim against the same attacker legs (chain, block, pool, front and
-///         back tx) shares one budget, the attacker's profit. The first claim opens a `claimWindow`; claims made in
-///         it reserve their share from their RPC's bond; after it closes each claim collects
+///         Payouts per incident (S14): every claim against the same front-run (chain, block, pool, front tx and
+///         its Swap log) shares one budget, whichever back leg it cites. The first claim opens a `claimWindow`;
+///         claims made in it reserve their share from their RPC's bond; after it closes each claim collects
 ///         `budget * weight / totalWeight` (or its whole weight if the weights fit the budget), where
-///         `weight = min(maxPayout, budget)`. So no claim gets more than its cap and an incident never pays more
-///         than the attacker made, however many receipts (or self-made victims) sit between the same legs (R8).
-///         Unclaimed coverage stays in the bond.
+///         `weight = min(maxPayout, budget)`. Unclaimed coverage stays in the bond.
+///         Self-sandwiches (R8): Court can't tell a leak from someone sandwiching their own tx, so a payout must never
+///         be worth faking. The budget is `min(profit, frontIn * fee / 1e6)`: the attacker's profit, capped by the
+///         swap fee its front leg paid. Reaching the same holdings through front, victim and back costs at least
+///         the fees of the extra legs more than one direct trade would (pool state is path-independent; fees leave
+///         the curve), so a coalition playing both sides loses at least what the back leg's fee and gas cost. This
+///         holds only where the coalition does not earn the fees back, so:
+///         - only pools the deployer lists in `Config.pools` are covered (anyone can create a pool and be its only
+///           LP), with a static fee; zero-fee pools have no budget and their claims revert;
+///         - an incident is one front swap paired with one back swap, neither reused by another incident, so
+///           pairing legs differently can't count a fee twice;
+///         - out of scope: a coalition that provides most of a listed pool's in-range liquidity (JIT) and so
+///           recovers most of the fees. `maxPayout` and the bond bound what that can take.
 ///         - Profit is valued 1:1 only when it is in ETH or WETH; claims for other profit tokens revert unpaid.
 ///         - Pools are pinned: v3 pools must come from the canonical factory, v4 from the canonical PoolManager.
 ///         One registry judges one source chain: its own chain via BLOCKHASH/EIP-2935, or Ethereum through
@@ -41,10 +51,11 @@ contract BondRegistry {
         address v4PoolManager;
         uint256 unbondDelay;
         uint256 claimWindow;
+        bytes32[] pools; // covered pools: a v3 pool's address (left-padded) or a v4 PoolId
     }
 
     struct Incident {
-        uint256 budget; // the attacker's profit, shared by every claim on this incident
+        uint256 budget; // min(profit, front leg's fee), shared by every claim on this incident
         uint256 totalWeight;
         uint64 closesAt; // claims accepted before, collected from
     }
@@ -61,6 +72,7 @@ contract BondRegistry {
     bytes32 public constant PROTECTED_TYPEHASH = keccak256(
         "Protected(bytes32 txHash,uint256 chainId,uint64 acceptedAt,uint64 maxBlock,uint256 maxPayout,address beneficiary)"
     );
+    uint256 internal constant FEE_UNITS = 1e6; // Uniswap fees are in hundredths of a bip
     bytes32 internal constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
@@ -71,6 +83,9 @@ contract BondRegistry {
     error TooLate(uint256 blockNumber, uint256 maxBlock);
     error IssuedAfterIncident(uint256 acceptedAt, uint256 blockTimestamp);
     error UnknownPool();
+    error UnsupportedPool();
+    error ZeroBudget();
+    error BackLegReused();
     error UnvaluedProfit(address token);
     error BadSignature();
     error NoBond(address rpc);
@@ -110,6 +125,8 @@ contract BondRegistry {
     mapping(address rpc => uint256) public unbondAt;
     mapping(bytes32 incident => Incident) public incidents;
     mapping(bytes32 txHash => Claim) public claims;
+    mapping(bytes32 pool => bool) public covered;
+    mapping(bytes32 backSwap => bool) public backUsed; // pool, pool id, back tx and its Swap log
 
     constructor(Config memory c) {
         verifier = c.verifier;
@@ -120,6 +137,9 @@ contract BondRegistry {
         v4PoolManager = c.v4PoolManager;
         unbondDelay = c.unbondDelay;
         claimWindow = c.claimWindow;
+        for (uint256 i; i < c.pools.length; i++) {
+            covered[c.pools[i]] = true;
+        }
     }
 
     // ---- bonds
@@ -162,9 +182,9 @@ contract BondRegistry {
     ) external returns (bytes32 incident) {
         uint256 gasStart = gasleft();
         address rpc = _checkReceipt(c, r, sig);
-        uint256 profit;
-        (incident, profit) = _proveIncident(c, r, poolKey);
-        uint256 free = _register(incident, profit, rpc, r);
+        uint256 budget;
+        (incident, budget) = _proveIncident(c, r, poolKey);
+        uint256 free = _register(incident, budget, rpc, r);
         // shortcut: execution gas at basefee only (no calldata or L1 data fee); add an overhead if provers need it
         uint256 refund = (gasStart - gasleft()) * block.basefee;
         if (refund > free) refund = free;
@@ -210,6 +230,12 @@ contract BondRegistry {
         return keccak256(abi.encodePacked("\x19\x01", domain, h));
     }
 
+    /// @notice An incident's budget: the attacker's profit, capped by the swap fee its front leg paid.
+    function budgetFor(uint256 profit, uint256 frontIn, uint24 fee) public pure returns (uint256) {
+        uint256 cap = (frontIn * fee) / FEE_UNITS;
+        return profit < cap ? profit : cap;
+    }
+
     // ---- internals
 
     /// @dev Receipt-only checks, cheapest first: new claim, a beneficiary, the right chain and path, a bonded signer.
@@ -227,11 +253,11 @@ contract BondRegistry {
         if (bondOf[rpc] == reservedOf[rpc]) revert NoBond(rpc);
     }
 
-    /// @dev Verifies the sandwich and returns its incident id and the attacker's (ETH-valued) profit.
+    /// @dev Verifies the sandwich; returns its incident id (its front leg's swap) and its budget in ETH. A new
+    ///      incident also takes its back leg's swap.
     function _proveIncident(SandwichCourtVerifier.Claim calldata c, Protected calldata r, bytes calldata poolKey)
         internal
-        view
-        returns (bytes32 incident, uint256 profit)
+        returns (bytes32 incident, uint256 budget)
     {
         SandwichCourtVerifier.Verdict memory v = verifier.verify(c);
         if (v.victimTxHash != r.txHash) revert NotReceipted();
@@ -239,25 +265,32 @@ contract BondRegistry {
         uint256 ts = _blockTimestamp(c.header); // `verify` authenticated this header
         if (r.acceptedAt > ts) revert IssuedAfterIncident(r.acceptedAt, ts);
         // shortcut: only ETH/WETH profit is valued (1:1); others revert unpaid so a later valuation can still pay them
-        address token = _profitToken(c, poolKey, v.profitInToken0);
+        (address token, uint24 fee) = _pool(c, poolKey, v.profitInToken0);
         if (token != weth && token != address(0)) revert UnvaluedProfit(token);
-        incident = keccak256(
-            abi.encode(r.chainId, v.blockHash, c.pool, c.poolId, keccak256(c.front.rawTx), keccak256(c.back.rawTx))
-        );
-        profit = v.profit;
+        budget = budgetFor(v.profit, v.frontIn, fee);
+        if (budget == 0) revert ZeroBudget();
+        // incidents pair one front swap with one back swap, so each budget stands for a real round trip (R8):
+        // several fronts closed by one back, or one front by several backs, can't count a fee more than once
+        incident =
+            keccak256(abi.encode(r.chainId, v.blockHash, c.pool, c.poolId, keccak256(c.front.rawTx), c.front.logIndex));
+        if (incidents[incident].closesAt == 0) {
+            bytes32 back = keccak256(abi.encode(c.pool, c.poolId, keccak256(c.back.rawTx), c.back.logIndex));
+            if (backUsed[back]) revert BackLegReused();
+            backUsed[back] = true;
+        }
     }
 
     /// @dev Opens the incident on its first claim, records this claim and reserves its weight from the bond.
     /// @return free the RPC's bond left unreserved
-    function _register(bytes32 incident, uint256 profit, address rpc, Protected calldata r)
+    function _register(bytes32 incident, uint256 budget, address rpc, Protected calldata r)
         internal
         returns (uint256 free)
     {
         Incident storage inc = incidents[incident];
         if (inc.closesAt == 0) {
-            inc.budget = profit;
+            inc.budget = budget;
             inc.closesAt = uint64(block.timestamp + claimWindow);
-            emit IncidentOpened(incident, profit, inc.closesAt);
+            emit IncidentOpened(incident, budget, inc.closesAt);
         } else if (block.timestamp >= inc.closesAt) {
             revert ClaimWindowClosed(incident, inc.closesAt);
         }
@@ -277,22 +310,29 @@ contract BondRegistry {
         if (s == address(0)) revert BadSignature();
     }
 
-    /// @dev Checks the pool really is a Uniswap pool and returns the token the attacker profited in.
-    function _profitToken(SandwichCourtVerifier.Claim calldata c, bytes calldata poolKey, bool inToken0)
+    /// @dev Checks the pool is a covered Uniswap pool with a static fee; returns the profit token and the fee.
+    function _pool(SandwichCourtVerifier.Claim calldata c, bytes calldata poolKey, bool inToken0)
         internal
         view
-        returns (address)
+        returns (address token, uint24 fee)
     {
+        address t0;
+        address t1;
+        (t0, t1, fee) = abi.decode(poolKey, (address, address, uint24)); // a v4 PoolKey starts with the same three
+        bytes32 id;
         if (c.v4) {
             if (c.pool != v4PoolManager || keccak256(poolKey) != c.poolId) revert UnknownPool();
-            (address c0, address c1) = abi.decode(poolKey, (address, address));
-            return inToken0 ? c0 : c1;
+            id = c.poolId;
+        } else {
+            bytes32 salt = keccak256(abi.encode(t0, t1, fee));
+            address pool =
+                address(uint160(uint256(keccak256(abi.encodePacked(hex"ff", v3Factory, salt, v3InitCodeHash)))));
+            if (pool != c.pool) revert UnknownPool();
+            id = bytes32(uint256(uint160(pool)));
         }
-        (address t0, address t1, uint24 fee) = abi.decode(poolKey, (address, address, uint24));
-        bytes32 salt = keccak256(abi.encode(t0, t1, fee));
-        address pool = address(uint160(uint256(keccak256(abi.encodePacked(hex"ff", v3Factory, salt, v3InitCodeHash)))));
-        if (pool != c.pool) revert UnknownPool();
-        return inToken0 ? t0 : t1;
+        // a v4 dynamic fee (flag 0x800000) can't be read from the key
+        if (!covered[id] || fee > FEE_UNITS) revert UnsupportedPool();
+        token = inToken0 ? t0 : t1;
     }
 
     /// @dev Header field 11 is the block timestamp (every fork since Frontier).

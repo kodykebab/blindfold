@@ -78,6 +78,7 @@ contract SandwichCourtVerifier {
         address victim;
         bool profitInToken0;
         uint256 profit;
+        uint256 frontIn; // what the front leg paid into the pool, in the profit token, swap fee included
     }
 
     struct Swap {
@@ -123,7 +124,7 @@ contract SandwichCourtVerifier {
         address vSigner = _proveAndRecover(c.victim, h.txRoot);
         address bSigner = _proveAndRecover(c.back, h.txRoot);
 
-        (bool z, uint256 profit) = _predicate(f, vs, b);
+        (bool z, uint256 profit, uint256 frontIn) = _predicate(f, vs, b);
         if (fSigner != bSigner) revert NotSandwich(6);
         if (vSigner == fSigner) revert NotSandwich(7);
 
@@ -134,7 +135,8 @@ contract SandwichCourtVerifier {
             attacker: fSigner,
             victim: vSigner,
             profitInToken0: z,
-            profit: profit
+            profit: profit,
+            frontIn: frontIn
         });
     }
 
@@ -246,7 +248,11 @@ contract SandwichCourtVerifier {
     // ---- 4. predicate
 
     /// @return z true if the attacker starts (and profits) in token0
-    function _predicate(Swap memory f, Swap memory v, Swap memory b) internal pure returns (bool z, uint256 profit) {
+    function _predicate(Swap memory f, Swap memory v, Swap memory b)
+        internal
+        pure
+        returns (bool z, uint256 profit, uint256 frontIn)
+    {
         z = f.amount0 > 0; // front pays token0 into the pool
         if ((v.amount0 > 0) != z) revert NotSandwich(1); // victim trades the same direction
         if ((b.amount0 > 0) == z) revert NotSandwich(1); // back trades the opposite direction
@@ -260,8 +266,9 @@ contract SandwichCourtVerifier {
 
         int256 spent = z ? f.amount0 : f.amount1;
         int256 got = -(z ? b.amount0 : b.amount1);
-        if (got <= spent) revert NotSandwich(3);
+        if (spent <= 0 || got <= spent) revert NotSandwich(3);
         profit = uint256(got - spent);
+        frontIn = uint256(spent);
     }
 
     // ---- RLP helpers

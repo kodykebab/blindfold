@@ -55,13 +55,25 @@ abstract contract RegistryBase is Test {
     uint256 constant WINDOW = 1 hours;
     uint256 constant BLOCK_TIME = 1_000;
 
+    uint24 constant DYNAMIC_FEE = 0x800000;
+
     MockVerifier mock;
     BondRegistry reg;
     address payee; // the beneficiary _receipt names: the victim of the last _setup
     bytes32 legs; // the attacker legs of the next _setup; 0 = unique per claim (its own incident)
+    bytes32 backLeg; // if set, the next _setup's back tx comes from this instead of `legs`
+    uint256 frontIn = type(uint128).max; // the front leg's input: by default its fee never binds the budget
+    uint24 v4Fee = 3000;
+    uint24 v3Fee = 500;
 
     function _deploy() internal {
         mock = new MockVerifier();
+        bytes32[] memory pools = new bytes32[](5);
+        pools[0] = bytes32(uint256(uint160(_v3Pool(WETH, OTHER, 500))));
+        pools[1] = bytes32(uint256(uint160(_v3Pool(OTHER, WETH, 500))));
+        pools[2] = keccak256(_v4Key(OTHER, WETH, 3000));
+        pools[3] = keccak256(_v4Key(address(0), OTHER, 3000));
+        pools[4] = keccak256(_v4Key(address(0), OTHER, DYNAMIC_FEE)); // listed, but its fee can't be read
         reg = new BondRegistry(
             BondRegistry.Config({
                 verifier: SandwichCourtVerifier(address(mock)),
@@ -71,9 +83,14 @@ abstract contract RegistryBase is Test {
                 v3InitCodeHash: INIT_HASH,
                 v4PoolManager: PM,
                 unbondDelay: DELAY,
-                claimWindow: WINDOW
+                claimWindow: WINDOW,
+                pools: pools
             })
         );
+    }
+
+    function _v4Key(address t0, address t1, uint24 fee) internal pure returns (bytes memory) {
+        return abi.encode(t0, t1, fee, int24(60), address(0));
     }
 
     function _v3Pool(address t0, address t1, uint24 fee) internal pure returns (address) {
@@ -90,15 +107,15 @@ abstract contract RegistryBase is Test {
         c.header = _header(BLOCK_TIME);
         bytes32 l = legs == 0 ? txHash : legs;
         c.front.rawTx = abi.encode("front", l);
-        c.back.rawTx = abi.encode("back", l);
+        c.back.rawTx = abi.encode("back", backLeg == 0 ? l : backLeg);
         if (v4) {
-            poolKey = abi.encode(t0, t1, uint24(3000), int24(60), address(0));
+            poolKey = _v4Key(t0, t1, v4Fee);
             c.v4 = true;
             c.pool = PM;
             c.poolId = keccak256(poolKey);
         } else {
-            poolKey = abi.encode(t0, t1, uint24(500));
-            c.pool = _v3Pool(t0, t1, 500);
+            poolKey = abi.encode(t0, t1, v3Fee);
+            c.pool = _v3Pool(t0, t1, v3Fee);
         }
         mock.set(
             SandwichCourtVerifier.Verdict({
@@ -108,7 +125,8 @@ abstract contract RegistryBase is Test {
                 attacker: address(0xBAD),
                 victim: victim,
                 profitInToken0: inToken0,
-                profit: profit
+                profit: profit,
+                frontIn: frontIn
             })
         );
     }
@@ -185,23 +203,37 @@ contract BondRegistryUnitTest is RegistryBase {
 
     // ---- payout math, one claim per incident
 
-    /// @dev payout = min(profit, maxPayout, bond); the refund fits in what's left; ETH in the registry = bonds.
-    function testFuzz_payoutIsMinOfProfitCapAndBond(uint96 profit, uint96 cap, uint96 bond, uint32 basefee) public {
-        vm.assume(bond > 0);
+    /// @dev payout = min(profit, front leg's fee, maxPayout, bond); the refund fits in what's left; ETH held = bonds.
+    function testFuzz_payoutIsMinOfProfitFeeCapAndBond(
+        uint96 profit,
+        uint128 frontIn_,
+        uint96 cap,
+        uint96 bond,
+        uint32 basefee
+    ) public {
+        vm.assume(bond > 0 && profit > 0);
         vm.deal(rpc, bond);
         _bond(bond);
         vm.fee(basefee);
+        frontIn = frontIn_;
         (SandwichCourtVerifier.Claim memory c, bytes memory key) =
             _setup("tx", victim, profit, false, true, WETH, OTHER);
         BondRegistry.Protected memory r = _receipt("tx", cap);
         bytes memory sig = _sign(KEY, r);
+        uint256 budget = uint256(frontIn_) * 500 / 1e6; // the v3 pool _setup uses is the 0.05% tier
+        if (profit < budget) budget = profit;
         address prover = makeAddr("prover");
+        if (budget == 0) {
+            vm.expectRevert(BondRegistry.ZeroBudget.selector);
+            reg.claim(c, r, sig, key);
+            return;
+        }
         vm.prank(prover);
         reg.claim(c, r, sig, key);
         vm.warp(block.timestamp + WINDOW);
         uint256 paid = reg.collect("tx");
 
-        uint256 expected = profit < cap ? profit : cap;
+        uint256 expected = budget < cap ? budget : cap;
         if (expected > bond) expected = bond;
         assertEq(paid, expected, "payout");
         assertEq(victim.balance, expected, "beneficiary");
@@ -346,7 +378,7 @@ contract BondRegistryUnitTest is RegistryBase {
 
     /// @dev Up to three claims on one incident: totals never exceed the profit, no claim exceeds its cap or reserve.
     function testFuzz_incidentConservation(uint96 profit, uint96[3] calldata caps, uint96 bond) public {
-        vm.assume(bond > 0);
+        vm.assume(bond > 0 && profit > 0);
         vm.deal(rpc, bond);
         _bond(bond);
         legs = "legs";
@@ -376,6 +408,105 @@ contract BondRegistryUnitTest is RegistryBase {
         assertLe(total, bond, "within the bond");
         assertEq(address(reg).balance, reg.bondOf(rpc), "ETH held = bonds");
         assertEq(reg.reservedOf(rpc), 0);
+    }
+
+    // ---- self-sandwich bounds (R8)
+
+    function test_budget_frontFeeCapsTheProfit() public {
+        _bond(10 ether);
+        frontIn = 100 ether; // at 0.05%: a 0.05 ether fee
+        (SandwichCourtVerifier.Claim memory c, bytes memory key) =
+            _setup("tx", victim, 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r = _receipt("tx", 10 ether);
+        bytes32 incident = reg.claim(c, r, _sign(KEY, r), key);
+        (uint256 budget,,) = reg.incidents(incident);
+        assertEq(budget, 0.05 ether);
+        vm.warp(block.timestamp + WINDOW);
+        assertEq(reg.collect("tx"), 0.05 ether, "the profit is 1 ether, but faking it would only have cost the fee");
+    }
+
+    function test_rejects_zeroBudget() public {
+        _bond(10 ether);
+        frontIn = 1999; // 1999 * 500 / 1e6 rounds to 0
+        (SandwichCourtVerifier.Claim memory c, bytes memory key) =
+            _setup("tx", victim, 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r = _receipt("tx", 10 ether);
+        bytes memory sig = _sign(KEY, r);
+        uint256 before = reg.bondOf(rpc);
+        vm.expectRevert(BondRegistry.ZeroBudget.selector);
+        reg.claim(c, r, sig, key);
+        assertEq(reg.bondOf(rpc), before, "no gas refund either");
+        assertEq(reg.budgetFor(1 ether, 2000, 500), 1, "one more wei of input and the fee rounds to 1");
+    }
+
+    function test_rejects_unlistedPool() public {
+        _bond(10 ether);
+        v3Fee = 3000; // a real canonical-factory pool, just not one the deployer listed
+        (SandwichCourtVerifier.Claim memory c, bytes memory key) = _setup("tx", victim, 1, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r = _receipt("tx", 10 ether);
+        bytes memory sig = _sign(KEY, r);
+        vm.expectRevert(BondRegistry.UnsupportedPool.selector);
+        reg.claim(c, r, sig, key);
+    }
+
+    function test_rejects_dynamicFeePool() public {
+        _bond(10 ether);
+        v4Fee = DYNAMIC_FEE; // listed, but the key doesn't say what fee the legs paid
+        (SandwichCourtVerifier.Claim memory c, bytes memory key) =
+            _setup("tx", victim, 1, true, true, address(0), OTHER);
+        BondRegistry.Protected memory r = _receipt("tx", 10 ether);
+        bytes memory sig = _sign(KEY, r);
+        vm.expectRevert(BondRegistry.UnsupportedPool.selector);
+        reg.claim(c, r, sig, key);
+    }
+
+    function test_oneFront_manyBacks_shareOneBudget() public {
+        _bond(10 ether);
+        frontIn = 100 ether; // a 0.05 ether fee
+        legs = "front";
+        backLeg = "back 1";
+        (SandwichCourtVerifier.Claim memory c1, bytes memory key) =
+            _setup("v1", makeAddr("v1"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r1 = _receipt("v1", 1 ether);
+        bytes32 incident = reg.claim(c1, r1, _sign(KEY, r1), key);
+        backLeg = "back 2"; // the same front-run, closed by another back leg
+        (SandwichCourtVerifier.Claim memory c2,) = _setup("v2", makeAddr("v2"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r2 = _receipt("v2", 1 ether);
+        assertEq(reg.claim(c2, r2, _sign(KEY, r2), key), incident, "same front swap, same incident");
+        vm.warp(block.timestamp + WINDOW);
+        assertEq(reg.collect("v1") + reg.collect("v2"), 0.05 ether, "the front leg's fee funds one budget");
+    }
+
+    function test_rejects_oneBackClosingTwoFronts() public {
+        _bond(10 ether);
+        backLeg = "one back";
+        legs = "front 1";
+        (SandwichCourtVerifier.Claim memory c1, bytes memory key) =
+            _setup("v1", makeAddr("v1"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r1 = _receipt("v1", 1 ether);
+        reg.claim(c1, r1, _sign(KEY, r1), key);
+        legs = "front 2"; // a second front-run, but closed by the same back swap: only one round trip happened
+        (SandwichCourtVerifier.Claim memory c2,) = _setup("v2", makeAddr("v2"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r2 = _receipt("v2", 1 ether);
+        bytes memory sig2 = _sign(KEY, r2);
+        vm.expectRevert(BondRegistry.BackLegReused.selector);
+        reg.claim(c2, r2, sig2, key);
+        c2.back.logIndex = 1; // another Swap log in the back tx is another back swap
+        reg.claim(c2, r2, sig2, key);
+    }
+
+    function test_sameFrontTx_anotherSwapLog_isAnotherIncident() public {
+        _bond(10 ether);
+        legs = "front";
+        (SandwichCourtVerifier.Claim memory c1, bytes memory key) =
+            _setup("v1", makeAddr("v1"), 1 ether, false, true, WETH, OTHER);
+        BondRegistry.Protected memory r1 = _receipt("v1", 1 ether);
+        bytes32 first = reg.claim(c1, r1, _sign(KEY, r1), key);
+        backLeg = "its own back";
+        (SandwichCourtVerifier.Claim memory c2,) = _setup("v2", makeAddr("v2"), 1 ether, false, true, WETH, OTHER);
+        c2.front.logIndex = 1; // a second swap in the same tx and pool: it paid its own fee
+        BondRegistry.Protected memory r2 = _receipt("v2", 1 ether);
+        assertTrue(reg.claim(c2, r2, _sign(KEY, r2), key) != first);
     }
 
     // ---- which token the profit is in
@@ -424,7 +555,7 @@ contract BondRegistryUnitTest is RegistryBase {
         view
         returns (SandwichCourtVerifier.Verdict memory)
     {
-        return SandwichCourtVerifier.Verdict(100, bytes32(0), txHash, address(0xBAD), victim, inToken0, profit);
+        return SandwichCourtVerifier.Verdict(100, bytes32(0), txHash, address(0xBAD), victim, inToken0, profit, frontIn);
     }
 
     function test_v4PoolKeyMustHashExactly() public {
@@ -636,6 +767,7 @@ contract RegistryHandler is RegistryBase {
         bytes32 incident = _incidentOf(legs);
         (,, uint64 closesAt) = reg.incidents(incident);
         if (closesAt != 0 && block.timestamp >= closesAt) return;
+        if (closesAt == 0 && profit == 0) return; // a zero budget never opens an incident
         uint256 budget = closesAt == 0 ? profit : budgetOf[incident];
         bytes32 txHash = keccak256(abi.encode(nonce++));
         (SandwichCourtVerifier.Claim memory c, bytes memory pk) =
@@ -679,7 +811,7 @@ contract RegistryHandler is RegistryBase {
                 _v3Pool(WETH, OTHER, 500),
                 bytes32(0),
                 keccak256(abi.encode("front", l)),
-                keccak256(abi.encode("back", l))
+                uint256(0) // front log index
             )
         );
     }
