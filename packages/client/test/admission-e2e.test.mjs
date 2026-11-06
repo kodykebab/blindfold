@@ -168,6 +168,14 @@ test('real proofs: too little time left rolls the order into the next batch, usi
     assert.equal(state.preparation, undefined)
     assert.equal(state.commitments[0].batchId, 1n)
     assert.equal(state.proving.online.length, 1)
+    // the key was used: keep-ready prepares the next one, then leaves it while it still serves
+    let k = await c.cli(10, ['keep-ready', '--once'])
+    assert.equal(k.code, 0, k.err)
+    assert.match(k.out, /prepared batch \d+ /)
+    const kept = loadState(dep, owner).preparation.batch
+    k = await c.cli(10, ['keep-ready', '--once'])
+    assert.equal(k.code, 0, k.err)
+    assert.match(k.out, new RegExp(`a key for batch ${kept} is ready`))
   } finally {
     c.stop()
     if (oldState === undefined) delete process.env.CLIENT_STATE; else process.env.CLIENT_STATE = oldState
