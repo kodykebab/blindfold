@@ -1,5 +1,5 @@
 // Pure helpers, no chain access, so `npm test` runs offline.
-import { encodeAbiParameters, getCreate2Address, keccak256, toHex } from 'viem'
+import { decodeEventLog, encodeAbiParameters, getCreate2Address, keccak256, toHex } from 'viem'
 
 export const DRAND_GENESIS = 1692803367n
 const BEFORE_SWAP_FLAG = 0x80n
@@ -44,4 +44,30 @@ export function orderedSandwich(front, victim, back) {
 /** Find this victim's sandwich on the expected pool, not a different trade in the same block. */
 export function victimSandwich(sandwiches, hash, pool) {
   return sandwiches.find((s) => s.victim.txHash.toLowerCase() === hash.toLowerCase() && s.victim.pool.toLowerCase() === pool.toLowerCase())
+}
+
+/** Read the created pool from the mined factory event, even if latest-state reads lag the receipt. */
+export function createdV3Pool(receipt, factory, abi) {
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== factory.toLowerCase()) continue
+    try {
+      const event = decodeEventLog({ abi, data: log.data, topics: log.topics })
+      if (event.eventName === 'PoolCreated') return event.args.pool
+    } catch {}
+  }
+  throw new Error('the factory receipt has no PoolCreated event')
+}
+
+/** Wait for a confirmed transaction to become visible to latest-state RPC calls. */
+export async function waitForState(read, { attempts = 30, intervalMs = 1000 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    try { if (await read()) return } catch {}
+    if (i + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+  throw new Error('confirmed transaction did not become visible to the RPC')
+}
+
+/** Some RPCs return preconfirmed receipts before latest-state reads can see the transaction. */
+export function receiptVisible(receipt, latestBlock) {
+  return receipt == null || (receipt.blockNumber != null && BigInt(latestBlock) >= BigInt(receipt.blockNumber))
 }

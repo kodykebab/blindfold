@@ -14,7 +14,7 @@ import {
   BLINDFOLD_FILE, E, ROLES, SANDWICH_FILE, VICTIMS, account, artifact, chain, demoArtifact, mined, pub, readJson, v3Artifact, victimIndex,
   wallet,
 } from './common.mjs'
-import { drandSchedule, mineHookSalt, v3FactoryFromManifest } from './lib.mjs'
+import { createdV3Pool, drandSchedule, mineHookSalt, v3FactoryFromManifest, waitForState } from './lib.mjs'
 
 const deployer = account(ROLES.deployer)
 const sniper = account(ROLES.sniper)
@@ -25,6 +25,7 @@ async function deploy(acct, file, name, args = [], value) {
   const { abi, bytecode } = artifact(file, name)
   const rc = await mined(await wallet(acct).deployContract({ abi, bytecode: bytecode.object, args, value }))
   console.log(`  ${name} ${rc.contractAddress}`)
+  await waitForState(async () => ((await pub.getCode({ address: rc.contractAddress }))?.length ?? 0) > 2)
   return rc.contractAddress
 }
 const call = async (address, file, name, functionName, args, value, acct = deployer) =>
@@ -56,12 +57,19 @@ async function sandwichScene() {
   const a = await deploy(deployer, 'MockERC20.sol', 'MockERC20', ['Demo Input', 'DIN', 18])
   const b = await deploy(deployer, 'MockERC20.sol', 'MockERC20', ['Demo Output', 'DOUT', 18])
   const [token0, token1] = [a, b].sort((x, y) => BigInt(x) < BigInt(y) ? -1 : 1)
-  await mined(await wallet(deployer).writeContract({ address: factory, abi: FACTORY.abi, functionName: 'createPool', args: [token0, token1, 3000] }))
-  const pool = await pub.readContract({ address: factory, abi: FACTORY.abi, functionName: 'getPool', args: [token0, token1, 3000] })
+  const created = await mined(await wallet(deployer).writeContract({ address: factory, abi: FACTORY.abi, functionName: 'createPool', args: [token0, token1, 3000] }))
+  const pool = createdV3Pool(created, factory, FACTORY.abi)
+  console.log(`  v3 pool ${pool}`)
   const POOL = v3Artifact('UniswapV3Pool')
+  await waitForState(async () => ((await pub.getCode({ address: pool }))?.length ?? 0) > 2)
   await mined(await wallet(deployer).writeContract({ address: pool, abi: POOL.abi, functionName: 'initialize', args: [2n ** 96n] }))
+  await waitForState(async () => (await pub.readContract({ address: pool, abi: POOL.abi, functionName: 'slot0' }))[0] !== 0n)
   const ACTOR = demoArtifact('V3Demo')
-  const deployActor = async (acct) => (await mined(await wallet(acct).deployContract({ abi: ACTOR.abi, bytecode: ACTOR.bytecode.object, args: [pool] }))).contractAddress
+  const deployActor = async (acct) => {
+    const address = (await mined(await wallet(acct).deployContract({ abi: ACTOR.abi, bytecode: ACTOR.bytecode.object, args: [pool] }))).contractAddress
+    await waitForState(async () => ((await pub.getCode({ address }))?.length ?? 0) > 2)
+    return address
+  }
   const router = await deployActor(deployer)
   const bot = await deployActor(sniper)
   const sealedBot = await deploy(sniper, 'DemoSwap.sol', 'SandwichBot', [pm])
@@ -94,6 +102,7 @@ async function blindfoldScene() {
   const { salt, address: hooks } = mineHookSalt(factory, bytecodeHash)
   await call(factory, ...F, 'deployHook', [manager, settlement, salt])
   console.log(`  SealedPoolHook ${hooks}`)
+  await waitForState(async () => ((await pub.getCode({ address: hooks }))?.length ?? 0) > 2)
   const key = { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks }
   await call(manager, 'PoolManager.sol', 'PoolManager', 'initialize', [key, 2n ** 96n])
   await call(settlement, ...S, 'initialize', [key])

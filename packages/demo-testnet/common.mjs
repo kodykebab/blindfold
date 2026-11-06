@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createPublicClient, createWalletClient, defineChain, formatEther, http } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
+import { waitForState } from './lib.mjs'
 
 export const here = (p) => fileURLToPath(new URL(p, import.meta.url))
 export const root = (p) => here(`../../${p}`)
@@ -73,6 +74,7 @@ export const v3Artifact = (name) => readJson(here(`node_modules/@uniswap/v3-core
 export async function mined(hash) {
   const rc = await pub.waitForTransactionReceipt({ hash, timeout: 120_000 })
   if (rc.status !== 'success') throw new Error(`tx ${hash} reverted`)
+  await waitForState(async () => await pub.getBlockNumber({ cacheTime: 0 }) >= rc.blockNumber)
   return rc
 }
 export const same = (a, b) => a?.toLowerCase() === b?.toLowerCase()

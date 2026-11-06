@@ -10,7 +10,7 @@
 import { createServer } from 'node:http'
 import { decodeErrorResult, decodeFunctionData, formatEther, parseAbi, parseTransaction, recoverTransactionAddress } from 'viem'
 import { planSandwich } from '../demo-bots/lib.mjs'
-import { orderedSandwich } from './lib.mjs'
+import { orderedSandwich, receiptVisible } from './lib.mjs'
 import {
   BLINDFOLD_FILE, MEMPOOL_PORT, ROLES, RPC_URL, SANDWICH_FILE, account, artifact, demoArtifact, eth, mined, pub, same, v3Artifact, wallet, explorerTx,
 } from './common.mjs'
@@ -135,6 +135,15 @@ async function sendRaw(raw) {
 }
 
 async function handle(req) {
+  if (req.method === 'eth_getTransactionReceipt') {
+    try {
+      const receipt = await rpc(req.method, req.params)
+      const latest = receipt ? await rpc('eth_blockNumber', []) : '0x0'
+      return { jsonrpc: '2.0', id: req.id, result: receiptVisible(receipt, latest) ? receipt : null }
+    } catch (e) {
+      return { jsonrpc: '2.0', id: req.id, error: e.rpc ?? { code: -32000, message: e.message } }
+    }
+  }
   if (req.method !== 'eth_sendRawTransaction') {
     return fetch(RPC_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req) }).then((r) => r.json())
   }

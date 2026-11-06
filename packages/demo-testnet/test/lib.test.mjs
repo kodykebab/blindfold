@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { getCreate2Address, keccak256, zeroAddress } from 'viem'
-import { DRAND_GENESIS, drandSchedule, mineHookSalt, orderedSandwich, parseTrack, poolIdOf, v3FactoryFromManifest, victimSandwich } from '../lib.mjs'
+import { encodeAbiParameters, encodeEventTopics, getCreate2Address, keccak256, parseAbi, zeroAddress } from 'viem'
+import { DRAND_GENESIS, createdV3Pool, drandSchedule, mineHookSalt, orderedSandwich, parseTrack, receiptVisible, poolIdOf, v3FactoryFromManifest, victimSandwich, waitForState } from '../lib.mjs'
 
 test('poolIdOf matches a live mainnet v4 pool (ETH/USDC 0.05%)', () => {
   const key = { currency0: zeroAddress, currency1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', fee: 500, tickSpacing: 10, hooks: zeroAddress }
@@ -57,4 +57,27 @@ test('victim verification matches the transaction and pool', () => {
   assert.equal(victimSandwich([match], '0xabc', '0xdef'), match)
   assert.equal(victimSandwich([match], '0xabc', '0x999'), undefined)
   assert.equal(victimSandwich([match], '0xaaa', '0xdef'), undefined)
+})
+
+test('v3 deployment uses the pool address in the factory receipt', () => {
+  const abi = parseAbi(['event PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)'])
+  const factory = '0x1111111111111111111111111111111111111111'
+  const pool = '0x2222222222222222222222222222222222222222'
+  const log = { address: factory, topics: encodeEventTopics({ abi, eventName: 'PoolCreated', args: { token0: zeroAddress, token1: factory, fee: 3000 } }), data: encodeAbiParameters([{ type: 'int24' }, { type: 'address' }], [60, pool]) }
+  assert.equal(createdV3Pool({ logs: [log] }, factory, abi).toLowerCase(), pool)
+  assert.throws(() => createdV3Pool({ logs: [log] }, pool, abi), /no PoolCreated/)
+})
+
+test('deployment waits for RPC state after receipt and fails if it never appears', async () => {
+  let calls = 0
+  await waitForState(async () => ++calls === 3, { attempts: 3, intervalMs: 0 })
+  assert.equal(calls, 3)
+  await assert.rejects(waitForState(async () => false, { attempts: 2, intervalMs: 0 }), /did not become visible/)
+})
+
+test('proxy holds a preconfirmed receipt until latest-state reads include its block', () => {
+  assert.equal(receiptVisible(null, '0x10'), true)
+  assert.equal(receiptVisible({ blockNumber: '0x11' }, '0x10'), false)
+  assert.equal(receiptVisible({ blockNumber: '0x11' }, '0x11'), true)
+  assert.equal(receiptVisible({ blockNumber: '0x11' }, '0x12'), true)
 })
