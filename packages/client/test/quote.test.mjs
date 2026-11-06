@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cleanSymbol, statusPayload } from '../quote.mjs'
+import { cleanSymbol, gasQuote, priceFromX96, readQuote, statusPayload } from '../quote.mjs'
 
 const token0 = { address: '0x1111111111111111111111111111111111111111', symbol: 'TKA', decimals: 18 }
 const token1 = { address: '0x2222222222222222222222222222222222222222', symbol: 'TKB', decimals: 6 }
@@ -34,6 +34,43 @@ test('status JSON uses decimal strings and the public batch schedule', () => {
   assert.deepEqual(payload.batch, { id: '3', now: 1700000000, deadlines: [{ at: 1700000060, what: 'commits close' }] })
   assert.equal(payload.preparation, 'none')
   assert.equal(payload.quote, null)
+})
+
+test('X96 prices convert with both decimals, including a price below 1', () => {
+  const one = 1n << 96n
+  assert.equal(priceFromX96(one, 18, 18), '1')
+  assert.equal(priceFromX96(one, 18, 6), '1000000000000')
+  assert.equal(priceFromX96(one / 2n, 18, 18), '0.5')
+  assert.equal(priceFromX96(one * 3n, 6, 18), '0.000000000003')
+})
+
+test('a reverted reference price is null and carries the reason', async () => {
+  const block = { number: 9n, timestamp: 1700000000n }
+  const quote = await readQuote({
+    has: (name) => name === 'referencePriceX96',
+    block,
+    batchId: 3n,
+    decimals0: 18,
+    decimals1: 18,
+    read: async (name) => {
+      if (name === 'poolPriceX96') return 1n << 96n
+      if (name === 'poolLiquidity') return 123n
+      throw new Error('ExternalConfig')
+    },
+  })
+  assert.equal(quote.pool.price, '1')
+  assert.equal(quote.pool.source, 'BlindfoldSettlement.poolPriceX96')
+  assert.equal(quote.pool.blockNumber, '9')
+  assert.equal(quote.external.price, null)
+  assert.equal(quote.external.reason, 'ExternalConfig')
+  assert.equal(quote.liquidity.raw, '123')
+  assert.equal(quote.liquidity.label, 'pool liquidity (v4 units)')
+  assert.equal(quote.liquidity.estimate, null)
+  assert.equal(quote.liquidity.estimateReason, 'estimate not available')
+  const gas = gasQuote({ units: 1000n, gasPrice: 2n * 10n ** 9n, block })
+  assert.equal(gas.eth, '0.000002')
+  assert.equal(gas.units, '1000')
+  assert.equal(gasQuote({ block, reason: 'preview does not build an admission proof' }).eth, null)
 })
 
 test('a broken symbol falls back to the address, stripped and capped', () => {
