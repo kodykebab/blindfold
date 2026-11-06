@@ -3,8 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node watch.mjs",
     "find": "node find.mjs",
-    "prove": "node prove.mjs"
+    "prove": "node prove.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "@ethereumjs/trie": "6.2.1",

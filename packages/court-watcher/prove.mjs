@@ -2,9 +2,9 @@
 // Usage: BLOCK=<n> FRONT=<i>:<log> VICTIM=<i>:<log> BACK=<i>:<log> [V4=1 POOL=.. POOLID=..] OUT=path node prove.mjs
 // With ANCHOR=1 it also builds the L1 anchor from Base's L1Block (run promptly: needs eth_getProof at a recent block).
 import { writeFileSync } from 'node:fs'
-import { keccak256, toHex, pad, toFunctionSelector } from 'viem'
+import { keccak256, toHex, pad } from 'viem'
 import {
-  rpc, ETH_RPC, BASE_RPC, HISTORY, HISTORY_WINDOW, V4_POOL_MANAGER,
+  rpc, ETH_RPC, HISTORY, HISTORY_WINDOW, V4_POOL_MANAGER, l1Anchor,
   getBlock, getReceipts, getRawTxs, headerRlp, receiptRlp, buildTrie, proofFor, rootOf,
 } from './lib.mjs'
 
@@ -40,11 +40,8 @@ const out = {
 }
 
 if (E.ANCHOR === '1') {
-  // The anchor must be an L1 block Base has actually reported.
-  const L1_BLOCK = '0x4200000000000000000000000000000000000015'
-  const call = async (sig) => rpc(BASE_RPC, 'eth_call', [{ to: L1_BLOCK, data: sig }, 'latest'])
-  const anchorNumber = BigInt(await call(toFunctionSelector('number()')))
-  const anchorHash = await call(toFunctionSelector('hash()'))
+  // The anchor must be an L1 block Base has actually reported; number and hash come from one Base block.
+  const { number: anchorNumber, hash: anchorHash } = await l1Anchor()
   const ab = await getBlock(anchorNumber)
   if (ab.hash !== anchorHash) throw new Error('Base L1Block hash differs from Ethereum')
   if (anchorNumber - BLOCK > HISTORY_WINDOW || anchorNumber <= BLOCK) throw new Error('target outside anchor window')

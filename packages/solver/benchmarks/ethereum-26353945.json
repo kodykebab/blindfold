@@ -1,0 +1,115 @@
+{
+  "chainId": 1,
+  "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+  "pool": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+  "token0": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "token1": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+  "windowSeconds": 600,
+  "note": "Historical samples and read latency only; not proof of manipulation resistance or settlement simulation latency.",
+  "samples": [
+    {
+      "blockNumber": "26353945",
+      "timestamp": "1793945639",
+      "observationAge": "48",
+      "harmonicLiquidity": "1663290916682652450",
+      "spotDeviationBpsApprox": 9.461607478338241,
+      "readMs": 548
+    },
+    {
+      "blockNumber": "26353937",
+      "timestamp": "1793945543",
+      "observationAge": "0",
+      "harmonicLiquidity": "1673360557215512730",
+      "spotDeviationBpsApprox": 10.185239610354113,
+      "readMs": 583
+    },
+    {
+      "blockNumber": "26353929",
+      "timestamp": "1793945447",
+      "observationAge": "24",
+      "harmonicLiquidity": "1680155708977832545",
+      "spotDeviationBpsApprox": 10.88157227304043,
+      "readMs": 561
+    },
+    {
+      "blockNumber": "26353921",
+      "timestamp": "1793945351",
+      "observationAge": "36",
+      "harmonicLiquidity": "1685177981895449970",
+      "spotDeviationBpsApprox": 9.126673595838408,
+      "readMs": 571
+    },
+    {
+      "blockNumber": "26353913",
+      "timestamp": "1793945255",
+      "observationAge": "48",
+      "harmonicLiquidity": "1686747523734403709",
+      "spotDeviationBpsApprox": 9.89348371911225,
+      "readMs": 553
+    },
+    {
+      "blockNumber": "26353905",
+      "timestamp": "1793945159",
+      "observationAge": "0",
+      "harmonicLiquidity": "1681428615310947196",
+      "spotDeviationBpsApprox": 8.496503595283311,
+      "readMs": 760
+    },
+    {
+      "blockNumber": "26353897",
+      "timestamp": "1793945063",
+      "observationAge": "48",
+      "harmonicLiquidity": "1676143146220934629",
+      "spotDeviationBpsApprox": 10.194709783988287,
+      "readMs": 551
+    },
+    {
+      "blockNumber": "26353889",
+      "timestamp": "1793944967",
+      "observationAge": "36",
+      "harmonicLiquidity": "1671096444705000733",
+      "spotDeviationBpsApprox": 12.520123101849023,
+      "readMs": 545
+    },
+    {
+      "blockNumber": "26353881",
+      "timestamp": "1793944871",
+      "observationAge": "0",
+      "harmonicLiquidity": "1666768466320383628",
+      "spotDeviationBpsApprox": 6.77660935240354,
+      "readMs": 559
+    },
+    {
+      "blockNumber": "26353873",
+      "timestamp": "1793944775",
+      "observationAge": "60",
+      "harmonicLiquidity": "1666563887468696416",
+      "spotDeviationBpsApprox": 5.4507700578265705,
+      "readMs": 572
+    },
+    {
+      "blockNumber": "26353865",
+      "timestamp": "1793944679",
+      "observationAge": "0",
+      "harmonicLiquidity": "1666563887468696416",
+      "spotDeviationBpsApprox": 6.0319008654730055,
+      "readMs": 568
+    },
+    {
+      "blockNumber": "26353857",
+      "timestamp": "1793944583",
+      "observationAge": "84",
+      "harmonicLiquidity": "1667996994956141398",
+      "spotDeviationBpsApprox": 4.336606080566074,
+      "readMs": 577
+    },
+    {
+      "blockNumber": "26353849",
+      "timestamp": "1793944487",
+      "observationAge": "36",
+      "harmonicLiquidity": "1671881842208943337",
+      "spotDeviationBpsApprox": 5.212713429929572,
+      "readMs": 564
+    }
+  ]
+}

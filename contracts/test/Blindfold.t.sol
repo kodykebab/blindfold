@@ -56,7 +56,8 @@ contract BlindfoldTest is Test {
                 depositAmount: DEPOSIT,
                 bountyBps: BOUNTY_BPS,
                 treasury: treasury,
-                schedule: BatchAuction.Schedule({start: T0, batchLength: 30, revealLength: 24, settleLength: 60}),
+                commitFee: 0,
+                schedule: BatchAuction.Schedule({start: T0, batchLength: 30, revealLength: 24, settleLength: 30}),
                 toleranceBps: TOL_BPS
             })
         );
@@ -149,7 +150,9 @@ contract BlindfoldTest is Test {
         vm.expectRevert(BatchAuction.BatchFull.selector);
         s.commit(b, bytes32(0), "");
         vm.warp(s.revealOpens(b));
-        for (uint256 i; i < s.MAX_COMMITS(); i++) s.reveal(i, o, bytes32(i));
+        for (uint256 i; i < s.MAX_COMMITS(); i++) {
+            s.reveal(i, o, bytes32(i));
+        }
         vm.warp(s.revealCloses(b));
         _solve(b);
         assertEq(vault.openCommitments(alice), 0);
@@ -409,7 +412,9 @@ contract BlindfoldTest is Test {
         MockERC20[2] memory toks = [t0, t1];
         for (uint256 j; j < 2; j++) {
             uint256 sum;
-            for (uint256 i; i < acc.length; i++) sum += vault.balanceOf(acc[i], address(toks[j]));
+            for (uint256 i; i < acc.length; i++) {
+                sum += vault.balanceOf(acc[i], address(toks[j]));
+            }
             assertEq(sum, toks[j].balanceOf(address(vault)), "vault invariant");
         }
     }

@@ -1,0 +1,24 @@
+// Independent decryption/ABI check for the synthetic round-1000 global proof fixture.
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
+import { timelockDecrypt } from 'tlock-js';
+import { encodeAbiParameters, keccak256, stringToHex } from 'viem';
+const state=JSON.parse(readFileSync(process.argv[2],'utf8'));
+const f=JSON.parse(readFileSync(new URL('./testdata/interop.json',import.meta.url))).fixture;
+const info={public_key:f.public_key,period:3,genesis_time:1692803367,hash:f.chain_hash,groupHash:'',schemeID:'bls-unchained-g1-rfc9380',metadata:{beaconID:'quicknet'}};
+const client={options:{disableBeaconVerification:false,noCache:true},chain:()=>({info:async()=>info}),get:async round=>{assert.equal(round,1000);return {round,signature:f.signature,randomness:createHash('sha256').update(Buffer.from(f.signature,'hex')).digest('hex')}}};
+const raw=Buffer.from(state.ciphertext.slice(2),'hex');
+const armored='-----BEGIN AGE ENCRYPTED FILE-----\n'+raw.toString('base64').match(/.{1,64}/g).join('\n')+'\n-----END AGE ENCRYPTED FILE-----\n';
+const plain=Buffer.from(await timelockDecrypt(armored,client));
+const tuple={type:'tuple',components:[{name:'owner',type:'address'},{name:'tokenIn',type:'uint8'},{name:'tokenOut',type:'uint8'},{name:'amountIn',type:'uint128'},{name:'minAmountOut',type:'uint128'}]};
+const order={owner:'0x'+'02'.repeat(20),tokenIn:state.input.input,tokenOut:state.input.output,amountIn:BigInt(state.input.amount),minAmountOut:BigInt(state.input.minimum)};
+const salt=state.input.salt||'0x'+'00'.repeat(32);
+assert.equal('0x'+plain.toString('hex'),encodeAbiParameters([tuple,{type:'bytes32'}],[order,salt]));
+const tokens=[...state.input.tokens];while(tokens.length<8)tokens.push('0x'+'00'.repeat(20));
+const registry=keccak256(encodeAbiParameters([{type:'address[8]'}],[tokens]));assert.equal(registry,state.registryHash);
+const hash=keccak256(encodeAbiParameters([{type:'bytes32'},{type:'uint256'},{type:'address'},{type:'bytes32'},{type:'uint64'},tuple,{type:'bytes32'}],[keccak256(stringToHex('blindfold.global.order.v1')),130n,'0x'+'01'.repeat(20),registry,7n,order,salt]));
+assert.equal(hash,state.orderHash);
+const root=keccak256(encodeAbiParameters([{type:'bytes32'},{type:'uint256'},{type:'address'},{type:'address'},{type:'bytes32'},{type:'uint64'},{type:'uint256[8]'},{type:'bytes32'},{type:'uint256'}],[keccak256(stringToHex('blindfold.global.funding.v1')),130n,'0x'+'01'.repeat(20),order.owner,registry,7n,state.next.totals.map(BigInt),state.next.oldBlind,BigInt(state.next.step)]));
+assert.equal(root,state.root);
+console.log('PASS: independent global AGE decryption, drand signature, order hash, token registry and reservation root');
