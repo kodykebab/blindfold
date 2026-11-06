@@ -177,7 +177,7 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
   - **Check (offline):** `forge test --match-path 'test/court/*'` with a test RPC key signing receipts for the `v3.json`/`v4.json` fixtures. Include:
     - a self-sandwich case that pays no more than `maxPayout`;
     - a replay that reverts.
-- [ ] **`DeployCourt.s.sol`** · Needs: own BondRegistry.
+- [x] **`DeployCourt.s.sol`** · Needs: own BondRegistry.
   - **Deploys:** the verifier (`l1Block = address(0)` locally) and `BondRegistry`, with account 4 bonded.
   - **Output:** writes `deployments/court.local.json`.
   - **Check:** both modes → `cast call <bondRegistry> ...` shows the bond.
