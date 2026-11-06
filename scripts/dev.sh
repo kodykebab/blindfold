@@ -12,7 +12,7 @@ need node 'install Node 22 (nvm install 22) and check the PATH in env.sh'
 need npm 'comes with Node 22'
 need anvil 'install Foundry: curl -L https://foundry.paradigm.xyz | bash && foundryup'
 need forge 'install Foundry: curl -L https://foundry.paradigm.xyz | bash && foundryup'
-[ -n "${ADMISSION_PROVER:-}" ] || need go 'install Go 1.22+ (brew install go), or set ADMISSION_PROVER to a built local-prover'
+[ -n "${ADMISSION_PROVER:-}" ] || need go 'install Go 1.21+ (brew install go; the first build fetches the toolchain go.mod needs), or set ADMISSION_PROVER to a built local-prover'
 [ "$missing" = 0 ] || exit 1
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 [ "$node_major" -ge 22 ] || { echo "Node $node_major found; the stack needs Node 22 or newer (nvm install 22)" >&2; exit 1; }

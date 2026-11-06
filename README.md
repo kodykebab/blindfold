@@ -5,6 +5,8 @@
 - **Blindfold**: orders are timelock-encrypted to a future drand round, revealed by anyone once it passes, and settled at one price the contract verifies against a Uniswap v4 pool only batches can swap. Residuals can also fill against 1inch Aqua liquidity through a custom SwapVM instruction.
 - **Court**: a sandwich is proven fully onchain (header, tx and receipt proofs, signers recovered), so the protected RPC that promised to shield the victim can be slashed. Runs on Base and judges Ethereum through an L1 anchor.
 
+**Documentation:** [docs/](docs/README.md): overview, getting started, user guide, architecture, CLI and configuration reference, testing, security, glossary.
+
 ## Contracts
 | File | What |
 |---|---|
