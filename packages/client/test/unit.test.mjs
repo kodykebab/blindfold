@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { account, decrypt, drandClient, encrypt, orderHash, encodePayload, decodePayload } from '../lib.mjs'
 import { validateState } from '../state.mjs'
-import { balances, deadlines, exitPlan, preflight, track, isOpen } from '../flow.mjs'
+import { balances, deadlines, exitPlan, fillDescription, preflight, track, isOpen } from '../flow.mjs'
 
 const fixture = fileURLToPath(new URL('./fixtures/drand.json', import.meta.url))
 const owner = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
@@ -171,4 +171,19 @@ test('admission preflight reserves cumulative inputs on both sides plus the new 
   assert.equal(r.funding.find((f) => f.token === T1).need, 50n + base.depositAmount + base.fee)
   assert.equal(preflight({ ...base, order: { ...order, amountIn: -1n } }).ok, false)
   assert.equal(preflight({ ...base, order: { ...order, amountIn: 1n << 128n } }).ok, false)
+})
+
+test('fill descriptions distinguish actual partial and full inputs', () => {
+  const format = (token, amount) => `${amount} ${token}`
+  const commitment = { state: 'filled', order: { zeroForOne: true, amountIn: 10n }, amountIn: 4n, amountOut: 3n }
+  assert.match(fillDescription(commitment, format), /got 3 token1.*partial fill: 4 token0 of 10 token0/)
+  assert.match(fillDescription({ ...commitment, amountIn: 10n }, format), /full fill: 10 token0 of 10 token0/)
+  assert.equal(fillDescription({ state: 'committed' }, format), '')
+})
+
+test('missing local opening describes the deployed unrevealed policy during the reveal window', () => {
+  const c = { id: 0n, batchId: 1n, state: 'committed', hash: salt }
+  const context = { now: 15n, sched: new Map([[1n, { revealOpens: 10n, revealCloses: 20n, settleCloses: 30n }]]), saved: new Set() }
+  assert.match(exitPlan([c], { ...context, admissionRequired: true })[0].why, /deposit can be released/)
+  assert.match(exitPlan([c], { ...context, admissionRequired: false })[0].why, /slashed/)
 })

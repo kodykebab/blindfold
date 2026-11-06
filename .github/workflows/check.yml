@@ -1,0 +1,53 @@
+# CI gates: the offline tier on every push and PR, and the local actual-service tier (admission off).
+# The fresh-proof tier needs prepared development parameters and stays a manual gate: scripts/e2e.sh --real-proof.
+name: check
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/proof-bench/circuit/go.mod
+          cache-dependency-path: packages/proof-bench/circuit/go.sum
+      - name: swap-vm dependencies
+        run: cd contracts/lib/swap-vm && npm install --ignore-scripts
+      - name: Go modules
+        # check.sh runs the circuit tests with GOPROXY=off, so fetch the modules first.
+        run: cd packages/proof-bench/circuit && go mod download
+      - name: offline checks
+        # The proof-bench Rust tier needs prepare.sh's upstream checkouts; it runs locally, not here.
+        run: SKIP_RUST=1 scripts/check.sh
+  local-services:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: offline
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: swap-vm dependencies
+        run: cd contracts/lib/swap-vm && npm install --ignore-scripts
+      - name: web, client, keeper and solver against local contracts
+        run: scripts/e2e.sh

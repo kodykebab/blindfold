@@ -21,7 +21,7 @@ npm start -- import-state backup.json      # restore; refused unless every entry
 npm start -- restore-backup                # decrypt the automatic backup with this wallet and import it
 ```
 
-`sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units.
+`sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units. `commit` also accepts `--vault-only` to refuse automatic shortfall deposits and `--both-funded` to require nonzero vault balances in both assets. Both flags also apply to `--dry-run`.
 
 ## Automatic encrypted backup (FIXES.md fix 6)
 Orders, salts and funding openings exist only on this device. Without them you can't reveal your own order (a keeper must, or the commitment is released or slashed), and you can't append to your funding root. After every command that changes them, the client writes an encrypted backup to `CLIENT_BACKUP_DIR` (default `~/.blindfold/backups`). Point it at a synced or external folder so it survives the device. `npm start -- backup` writes one immediately.

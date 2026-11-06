@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Blindfold",
+  "version": "0.1.0",
+  "description": "Seals Blindfold orders, proves admission and keeps private trading state. Your wallet only signs.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3elQZb+KWoY7PSwGQXmzsNQAHganD0D2NGnJ2oXsLJJEnYJ9BjY0A6x0fUeLvU/1Me+fsM26CcVAeeZFgyEeUDAwNgNzygtVEk/QDti/tMSN90n3tL5RcsDIJbOvy2tIR+Vpbxa8enA6Bqz82eas/qlvdGa0ZvukoW6DQM1VRcfKYxaZBL70rUAy9CqNg7/b1OZn6/SVn5GvwgC5QTdB+RnPuCT4PfwEz81vbJdX0wAoAtifMHT8z9A7A8s+5my8gVxglqrmiYW/A+HJ/rzaCivZ1BkU5i0mev69I+Q7o4vifdBfWOvX2d3mwDYEpVLFmPenjIOjI6LVVWJv//FlvwIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "alarms", "offscreen", "nativeMessaging", "unlimitedStorage"],
+  "background": { "service_worker": "sw.js", "type": "module" },
+  "action": { "default_title": "Blindfold" },
+  "externally_connectable": { "matches": ["http://localhost:4317/*"] },
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'self'" }
+}
