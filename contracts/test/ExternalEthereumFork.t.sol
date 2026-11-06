@@ -33,11 +33,12 @@ contract ExternalEthereumForkTest is Test {
         emit log_named_uint("external market fork block", block.number);
         forkTime = block.timestamp;
         start = uint64(forkTime - 60);
+        start -= (start - 1_692_803_367) % 3; // MisalignedSchedule: start on a drand round boundary
         vault = new BlindfoldVault();
         PoolManager manager = new PoolManager(address(this));
         s = new BlindfoldSettlement(
             BlindfoldSettlement.Config(
-                manager, vault, USDC, 1e6, 0, address(0x1234), BatchAuction.Schedule(start, 30, 24, 30), 100
+                manager, vault, USDC, 1e6, 0, address(0x1234), 0, BatchAuction.Schedule(start, 30, 24, 30), 100
             )
         );
         vault.setOperator(address(s));
