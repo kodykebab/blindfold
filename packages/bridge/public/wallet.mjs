@@ -75,14 +75,20 @@ export async function sendCalls(provider, { from, chainId, calls, atomic }, { in
   const hashes = [], receipts = []
   const wrap = (e) => ({ ...fail(e?.code ?? 'INTERNAL', e?.message ?? String(e)), hashes, receipts })
   if (atomic && calls.length > 1) {
-    let id
+    let id, unsupported = false
     try {
       const r = await provider.request({ method: 'wallet_sendCalls', params: [{ version: '2.0.0', chainId, from, atomicRequired: true, calls }] })
       id = typeof r === 'string' ? r : r?.id
     } catch (e) {
       if (!NO_BATCH.has(e?.code)) throw wrap(e)
+      unsupported = true
     }
-    if (id) {
+    // A successful response without an ID is ambiguous: the wallet may already have submitted the batch.
+    // Never retry those calls individually, since that could execute them twice.
+    if (!unsupported && (typeof id !== 'string' || !id.trim())) {
+      throw wrap(fail('UNKNOWN_OUTCOME', 'wallet accepted the batch request but returned no usable ID; check the wallet before retrying'))
+    }
+    if (!unsupported) {
       try {
         onSent({ callsId: id })
         const s = await poll(() => provider.request({ method: 'wallet_getCallsStatus', params: [id] }),

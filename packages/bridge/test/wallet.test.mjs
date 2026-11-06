@@ -158,3 +158,16 @@ test('send atomic: falls back to one by one when the wallet cannot batch, not wh
   await assert.rejects(sendCalls(p, { from: ACCOUNT, chainId: '0x7a69', calls: CALLS, atomic: true }, fast), { code: 4001 })
   assert.ok(!p.methods().includes('eth_sendTransaction'))
 })
+
+test('send atomic: a successful response without a usable ID never resends the calls', async () => {
+  for (const response of [undefined, null, {}, { id: '' }, { id: 123 }, '', '   ']) {
+    const p = walletLike({ atomic: 'supported' })
+    p.handlers.wallet_sendCalls = () => { p.wallet.sent.push(...CALLS); return response }
+    await assert.rejects(
+      sendCalls(p, { from: ACCOUNT, chainId: '0x7a69', calls: CALLS, atomic: true }, fast),
+      (e) => e.code === 'UNKNOWN_OUTCOME' && /check the wallet before retrying/.test(e.message),
+    )
+    assert.deepEqual(p.methods(), ['wallet_sendCalls'])
+    assert.equal(p.wallet.sent.length, CALLS.length) // the mock accepted the batch once
+  }
+})
