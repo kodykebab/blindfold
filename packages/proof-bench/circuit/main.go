@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/groth16"
+	"github.com/consensys/gnark/backend/solidity"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/std/math/uints"
@@ -70,41 +72,82 @@ func fixture(path string) FundingCircuit {
 		number(s.Budgets[i]).FillBytes(buf[:])
 		c.Budgets[i] = bytes32(buf)
 	}
+	c.Digest = nativeStatementDigest(fundingStatement(c))
 	return c
 }
 func main() {
-	if len(os.Args) != 2 {
-		panic("usage: circuitbench saved-prepared-fixture.json")
+	if len(os.Args) == 3 && os.Args[1] == "--export-tests" {
+		regenerateVerifierTests(os.Args[2])
+		return
 	}
-	c := fixture(os.Args[1])
+	if len(os.Args) == 4 && os.Args[1] == "--canonical-fixture" {
+		canonicalFixture(os.Args[2], os.Args[3])
+		fmt.Println("wrote synthetic canonical AGE fixture")
+		return
+	}
+	var c, shape frontend.Circuit
+	mode := "local_funding_component_groth16"
+	if len(os.Args) == 3 && os.Args[1] == "--online" {
+		assignment := onlineFixture(os.Args[2])
+		c = &assignment
+		shape = &OnlineCircuit{}
+		mode = "local_online_groth16"
+	} else if len(os.Args) == 3 && os.Args[1] == "--preparation" {
+		assignment := preparationFixture(os.Args[2])
+		c = &assignment
+		shape = &PreparationCircuit{}
+		mode = "local_preparation_groth16"
+	} else if len(os.Args) == 2 {
+		assignment := fixture(os.Args[1])
+		c = &assignment
+		shape = &FundingCircuit{}
+	} else {
+		panic("usage: circuitbench [--preparation|--online] fixture.json; --canonical-fixture source destination; --export-tests artifact-directory")
+	}
 	start := time.Now()
-	cs, e := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &FundingCircuit{})
+	cs, e := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, shape)
 	must(e)
 	compile := time.Since(start).Seconds()
-	w, e := frontend.NewWitness(&c, ecc.BN254.ScalarField())
+	w, e := frontend.NewWitness(c, ecc.BN254.ScalarField())
 	must(e)
 	start = time.Now()
 	pk, vk, e := groth16.Setup(cs)
 	must(e)
 	setup := time.Since(start).Seconds()
 	start = time.Now()
-	proof, e := groth16.Prove(cs, pk, w)
+	proof, e := groth16.Prove(cs, pk, w, solidity.WithProverTargetSolidityVerifier(backend.GROTH16))
 	must(e)
 	prove := time.Since(start).Seconds()
 	public, e := w.Public()
 	must(e)
 	start = time.Now()
-	must(groth16.Verify(proof, vk, public))
+	must(groth16.Verify(proof, vk, public, solidity.WithVerifierTargetSolidityVerifier(backend.GROTH16)))
 	verify := time.Since(start).Seconds()
-	c.NewRoot[0] = uints.U8{Val: 256}
-	bad, e := frontend.NewWitness(&c, ecc.BN254.ScalarField())
+	if dir := os.Getenv("CIRCUIT_OUTPUT"); dir != "" {
+		exportArtifacts(dir, vk, proof, public, c)
+	}
+	switch assignment := c.(type) {
+	case *FundingCircuit:
+		assignment.NewRoot[0] = uints.NewU8(byte(number(fmt.Sprint(assignment.NewRoot[0].Val)).Uint64()) ^ 1)
+		assignment.Digest = nativeStatementDigest(fundingStatement(*assignment))
+	case *PreparationCircuit:
+		assignment.Commitment[0] = uints.NewU8(byte(number(fmt.Sprint(assignment.Commitment[0].Val)).Uint64()) ^ 1)
+		assignment.Digest = nativeStatementDigest(preparationStatement(*assignment))
+	case *OnlineCircuit:
+		assignment.CiphertextHash[0] = uints.NewU8(byte(number(fmt.Sprint(assignment.CiphertextHash[0].Val)).Uint64()) ^ 1)
+		assignment.Digest = nativeStatementDigest(onlineStatement(*assignment))
+	}
+	bad, e := frontend.NewWitness(c, ecc.BN254.ScalarField())
 	must(e)
 	bp, e := bad.Public()
 	must(e)
-	if groth16.Verify(proof, vk, bp) == nil {
-		panic("mutated root accepted")
+	if groth16.Verify(proof, vk, bp, solidity.WithVerifierTargetSolidityVerifier(backend.GROTH16)) == nil {
+		panic("mutated public commitment accepted")
 	}
-	result := map[string]any{"mode": "local_funding_component_groth16", "constraints": cs.GetNbConstraints(), "compile_s": compile, "setup_s": setup, "prove_s": prove, "verify_s": verify, "mutated_public_root_rejected": true, "setup": "ephemeral benchmark only"}
+	result := map[string]any{"mode": mode, "constraints": cs.GetNbConstraints(), "compile_s": compile, "setup_s": setup, "prove_s": prove, "verify_s": verify, "mutated_public_commitment_rejected": true, "setup": "ephemeral benchmark only"}
+	if mode == "local_funding_component_groth16" {
+		result["mutated_public_root_rejected"] = true
+	}
 	out, e := json.Marshal(result)
 	must(e)
 	fmt.Println(string(out))

@@ -11,10 +11,11 @@ import (
 // FundingCircuit proves the existing order hash and private reservation update.
 // Encryption is a separate relation; this circuit alone does not admit an order.
 type FundingCircuit struct {
-	Chain, Batch, Step          frontend.Variable `gnark:",public"`
-	Settlement, Owner           [20]uints.U8      `gnark:",public"`
-	OldRoot, NewRoot, OrderHash [32]uints.U8      `gnark:",public"`
-	Budgets                     [2][32]uints.U8   `gnark:",public"`
+	Digest                      [2]frontend.Variable `gnark:",public"`
+	Chain, Batch, Step          frontend.Variable
+	Settlement, Owner           [20]uints.U8
+	OldRoot, NewRoot, OrderHash [32]uints.U8
+	Budgets                     [2][32]uints.U8
 	Direction, Amount, Minimum  frontend.Variable
 	Totals                      [2]frontend.Variable
 	Salt, OldBlind, NewBlind    [32]uints.U8
@@ -108,5 +109,5 @@ func (c *FundingCircuit) Define(api frontend.API) error {
 	for i := range root {
 		b.AssertIsEqual(root[i], c.NewRoot[i])
 	}
-	return nil
+	return bindStatement(api, c.Digest, chain, settlement, owner, batch, step, c.OldRoot[:], c.NewRoot[:], c.Budgets[0][:], c.Budgets[1][:], c.OrderHash[:])
 }

@@ -14,7 +14,7 @@ import (
 
 // The accepted values are produced by the existing Rust checker, not this circuit.
 func TestRustFixtureAndBoundaries(t *testing.T) {
-	c := fixture("../results/prepared-fixture.json")
+	c := fixture("testdata/prepared.json")
 	cs, e := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &FundingCircuit{})
 	if e != nil {
 		t.Fatal(e)
@@ -92,6 +92,7 @@ func TestRustFixtureAndBoundaries(t *testing.T) {
 			c.Budgets[i][j] = uints.NewU8(255)
 		}
 	}
+	c.Digest = nativeStatementDigest(fundingStatement(c))
 	if e := check(c); e != nil {
 		t.Fatalf("full uint256 budgets: %v", e)
 	}
@@ -137,4 +138,5 @@ func setNativeHashes(c *FundingCircuit) {
 	}
 	next[idx].Add(next[idx], nativeNumber(c.Amount))
 	c.NewRoot = nativeHash(chain, settlement, owner, batch, nativeWord(next[0]), nativeWord(next[1]), nativeBytes(c.NewBlind[:]), nativeWord(new(big.Int).Add(nativeNumber(c.Step), big.NewInt(1))))
+	c.Digest = nativeStatementDigest(fundingStatement(*c))
 }
