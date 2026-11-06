@@ -189,7 +189,7 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
     - uses the R1 overload when no price fills everyone fully.
   - **Modes:** `npm start` and `--once`.
   - **Check:** `npm test` against a fake RPC with a known band, including a poison case.
-- [ ] **court-watcher configurable** · Needs: nothing.
+- [x] **court-watcher configurable** · Needs: nothing.
   - **What:** `ETH_RPC` and `V4_POOL_MANAGER` env vars (today `lib.mjs` hardcodes Ethereum mainnet's), so it can scan the local chain.
   - **Check:** `N=300 node find.mjs` still finds mainnet sandwiches with the defaults.
 - [x] **`scripts/check.sh`** · Needs: nothing.
