@@ -46,6 +46,8 @@ No price is consistent with both, every `settle` reverts, and the batch expires.
 - **Compatibility:** keep `settle(b, p)` as the case with no marginal order, so the change is additive.
 - **Acceptance:** the R1 test settles.
 
+**How common:** in the solver's randomized model test (`packages/solver/test/price.test.mjs`: up to 12 random orders against a pool with linear price impact), 49 of 300 batches had no price at which every order fills fully. With a marginal partial fill, all 49 settled.
+
 ## R2. The commit-reveal free option is still open
 **Where:** `BatchAuction.reveal` funding check ([`:183`](contracts/src/BatchAuction.sol#L183)), `BlindfoldVault.deposit` ([`:55`](contracts/src/BlindfoldVault.sol#L55)), `BatchAuction.commit` ([`:153`](contracts/src/BatchAuction.sol#L153)), which never checks the ciphertext.
 
