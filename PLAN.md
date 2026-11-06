@@ -66,6 +66,8 @@ Additive changes only (new key, event, overload, optional attribute, CLI flag). 
 | R4 reward | Kritarth | solver | `settleRewardBps() view returns (uint256)`: share of the residual surplus paid to `msg.sender` of `settle` (0 until shipped) |
 | Bonds | Bhoumik | demo-bots, watcher, UI (via Arkiv) | `bond()`, `requestUnbond()`, `unbond()` (delayed); `claim(SandwichCourtVerifier.Claim c, Protected r, bytes sig) returns (uint256 paid)`. EIP-712 `Protected{bytes32 txHash, uint256 chainId, uint64 acceptedAt, uint64 maxBlock, uint256 maxPayout}`; `maxPayout` comes from the tx's own slippage at acceptance |
 
+Settlement timing: new deployments require `0 < settleLength <= floor(batchLength / 3) * 3`. This accounts for drand round quantization and ensures `settleCloses(b) <= revealCloses(b + 1)`. The former 30-second cadence / 60-second settlement configuration is rejected; use a 30-second settlement window or increase cadence. No predecessor-finalization cursor is needed.
+
 ### Files, CLIs and data
 | Seam | Producer | Consumers | Exact shape |
 |---|---|---|---|

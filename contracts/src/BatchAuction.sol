@@ -48,6 +48,7 @@ abstract contract BatchAuction {
 
     error NotCurrentBatch(uint64 batchId, uint64 current);
     error BatchFull();
+    error InvalidSettlementWindow(uint256 requested, uint256 maximum);
     error BadStatus(uint256 commitId);
     error OutsideRevealWindow(uint256 nowTs, uint256 opens, uint256 closes);
     error RevealWindowOpen(uint256 closes);
@@ -55,7 +56,12 @@ abstract contract BatchAuction {
     error OwnerMismatch();
 
     event Committed(
-        uint256 indexed commitId, uint64 indexed batchId, address indexed committer, bytes32 hash, uint64 round, bytes ciphertext
+        uint256 indexed commitId,
+        uint64 indexed batchId,
+        address indexed committer,
+        bytes32 hash,
+        uint64 round,
+        bytes ciphertext
     );
     event Revealed(uint256 indexed commitId, uint64 indexed batchId, address indexed revealer, Order order);
     event RevealedUnfunded(uint256 indexed commitId, uint64 indexed batchId, address indexed revealer, Order order);
@@ -86,6 +92,14 @@ abstract contract BatchAuction {
         Schedule memory s
     ) {
         require(bountyBps_ <= BPS && s.batchLength != 0 && s.start >= DRAND_GENESIS, "config");
+        // Consecutive drand rounds are quantized to three seconds. The smallest
+        // gap between adjacent reveal deadlines is floor(batchLength / 3) * 3.
+        // Disjoint settlement windows prevent later batches changing the pool
+        // while an earlier batch still has the right to execute.
+        uint256 maximum = uint256(s.batchLength) / DRAND_PERIOD * DRAND_PERIOD;
+        if (s.settleLength == 0 || s.settleLength > maximum) {
+            revert InvalidSettlementWindow(s.settleLength, maximum);
+        }
         vault = vault_;
         depositToken = depositToken_;
         depositAmount = depositAmount_;
@@ -170,7 +184,9 @@ abstract contract BatchAuction {
         uint64 b = c.batchId;
         uint256 opens = revealOpens(b);
         uint256 closes = opens + revealLength;
-        if (block.timestamp < opens || block.timestamp >= closes) revert OutsideRevealWindow(block.timestamp, opens, closes);
+        if (block.timestamp < opens || block.timestamp >= closes) {
+            revert OutsideRevealWindow(block.timestamp, opens, closes);
+        }
         if (orderHash(b, order, salt) != c.hash) revert HashMismatch();
         if (order.owner != c.committer) revert OwnerMismatch();
 
