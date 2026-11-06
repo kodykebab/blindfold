@@ -100,6 +100,8 @@ CONTEXT.md's claim that "the solver chooses nothing else" does not hold.
 2. Pay the settler an explicit, small reward from the surplus, so honest settling pays and extraction isn't the business model.
 3. Our solver settles at the feasible price closest to the post-swap marginal price, not the first one it finds.
 
+**Status:** fix 3 is done. `packages/solver` finds the accepted band and settles at its midpoint; on a local deployment of the standard two-sided batch it settled at 0.9862, mid-band. Fixes 1 and 2 (tolerance, settler reward) are still open.
+
 ## R5. Just-in-time liquidity takes the LP surplus; removing liquidity blocks settlement
 **Where:** `SealedPoolHook` blocks only swaps ([`:12`](contracts/src/SealedPoolHook.sol#L12), [`:25`](contracts/src/SealedPoolHook.sol#L25)); the surplus goes through `manager.donate` to whoever is in range at that moment ([`BlindfoldSettlement.sol:260`](contracts/src/BlindfoldSettlement.sol#L260)).
 

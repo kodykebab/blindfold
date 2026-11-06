@@ -181,7 +181,7 @@ Every item builds against the frozen seams with its own fakes. **No Phase 1 item
   - **Deploys:** the verifier (`l1Block = address(0)` locally) and `BondRegistry`, with account 4 bonded.
   - **Output:** writes `deployments/court.local.json`.
   - **Check:** both modes → `cast call <bondRegistry> ...` shows the bond.
-- [ ] **`packages/solver` v1 (R4)** · Needs: nothing (fake RPC).
+- [x] **`packages/solver` v1 (R4)** · Needs: nothing (fake RPC).
   - **Discovery:** reads `blindfold.local.json` and finds settleable batches from the schedule views and `Revealed` events.
   - **Pricing:**
     - finds the feasible band `[lo, hi]` with `eth_call`;
