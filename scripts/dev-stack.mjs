@@ -64,8 +64,9 @@ try {
   const verifiers = []
   for (const mode of ['preparation', 'online']) verifiers.push(await deployArtifact(JSON.parse(readFileSync(join(verifierOut, `${mode}.sol`, 'Verifier.json'), 'utf8'))))
   const now = (await pub.getBlock()).timestamp, start = now - (now - 1692803367n) % 3n
-  const settlement = await deploy('AdmittedSettlement', [{ manager, vault, depositToken: token1, depositAmount: 5n * 10n ** 18n, commitFee: 1n,
-    bountyBps: 2000n, treasury: user(9).address, schedule: { start: Number(start), batchLength: 300, revealLength: 24, settleLength: 30 }, toleranceBps: 100n }, ...verifiers])
+  const config = { manager, vault, depositToken: token1, depositAmount: 5n * 10n ** 18n, commitFee: 1n,
+    bountyBps: 2000n, treasury: user(9).address, schedule: { start: Number(start), batchLength: 300, revealLength: 24, settleLength: 30 }, toleranceBps: 100n }
+  const settlement = await deploy('AdmittedSettlement', [config, ...verifiers])
   await write(vault, 'BlindfoldVault', 'setOperator', [settlement])
   const factory = await deploy('AdmissionPoolFactory')
   const bytecodeHash = await read(factory, 'AdmissionPoolFactory', 'initCodeHash', [manager, settlement])
@@ -88,7 +89,10 @@ try {
   await write(lp, 'PoolModifyLiquidityTest', 'modifyLiquidity', [key, { tickLower: -60000, tickUpper: 60000, liquidityDelta: 10n ** 22n, salt: toHex(0n, { size: 32 }) }, '0x'])
   const deployment = join(dir, 'blindfold.local.json')
   writeFileSync(deployment, JSON.stringify({ chainId: 31337, deployBlock: 0, mode: 'local', rpc, vault, settlement, token0, token1, depositToken: token1,
-    admission: { manifestSha256, preparationVerifier: verifiers[0], onlineVerifier: verifiers[1] } }, null, 2), { mode: 0o600 })
+    admission: { manifestSha256, preparationVerifier: verifiers[0], onlineVerifier: verifiers[1] },
+    // expected configuration, checked by scripts/verify-deployment.mjs
+    poolManager: manager, hook: hooks, treasury: config.treasury, depositAmount: String(config.depositAmount), commitFee: String(config.commitFee),
+    bountyBps: String(config.bountyBps), toleranceBps: String(config.toleranceBps), schedule: config.schedule }, null, 2), { mode: 0o600 })
   const env = { ...process.env, RPC_URL: rpc, DEPLOYMENTS: deployment, CONTRACTS_OUT: out, ADMISSION_PARAMS: params, ADMISSION_PROVER: prover,
     PRIVATE_KEY: '', SOLVER_KEY: '', KEEPER_KEY: '', KEEPER_INDEX: '1', KEEPER_STATUS: join(dir, 'keeper-status.json'),
     KEEPER_BUDGET_WEI: '1000000000000000000', KEEPER_MIN_BALANCE_WEI: '1000000000000000', MNEMONIC: mnemonic, DRAND: '', CLIENT_ACCOUNT_INDEX: '10', CLIENT_STATE: join(dir, 'state'),

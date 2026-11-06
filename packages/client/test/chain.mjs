@@ -20,7 +20,8 @@ export const DRAND = fileURLToPath(new URL('./fixtures/drand.json', import.meta.
 export const DEPOSIT = 5n * 10n ** 18n
 export const user = (i) => mnemonicToAccount(TEST_MNEMONIC, { addressIndex: i })
 
-export async function localChain({ timestamp, schedule = {}, settlementContract = 'BlindfoldSettlement', fee = 0n, admission, configureMarket = true, timestampInterval } = {}) {
+// v4: deploy a real PoolManager and sealed hook with admission off too (admission always has them).
+export async function localChain({ timestamp, schedule = {}, settlementContract = 'BlindfoldSettlement', fee = 0n, admission, configureMarket = true, timestampInterval, v4 = false } = {}) {
   const port = await new Promise((r) => { const s = createServer().listen(0, () => { const p = s.address().port; s.close(() => r(p)) }) })
   const rpc = `http://127.0.0.1:${port}`
   const args = ['--silent', '--port', String(port), '--accounts', '20', '--gas-limit', '300000000']
@@ -52,7 +53,8 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
   const deployBlock = await pub.getBlockNumber()
   const now = (await pub.getBlock()).timestamp
   const s = { start: Number(now - (now - 1692803367n) % 3n), batchLength: 30, revealLength: 24, settleLength: 30, ...schedule }
-  const manager = admission ? await deploy('PoolManager', [deployer.address]) : '0x000000000000000000000000000000000000dEaD'
+  const pool4 = Boolean(admission || v4)
+  const manager = pool4 ? await deploy('PoolManager', [deployer.address]) : '0x000000000000000000000000000000000000dEaD'
   const verifiers = []
   if (admission) {
     settlementContract = 'AdmittedSettlement'
@@ -61,13 +63,11 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
       verifiers.push((await wait(await wallet.deployContract({ abi: artifact.abi, bytecode: artifact.bytecode.object }))).contractAddress)
     }
   }
-  const settlement = await deploy(settlementContract, [{
-    manager, vault, depositToken: token1, depositAmount: DEPOSIT,
-    commitFee: fee, bountyBps: 2000n, treasury: user(9).address, schedule: s, toleranceBps: 100n,
-  }, ...verifiers])
+  const config = { manager, vault, depositToken: token1, depositAmount: DEPOSIT, commitFee: fee, bountyBps: 2000n, treasury: user(9).address, schedule: s, toleranceBps: 100n }
+  const settlement = await deploy(settlementContract, [config, ...verifiers])
   await write(vault, 'BlindfoldVault', 'setOperator', [settlement])
   let hooks = '0x0000000000000000000000000000000000000000'
-  if (admission) {
+  if (pool4) {
     const factory = await deploy('AdmissionPoolFactory')
     const bytecodeHash = await read(factory, 'AdmissionPoolFactory', 'initCodeHash', [manager, settlement])
     let salt
@@ -79,7 +79,7 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
     await write(factory, 'AdmissionPoolFactory', 'deployHook', [manager, settlement, salt])
   }
   const pool = { currency0: token0, currency1: token1, fee: 3000, tickSpacing: 60, hooks }
-  if (admission) await write(manager, 'PoolManager', 'initialize', [pool, 1n << 96n])
+  if (pool4) await write(manager, 'PoolManager', 'initialize', [pool, 1n << 96n])
   await write(settlement, settlementContract, 'initialize', [pool])
   // Admission chains add no pool liquidity; matched batches use this market for peer pricing.
   // Routing tests opt out to install their own immutable market before the first commitment.
@@ -87,10 +87,13 @@ export async function localChain({ timestamp, schedule = {}, settlementContract 
 
   const dir = mkdtempSync(join(tmpdir(), 'blindfold-client-'))
   const deployments = join(dir, 'blindfold.local.json')
-  writeFileSync(deployments, JSON.stringify({ chainId: 31337, deployBlock: Number(deployBlock), mode: 'local', vault, settlement, token0, token1, depositToken: token1, admission: admission ? { manifestSha256: admission.manifestSha256, preparationVerifier: verifiers[0], onlineVerifier: verifiers[1] } : 'off' }))
+  writeFileSync(deployments, JSON.stringify({ chainId: 31337, deployBlock: Number(deployBlock), mode: 'local', vault, settlement, token0, token1, depositToken: token1, admission: admission ? { manifestSha256: admission.manifestSha256, preparationVerifier: verifiers[0], onlineVerifier: verifiers[1] } : 'off',
+    poolManager: pool4 ? manager : null, hook: pool4 ? hooks : null, treasury: config.treasury,
+    depositAmount: String(config.depositAmount), commitFee: String(config.commitFee), bountyBps: String(config.bountyBps), toleranceBps: String(config.toleranceBps),
+    schedule: { start: Number(s.start), batchLength: s.batchLength, revealLength: s.revealLength, settleLength: s.settleLength } }))
 
   return {
-    rpc, pub, dir, deployments, vault, settlement, token0, token1, read, write,
+    rpc, pub, dir, deployments, vault, settlement, token0, token1, manager, hooks, pool, read, write, deploy, art,
     mint: (to, token, amount) => write(token, 'MockERC20', 'mint', [to, amount]),
     warp: async (t) => {
       await pub.request({ method: 'evm_setNextBlockTimestamp', params: [Number(t)] })
