@@ -9,6 +9,11 @@ import { BlindfoldAquaRouter } from "../../src/swapvm/BlindfoldAquaRouter.sol";
 contract SealedClearingTest is AquaSwapVMTest {
     bytes4 constant PRICE_SIG = bytes4(keccak256("activeClearingPriceX96(address,address)"));
 
+    function setUp() public override {
+        super.setUp();
+        if (address(tokenA) > address(tokenB)) (tokenA, tokenB) = (tokenB, tokenA);
+    }
+
     function _deployRouter() internal override returns (SwapVM) {
         return new BlindfoldAquaRouter(address(aqua), address(0), address(this));
     }

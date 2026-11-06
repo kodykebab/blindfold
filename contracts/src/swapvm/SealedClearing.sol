@@ -26,15 +26,23 @@ contract SealedClearing {
     function _sealedClearing(Context memory ctx, bytes calldata args) internal view {
         address settlement = address(bytes20(args[0:20]));
         if (ctx.query.taker != settlement) revert SealedClearingWrongTaker(ctx.query.taker, settlement);
-        uint256 priceX96 = IClearingPriceSource(settlement).activeClearingPriceX96(ctx.query.tokenIn, ctx.query.tokenOut);
+        bool forward = ctx.query.tokenIn < ctx.query.tokenOut;
+        uint256 priceX96 = IClearingPriceSource(settlement).activeClearingPriceX96(
+            forward ? ctx.query.tokenIn : ctx.query.tokenOut,
+            forward ? ctx.query.tokenOut : ctx.query.tokenIn
+        );
         if (priceX96 == 0) revert SealedClearingInactive();
         if (ctx.query.isExactIn) {
             if (ctx.swap.amountOut != 0) revert SealedClearingAmountPreset();
-            ctx.swap.amountOut = Math.mulDiv(ctx.swap.amountIn, priceX96, Q96);
+            ctx.swap.amountOut = forward
+                ? Math.mulDiv(ctx.swap.amountIn, priceX96, Q96)
+                : Math.mulDiv(ctx.swap.amountIn, Q96, priceX96);
         } else {
             if (ctx.swap.amountIn != 0) revert SealedClearingAmountPreset();
             // round up against the taker
-            ctx.swap.amountIn = Math.mulDiv(ctx.swap.amountOut, Q96, priceX96, Math.Rounding.Ceil);
+            ctx.swap.amountIn = forward
+                ? Math.mulDiv(ctx.swap.amountOut, Q96, priceX96, Math.Rounding.Ceil)
+                : Math.mulDiv(ctx.swap.amountOut, priceX96, Q96, Math.Rounding.Ceil);
         }
     }
 }
