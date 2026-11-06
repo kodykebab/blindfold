@@ -8,30 +8,38 @@ export function confirmationsFor(dep, env = process.env) {
 }
 
 /**
- * Wait for `hash` and classify it. `from`/`nonce` identify the sending slot so a vanished transaction can be told
- * apart: if the account's mined nonce is past it, something else used the slot (replaced); if not, it was dropped
- * and the same action can be sent again.
+ * Wait for `hash` and classify it. `from`/`nonce` identify the sending slot so a missing transaction can be told
+ * apart: once the account's mined nonce is past it without our receipt, something else used the slot (replaced);
+ * if the node forgets it and the slot is unused, it was dropped and the same action can be sent again.
  *   { status: 'confirmed' | 'reverted', receipt }
- *   { status: 'replaced', reason: 'repriced' | 'replaced' | 'cancelled' | 'unknown', receipt?, hash }
+ *   { status: 'replaced', reason: 'unknown', hash }
  *   { status: 'dropped', hash }
+ * Polls itself: viem 2.21's waitForTransactionReceipt never clears its timeout timer, which kept the CLI alive.
  */
-export async function confirmTx(pub, hash, { from, nonce, confirmations = 1, timeout = 120_000 } = {}) {
-  let replacement
-  try {
-    const receipt = await pub.waitForTransactionReceipt({ hash, confirmations, timeout, onReplaced: (r) => { replacement = r } })
-    if (replacement && replacement.reason !== 'repriced') {
-      return { status: 'replaced', reason: replacement.reason, receipt, hash: replacement.transaction.hash }
+export async function confirmTx(pub, hash, { from, nonce, confirmations = 1, timeout = 120_000, interval = 250, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const receiptOf = () => pub.getTransactionReceipt({ hash }).catch((e) => { if (e.name === 'TransactionReceiptNotFoundError') return null; throw e })
+  const deadline = Date.now() + timeout
+  for (;;) {
+    let receipt = await receiptOf()
+    if (receipt) {
+      const depth = await pub.getBlockNumber({ cacheTime: 0 }) - receipt.blockNumber + 1n
+      if (depth >= BigInt(confirmations)) {
+        // A reorg can move or remove the receipt: only report it if it is still where it was.
+        const again = await receiptOf()
+        if (again?.blockHash === receipt.blockHash) return { status: again.status === 'success' ? 'confirmed' : 'reverted', receipt: again }
+      }
+    } else if (from != null && nonce != null && await pub.getTransactionCount({ address: from, blockTag: 'latest' }) > nonce) {
+      // shortcut: a replacement is not inspected, so a repriced copy of the same call also reads as replaced; inspect the slot's mined tx if users reprice.
+      if (!await receiptOf()) return { status: 'replaced', reason: 'unknown', hash } // re-read: ours may have landed between the two calls
+      continue
     }
-    return { status: receipt.status === 'success' ? 'confirmed' : 'reverted', receipt }
-  } catch (e) {
-    if (e.name !== 'WaitForTransactionReceiptTimeoutError') throw e
+    if (Date.now() >= deadline) break
+    await sleep(interval)
   }
   // Still pending in a mempool is not dropped: only conclude once the node no longer knows the transaction.
   const known = await pub.getTransaction({ hash }).then(() => true, () => false)
   if (known) throw new Error(`transaction ${hash} is still pending after ${timeout / 1000}s; run the same command again later`)
-  if (from == null || nonce == null) return { status: 'dropped', hash }
-  const mined = await pub.getTransactionCount({ address: from, blockTag: 'latest' })
-  return mined > nonce ? { status: 'replaced', reason: 'unknown', hash } : { status: 'dropped', hash }
+  return { status: 'dropped', hash }
 }
 
 /** One sentence per outcome for the CLI, with what to do next. */
@@ -40,9 +48,7 @@ export function describeOutcome(action, o) {
     case 'confirmed': return `${action} confirmed in ${o.receipt.transactionHash}`
     case 'reverted': return `${action} reverted in ${o.receipt.transactionHash}; nothing changed onchain, check status before retrying`
     case 'dropped': return `${action} ${o.hash} was dropped before inclusion; nothing changed onchain, it is safe to run the command again`
-    case 'replaced': return o.reason === 'cancelled'
-      ? `${action} ${o.hash} was cancelled by a replacement transaction; nothing from it applied`
-      : `${action} was replaced by another transaction from this account (${o.hash}); check status before retrying`
+    case 'replaced': return `${action} ${o.hash} was replaced by another transaction from this account; check status before retrying`
     default: return `${action}: unknown outcome`
   }
 }

@@ -2,45 +2,52 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { confirmTx, confirmationsFor, describeOutcome } from '../tx.mjs'
 
-const timeoutError = () => Object.assign(new Error('timed out'), { name: 'WaitForTransactionReceiptTimeoutError' })
-const receipt = (status, transactionHash = '0xa') => ({ status, transactionHash })
-const fake = ({ wait, known = false, mined = 0 }) => ({
-  waitForTransactionReceipt: wait,
-  getTransaction: async () => { if (!known) throw new Error('not found'); return {} },
-  getTransactionCount: async () => mined,
-})
-
-test('confirmed and reverted come straight from the receipt', async () => {
-  assert.equal((await confirmTx(fake({ wait: async () => receipt('success') }), '0xa')).status, 'confirmed')
-  assert.equal((await confirmTx(fake({ wait: async () => receipt('reverted') }), '0xa')).status, 'reverted')
-})
-
-test('a repriced transaction counts as the same transaction', async () => {
-  const wait = async ({ onReplaced }) => { onReplaced({ reason: 'repriced', transaction: { hash: '0xb' } }); return receipt('success', '0xb') }
-  const o = await confirmTx(fake({ wait }), '0xa')
-  assert.equal(o.status, 'confirmed'); assert.equal(o.receipt.transactionHash, '0xb')
-})
-
-test('a cancelled or replaced transaction is reported with the replacement', async () => {
-  for (const reason of ['cancelled', 'replaced']) {
-    const wait = async ({ onReplaced }) => { onReplaced({ reason, transaction: { hash: '0xc' } }); return receipt('success', '0xc') }
-    assert.deepEqual(await confirmTx(fake({ wait }), '0xa'), { status: 'replaced', reason, receipt: receipt('success', '0xc'), hash: '0xc' })
+const notFound = () => Object.assign(new Error('no receipt'), { name: 'TransactionReceiptNotFoundError' })
+const receipt = (status, blockNumber = 10n, blockHash = '0xb1') => ({ status, blockNumber, blockHash, transactionHash: '0xa' })
+// receipts: what successive getTransactionReceipt calls return (null = not found); the last one repeats.
+function fake({ receipts = [null], head = 10n, mined = 0, known = false }) {
+  let i = 0
+  return {
+    getTransactionReceipt: async () => { const r = receipts[Math.min(i++, receipts.length - 1)]; if (!r) throw notFound(); return r },
+    getBlockNumber: async () => (typeof head === 'function' ? head() : head),
+    getTransactionCount: async () => mined,
+    getTransaction: async () => { if (!known) throw new Error('not found'); return {} },
   }
+}
+const fast = { interval: 0, sleep: async () => {} }
+
+test('confirmed and reverted come from the receipt', async () => {
+  assert.equal((await confirmTx(fake({ receipts: [receipt('success')] }), '0xa', fast)).status, 'confirmed')
+  assert.equal((await confirmTx(fake({ receipts: [receipt('reverted')] }), '0xa', fast)).status, 'reverted')
 })
 
-test('a vanished transaction is dropped while its nonce is unused, replaced once it is used', async () => {
-  const wait = async () => { throw timeoutError() }
-  assert.equal((await confirmTx(fake({ wait, mined: 4 }), '0xa', { from: '0x1', nonce: 4 })).status, 'dropped')
-  assert.deepEqual(await confirmTx(fake({ wait, mined: 5 }), '0xa', { from: '0x1', nonce: 4 }), { status: 'replaced', reason: 'unknown', hash: '0xa' })
+test('waits for the required confirmations', async () => {
+  let head = 10n
+  const pub = fake({ receipts: [receipt('success')], head: () => head++ })
+  const o = await confirmTx(pub, '0xa', { ...fast, confirmations: 3 })
+  assert.equal(o.status, 'confirmed'); assert.ok(head >= 12n, 'the head moved two blocks past the receipt')
 })
 
-test('a transaction the node still holds is never called dropped', async () => {
-  const wait = async () => { throw timeoutError() }
-  await assert.rejects(confirmTx(fake({ wait, known: true }), '0xa', { from: '0x1', nonce: 4, timeout: 1000 }), /still pending/)
+test('a receipt moved by a reorg is not reported until it settles again', async () => {
+  const pub = fake({ receipts: [receipt('success', 10n, '0xold'), receipt('success', 11n, '0xnew')], head: 11n })
+  const o = await confirmTx(pub, '0xa', fast)
+  assert.equal(o.receipt.blockHash, '0xnew')
 })
 
-test('other errors are not swallowed', async () => {
-  await assert.rejects(confirmTx(fake({ wait: async () => { throw new Error('RPC down') } }), '0xa'), /RPC down/)
+test('the slot used by another transaction means replaced; ours landing late is not', async () => {
+  assert.deepEqual(await confirmTx(fake({ mined: 5 }), '0xa', { ...fast, from: '0x1', nonce: 4 }), { status: 'replaced', reason: 'unknown', hash: '0xa' })
+  const late = fake({ receipts: [null, receipt('success')], mined: 5 })
+  assert.equal((await confirmTx(late, '0xa', { ...fast, from: '0x1', nonce: 4 })).status, 'confirmed')
+})
+
+test('a forgotten transaction with an unused slot is dropped; one still pending is never called dropped', async () => {
+  assert.deepEqual(await confirmTx(fake({ mined: 4 }), '0xa', { ...fast, from: '0x1', nonce: 4, timeout: 0 }), { status: 'dropped', hash: '0xa' })
+  await assert.rejects(confirmTx(fake({ mined: 4, known: true }), '0xa', { ...fast, from: '0x1', nonce: 4, timeout: 0 }), /still pending/)
+})
+
+test('RPC errors are not swallowed', async () => {
+  const pub = { getTransactionReceipt: async () => { throw new Error('RPC down') } }
+  await assert.rejects(confirmTx(pub, '0xa', fast), /RPC down/)
 })
 
 test('confirmation policy: 1 locally, 3 elsewhere, overridable and bounded', () => {
@@ -51,8 +58,7 @@ test('confirmation policy: 1 locally, 3 elsewhere, overridable and bounded', () 
 })
 
 test('every outcome has a next step', () => {
-  for (const o of [{ status: 'confirmed', receipt: receipt('success') }, { status: 'reverted', receipt: receipt('reverted') }, { status: 'dropped', hash: '0xa' },
-    { status: 'replaced', reason: 'cancelled', hash: '0xa' }, { status: 'replaced', reason: 'unknown', hash: '0xa' }]) {
-    assert.match(describeOutcome('withdraw', o), /^withdraw /)
+  for (const o of [{ status: 'confirmed', receipt: receipt('success') }, { status: 'reverted', receipt: receipt('reverted') }, { status: 'dropped', hash: '0xa' }, { status: 'replaced', reason: 'unknown', hash: '0xa' }]) {
+    assert.match(describeOutcome('withdraw', o), /^withdraw .+/)
   }
 })
