@@ -49,3 +49,7 @@ Open `http://127.0.0.1:3100/`. Configure the client through the variables in `pa
 The local server binds to `127.0.0.1`, accepts a fixed list of CLI actions, and runs one command at a time. Preview uses `commit --dry-run`. Tracking, cleanup and withdrawal use the corresponding client commands.
 
 The solver is a separate service. Configure it with the same RPC and deployment, then run `npm start --prefix packages/solver -- --once` to process eligible batches once, or omit `-- --once` to poll. It uses its own configured account to submit settlement transactions; it does not need the trader's signing key. See `packages/solver/README.md` for routing and local setup.
+
+The trading page can run `prepare-admission` for an explicit current or future batch. A running CLI command remains in the local server when the page reloads; the same tab reconnects to its job. The backup controls invoke the CLI's `export-state` and `import-state` commands. Exported JSON includes sensitive order and funding state and is not encrypted by the CLI. Import is validated against the configured account, deployment and onchain commitments.
+
+The real CLI/Anvil backup test is opt-in: `WEB_E2E=1 node --test app/haveibeensandwiched/local.e2e.test.mjs`. It starts its own Anvil and does not use an existing chain.

@@ -18,7 +18,7 @@ createServer(async (req, res) => {
     if (req.headers.origin !== `http://${host}` || req.headers['content-type'] !== 'application/json' || req.headers['x-blindfold-request'] !== '1') return json(res, 403, { error: 'Invalid origin' })
     let body = ''
     try {
-      for await (const chunk of req) { body += chunk; if (body.length > 4096) throw Error('Request too large') }
+      for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 1_010_000) throw Error('Request too large') }
       return json(res, 202, { id: jobs.start(JSON.parse(body)) })
     } catch (e) { return json(res, 400, { error: e.message }) }
   }
