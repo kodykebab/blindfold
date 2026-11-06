@@ -71,10 +71,11 @@ Additive changes only (new key, event, overload, optional attribute, CLI flag). 
 |---|---|---|---|
 | `deployments/blindfold.local.json` | Kritarth | Khush, Bhoumik | `{chainId, deployBlock, mode: "local"\|"fork", vault, settlement, hook, poolManager, token0, token1, depositToken, admission: "off"\|"mock"\|"real", admissionVerifier, admissionImageId, aquaRouter}`. Keys not shipped yet are `null` |
 | `deployments/court.local.json` | Bhoumik | Khush | `{chainId, deployBlock, verifier, bondRegistry, rpcSigner}` |
+| `deployments/demo.local.json` | Bhoumik | `scripts/court-demo.sh` | `{chainId, deployBlock, poolManager, token, router, bot, poolKey, poolId}`: the demo-bots pool (currency0 = native ETH) |
 | Prover CLI | Kritarth | client | `admission-prover prepare <prep.json> <state.json>`, then `admission-prover admit <in.json> <state.json> <out.json>`.<br>**Prepare** needs only `{chainId, settlement, owner, batch, round}`, so it can run before the order is chosen. It covers the key-wrapper proof (the `prepared` host on `main` splits this out).<br>**Admit** in: `{order: {owner, zeroForOne, amountIn, minAmountOut}, salt, step, prev: {total0, total1, blinding}, budget0, budget1}`. Out: `{ciphertext, hash, proof, next: {total0, total1, blinding}, root}`, where `proof` is the hex of the opaque `admit` bytes. It encrypts too, because the proofs need the tlock randomness.<br>`--mock` on either step returns seals that RISC Zero's `RiscZeroMockVerifier` accepts. The binary name is Kritarth's call; the subcommands and JSON are the seam. The client keeps its own fake until the CLI ships |
 | Arkiv entities | Khush (`arkiv/schema.md`) | solver: `blindfold.batch`; watcher: `court.verdict`, `court.rpc`, `court.suspect`; client: `blindfold.commitment`; UI reads all | The table in [CONTEXT.md](CONTEXT.md#arkiv-entities), plus `court.suspect` `{victimTx, block, pool, reason}`. Attribute names exactly as written |
 | `packages/arkiv` | Khush | every package | `put(type, attrs, {expiresIn})`, `query(type, where)`. `ARKIV=off` stores to `.arkiv-local/<type>.jsonl`. Until it ships, consumers append to that same file themselves |
-| Package CLIs (used by `scripts/e2e.sh`) | each owner | Bhoumik (e2e), everyone | `npm test` = offline unit tests. `npm start` = long-running service. `npm start -- --once` = do all work that is due now, then exit 0. Plus `client`: `npm start -- commit-many --users 10-19 [--bad]`; `demo-bots`: `npm start -- leak-and-sandwich` |
+| Package CLIs (used by `scripts/e2e.sh`) | each owner | Bhoumik (e2e), everyone | `npm test` = offline unit tests. `npm start` = long-running service. `npm start -- --once` = do all work that is due now, then exit 0. Plus `client`: `npm start -- commit-many --users 10-19 [--bad]`; `demo-bots`: `npm start -- setup`, then (after `DeployCourt` lists its pool) `npm start -- leak-and-sandwich` |
 | Anvil accounts | — | everyone | 0 deployer · 1 keeper · 2 solver · 3 watcher · 4 leaky-RPC signer · 5 sandwich bot · 10–19 users. Separate accounts so bots never collide on nonces |
 | Ports | — | everyone | anvil `8545` · leaky RPC `8546` · app `3000` |
 
@@ -85,6 +86,9 @@ Additive changes only (new key, event, overload, optional attribute, CLI flag). 
 | `ARKIV` | `off` | every package | `off` = local JSONL files; `testnet` = Arkiv testnet (needs the team key in `.env`) |
 | `ADMISSION` | `off` | deploy script, client | `off` = plain `commit`; `mock` = `admit` with the mock verifier; `real` = Groth16 |
 | `TOLERANCE_BPS` / `COMMIT_FEE` / `SETTLE_REWARD_BPS` | `100` / `1e17` / `0` | `DeployBlindfold.s.sol` | Lets Bhoumik apply the R4 measurements without a code change |
+| `RECEIPTS` | demo-bots: `packages/demo-bots/.demo/receipts.jsonl`; watcher: unset | demo-bots, court-watcher | JSON lines of signed `Protected` receipts. The leaky RPC appends to it; when set, the watcher claims and collects for the victims it lists (unset: the watcher only proves) |
+| `COURT_RPC` / `COURT_DEPLOYMENT` / `WATCHER_KEY` | `ETH_RPC` / `deployments/court.local.json` / anvil account 3 | court-watcher | Where the watcher sends `claim` and `collect`, and as whom |
+| `LEAKY_PORT` / `VICTIM_IN` / `SLIPPAGE_BPS` / `BOT_ETH` | `8546` / 10 ETH / `300` / 100 ETH | demo-bots | The leaky RPC's port, the victim's swap and slippage, the bot contract's ETH |
 
 ---
 
@@ -280,9 +284,9 @@ Swap the fakes for the real pieces. Every `Needs:` below is either Phase 1 work 
     - a recommended `TOLERANCE_BPS`/`SETTLE_REWARD_BPS`, applied through the deploy env vars (no Kritarth code change).
 - [ ] **Malicious-solver script** · Needs: Kritarth's P1 deploy and `SeedBatch`.
   - **What:** a price outside the band reverts (demo step 4).
-- [ ] **`packages/demo-bots`** · Needs: own P1 `DeployCourt`.
+- [x] **`packages/demo-bots`** · Needs: own P1 `DeployCourt`.
   - **Leaky RPC:** a "protected" RPC on `:8546`. It signs `Protected` with `maxPayout` taken from the tx's slippage, then leaks the tx.
-  - **Sandwich bot:** works on a normal (no-hook) v4 pool it deploys itself. It uses `token0`/`token1` from `blindfold.local.json` if present, and its own tokens otherwise.
+  - **Sandwich bot:** works on a normal (no-hook) v4 pool it deploys itself. It uses its own ETH/DEMO pool, not `blindfold.local.json`'s tokens: Court values profit only in ETH or WETH.
   - **Command:** `npm start -- leak-and-sandwich`.
 - [ ] **Watcher service** · Needs: own BondRegistry and demo-bots; Khush's P1 `packages/arkiv`.
   - **Done for S16 (#22):** `npm start` in `packages/court-watcher` (`watch.mjs` + `watcher.mjs`):
@@ -292,7 +296,8 @@ Swap the fakes for the real pieces. Every `Needs:` below is either Phase 1 work 
     - proving (`prove.mjs`, child process, time-limited) kept separate from discovery, with retries and a per-tick limit;
     - submission outcomes tracked once a submitter is plugged in;
     - the L1 anchor read from one Base block.
-  - **Left for this item:** submitting through `BondRegistry.claim` (needs the demo-bots receipts) and the Arkiv writes.
+  - **Done for S21 (#27):** submitting through `BondRegistry.claim`, then `collect` after the claim window, for victims with a receipt (`RECEIPTS`).
+  - **Left for this item:** the Arkiv writes.
   - **Pipeline:** new block → sandwich of a receipted tx → claim (BLOCKHASH path on anvil, AGENTS.md gotcha 5) → `BondRegistry.claim`.
   - **Writes:** `court.verdict` and `court.rpc`.
   - **R9:** near-misses go out as `court.suspect`, with no payout.
