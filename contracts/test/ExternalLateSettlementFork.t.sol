@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 import "forge-std/Test.sol";
+import {ExternalSandwichActor} from "./ExternalSandwichActor.sol";
 import {PoolManager} from "v4-core/src/PoolManager.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
@@ -48,6 +49,12 @@ contract ExternalLateSettlementForkTest is Test {
         );
         vault.setOperator(address(s));
         pool = IV3Pool(FACTORY.getPool(USDC, WETH, 500));
+        // Establish activity with real swaps; public fork heads can otherwise be quiet for longer than 120 s.
+        ExternalSandwichActor activity = new ExternalSandwichActor(IV3Pool(pool));
+        deal(USDC, address(activity), 10_000e6);
+        uint256 bought = activity.trade(true, 10_000e6);
+        activity.trade(false, bought);
+
         // maxDelay covers the whole settle window
         market = new UniswapV3Market(address(s), FACTORY, pool, 600, SETTLE, 120, 1e15, 100);
         (uint160 sqrt,,,,,,) = pool.slot0();
