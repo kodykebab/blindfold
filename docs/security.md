@@ -21,7 +21,7 @@ The full boundary-by-boundary review is [`TRUST-BOUNDARIES.md`](../TRUST-BOUNDAR
 | Limit | Impact | Status |
 |---|---|---|
 | Development proving parameters come from a single-machine setup | Whoever ran the setup could forge admission proofs | A production setup and authenticated parameter distribution are still to do |
-| Private state and backups are plain JSON (`0600`) | Anyone with access to your files can read your orders and salts | Encryption at rest is an open decision; the extension already encrypts with a passphrase |
+| The local state directory and `export-state` files (including the page's **Export backup**) are plain JSON (`0600`) | Anyone with access to your files can read your orders and salts | The CLI's automatic backup is encrypted (AES-256-GCM, key from a wallet signature or `CLIENT_BACKUP_PASSPHRASE`); the live state directory is still plain |
 | Any process on your machine can read local job results | They show account, balances and order sizes, but no keys or salts | Acceptable for a single-user machine |
 | The fee-on-transfer check needs an RPC with `eth_call` state overrides | Without them, deposits fail closed | Safe, but it blocks deposits on such RPCs |
 

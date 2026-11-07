@@ -18,15 +18,19 @@ It reads its settings from the environment ([Configuration](configuration.md)): 
 |---|---|
 | `status [--json]` | Account, network, pair, balances (wallet, available, reserved, withdrawable), open commitments, the current batch and its deadlines, preparation state, and the quote |
 | `deposit <token0\|token1> <amount>` | Approves if needed, then deposits into the vault. Refuses fee-on-transfer or rebasing tokens before sending. |
-| `commit <sell\|buy> <amountIn> <minAmountOut> [flags]` | Preview, encrypt, (prove), save locally, commit |
-| `prepare-admission <batch-id>` | Builds the preparation proof for a batch ahead of time (admission on) |
+| `commit <sell\|buy> <amountIn> [minAmountOut] [flags]` | Preview, encrypt, (prove), save locally, commit. Without a minimum, the limit is a fresh market quote less `--slippage` basis points (default 50); a deployment without an external market needs an explicit minimum |
+| `resubmit [--slippage bps\|keep] [--dry-run]` | Places the most recent unfilled or expired order again in the next batch it can make, re-quoted (or at the same limit with `keep`) |
+| `prepare-admission [batch-id]` | Builds the preparation proof for a batch ahead of time (admission on); default: the next batch it can make |
+| `keep-ready [--once]` | Keeps one preparation ready for the earliest batch this device can still make, so the next order needs only the online proof |
 | `resume-admission` | Finishes an admission that was interrupted: resends the same proof if it was dropped, or reconciles with the chain |
 | `track [--json]` | Every commitment of this account and what happened to it |
 | `blockers [--json]` | Which commitments block withdrawal and what clears each |
 | `cleanup [--dry-run] [--json]` | One transaction per step: reveal your own saved orders, release or slash unrevealed ones, expire unsettled batches |
 | `withdraw <token0\|token1> <amount\|all>` | Withdraws from the vault (blocked while any commitment is open) |
-| `export-state <file>` | Backs up your saved orders, salts and funding state (not encrypted) |
+| `export-state <file>` | Backs up your saved orders, salts and funding state as plain JSON (not encrypted) |
 | `import-state <file>` | Restores a backup after checking every order against its hash and the chain |
+| `backup` | Writes the encrypted automatic backup now (it's also written after every command that changes private state) |
+| `restore-backup [file]` | Decrypts the automatic backup with this wallet (or `CLIENT_BACKUP_PASSPHRASE`) and imports it with the same checks as `import-state` |
 
 `commit` flags:
 - `--dry-run`: preview only, nothing sent.

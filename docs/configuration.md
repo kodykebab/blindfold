@@ -26,6 +26,12 @@ Everything is configured through environment variables. `scripts/dev.sh` sets al
 | `ADMISSION_PROVER` | none | Path to the built `local-prover` (admission on) |
 | `ADMISSION_PARAMS` | none | Directory of the Groth16 parameters; its `manifest.json` hash must match the deployment |
 | `ADMISSION_MIN_LEAD_SECONDS` | `120` with a preparation, `180` without | Refuse to start proving if the batch's commit window closes sooner than this |
+| `CLIENT_MIN_LEAD_SECONDS` | `3` | Admission off: seconds a commit needs before commits close (never below 2 plus one per funding transaction) |
+| `CLIENT_BACKUP_DIR` | `~/.blindfold/backups` | Where the encrypted automatic backup goes |
+| `CLIENT_BACKUP` | on | `off` disables the automatic backup |
+| `CLIENT_BACKUP_PASSPHRASE` | none | Encrypt backups with this passphrase (scrypt) instead of a key derived from a wallet signature |
+| `QUOTE_MAX_AGE_S` | `120` | Refuse a market quote when the latest block is older than this; `off` disables |
+| `KEEP_READY_POLL_MS` | `10000` | How often `keep-ready` checks its preparation |
 
 ## Keeper
 
@@ -36,6 +42,8 @@ Everything is configured through environment variables. `scripts/dev.sh` sets al
 | `KEEPER_BUDGET_WEI` | unlimited | Total gas the keeper may spend |
 | `KEEPER_MIN_BALANCE_WEI` | `10^15` | Stop sending below this ETH balance |
 | `KEEPER_STATUS` | none | File for the last cycle's status; it also carries the spend across restarts |
+| `KEEPER_SETTLE_GRACE_S` | `15` | Seconds after the reveal deadline before the keeper settles a batch no solver settled; `off` disables it |
+| `KEEPER_SOLVER` | `packages/solver/solver.mjs` | The solver CLI that fallback settlement runs |
 
 ## Solver
 

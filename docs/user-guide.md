@@ -55,7 +55,7 @@ You can have orders in **one batch at a time**. A new order waits until the curr
 
 After an order, a reminder appears: **Export a backup now.** Click **Export backup ↓**, save the file somewhere private, then click **I've saved my backup somewhere private**. The reminder only clears after a backup made since your last order is confirmed. It comes back after the next order.
 
-**The backup isn't encrypted.** It holds your orders and salts: store it like a password. Without it, if this machine is lost, the order can't be revealed or recovered by you; a keeper can still reveal it.
+**This exported file isn't encrypted.** (The client separately keeps an encrypted automatic backup in `~/.blindfold/backups`; see the [CLI reference](cli.md).) The export holds your orders and salts: store it like a password. Without it, if this machine is lost, the order can't be revealed or recovered by you; a keeper can still reveal it.
 
 ## 6. Track your orders and withdraw
 

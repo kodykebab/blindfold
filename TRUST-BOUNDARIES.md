@@ -26,7 +26,7 @@ Review of the local trading stack as built on `bhoumik/prover-ui`. Checklist ite
 
 ## Open items (need a decision or other owners)
 
-1. **Private state and backups aren't encrypted at rest** (checklist 6.11). The CLI's state directory and exported backups are plain JSON (`0600`). Anyone with the user's file access can read orders and salts. The extension already encrypts with a passphrase (PBKDF2 to AES-GCM, DECISIONS D6). The CLI needs the same or an OS keychain. *Team decision.*
+1. **Private state and exported backups aren't encrypted at rest** (checklist 6.11). The CLI's state directory and `export-state` files are plain JSON (`0600`); only the automatic backup (`backup.mjs`, AES-256-GCM) is encrypted. Anyone with the user's file access can read orders and salts. The extension already encrypts with a passphrase (PBKDF2 to AES-GCM, DECISIONS D6). The CLI needs the same or an OS keychain. *Team decision.*
 2. **Job results can be read by any local process.** `GET /api/trade/<id>` has no auth beyond an unguessable UUID and the `Host` check. Output contains the account, balances and order sizes, but no salts or keys. Acceptable on a single-user machine; on a shared machine, add a per-session token.
 3. **Single-machine Groth16 parameters** (DECISIONS D2): whoever ran setup can forge proofs. The production setup and its pinned manifest belong to Kritarth (checklist 9.11).
 4. **The fee-on-transfer probe needs an RPC with `eth_call` state overrides.** Without them, deposits fail closed with "could not check how much this token delivers". That's safe, but it blocks deposits on such RPCs. (`cli.mjs` `arrivedOnTransfer`)
