@@ -8,7 +8,7 @@
 // Env: RPC_URL (http://127.0.0.1:8545), LEAKY_PORT (8546), MNEMONIC (anvil's), RECEIPTS (.demo/receipts.jsonl),
 // VICTIM_IN (10 ETH, in wei), SLIPPAGE_BPS (300), BOT_ETH (100 ETH, in wei).
 // Accounts (PLAN.md seams): 0 deployer, 4 leaky-RPC signer, 5 sandwich bot, 10 victim.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -18,6 +18,7 @@ import {
 import { mnemonicToAccount } from 'viem/accounts'
 import { planSandwich } from './lib.mjs'
 import { createLeakyRpc } from './rpc.mjs'
+import { artifactPath } from '../solver/artifacts.mjs'
 
 const E = process.env
 const RPC_URL = E.RPC_URL || 'http://127.0.0.1:8545'
@@ -36,14 +37,9 @@ const readJson = (path, hint) => {
     throw new Error(`can't read ${path} (${e.code ?? e.message}). ${hint}`)
   }
 }
-/** contracts/out/<file>/<name>.json, or <name>.<solc>.json when forge compiled the file under two solc versions. */
+/** Resolve the same isolated build output and compiler profile as the service runner. */
 function artifact(file, name) {
-  const dir = root(`contracts/out/${file}`)
-  let f = `${name}.json`
-  try {
-    f = readdirSync(dir).find((n) => n === f || (n.startsWith(`${name}.`) && n.endsWith('.json'))) ?? f
-  } catch {}
-  return readJson(`${dir}/${f}`, 'Run `forge build` in contracts/.')
+  return readJson(artifactPath(E.CONTRACTS_OUT || root('contracts/out'), name, file.replace(/\.sol$/, '')), 'Run `forge build` in contracts/.')
 }
 const ROUTER = artifact('DemoSwap.sol', 'DemoRouter')
 const BOT = artifact('DemoSwap.sol', 'SandwichBot')

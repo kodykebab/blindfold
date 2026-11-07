@@ -9,7 +9,7 @@
 // (../../deployments/court.local.json), COURT_RPC (ETH_RPC), BOND_REGISTRY_ARTIFACT (contracts/out),
 // WATCHER_KEY or MNEMONIC (anvil's; account 3 is the watcher).
 import { spawn } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createPublicClient, createWalletClient, defineChain, http } from 'viem'
@@ -17,6 +17,7 @@ import { mnemonicToAccount, privateKeyToAccount } from 'viem/accounts'
 import { ETH_RPC, rpc } from './lib.mjs'
 import { createSubmitter, loadReceipts } from './submit.mjs'
 import { createWatcher, fileStore } from './watcher.mjs'
+import { artifactPath } from '../solver/artifacts.mjs'
 
 const E = process.env
 const here = fileURLToPath(new URL('.', import.meta.url))
@@ -51,9 +52,8 @@ function submitter() {
   if (!E.RECEIPTS) return {}
   const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'))
   const dep = readJson(E.COURT_DEPLOYMENT || join(here, '../../deployments/court.local.json'))
-  // forge names it BondRegistry.<solc>.json when it compiled the file under two solc versions (same ABI)
-  const out = join(here, '../../contracts/out/BondRegistry.sol')
-  const { abi } = readJson(E.BOND_REGISTRY_ARTIFACT || join(out, readdirSync(out).find((n) => n.startsWith('BondRegistry.'))))
+  const out = E.CONTRACTS_OUT || join(here, '../../contracts/out')
+  const { abi } = readJson(E.BOND_REGISTRY_ARTIFACT || artifactPath(out, 'BondRegistry'))
   const url = E.COURT_RPC || ETH_RPC
   const chain = defineChain({
     id: dep.chainId, name: 'court', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
