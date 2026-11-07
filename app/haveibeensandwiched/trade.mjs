@@ -54,6 +54,7 @@ function showError(message) { const why = explainClientError(message); output.te
 const jobStore = (() => { try { return createJobStore(localStorage) } catch { return createJobStore(null) } })()
 const mobile = matchMedia('(max-width: 760px) and (pointer: coarse)')
 const desktopOnly = new Set(['prepare-admission', 'preflight', 'commit', 'deposit', 'cleanup', 'resume-admission', 'backup-import'])
+let symbols = ['token0', 'token1'] // token0, token1 symbols once status loads
 let hosted = false, busy = false, lastStatus = null, walletState = { wallets: [], selected: null }
 let lastReview = null, confirmAfterReview = false, depositWatch = null, transferBlock = null, queued = null
 let latestTrack = null, latestBlockers = null, countdownTimer = null
@@ -79,7 +80,7 @@ async function follow(id) {
         if (result.status === 404) saveJob(null)
         throw Error(result.status === 404 ? 'The local service no longer has this command. Check your state and use Resume admission if a submission was interrupted.' : job.error || 'Could not read command')
       }
-      const view = presentJob(job)
+      const view = presentJob(job, Date.now(), symbols)
       output.textContent = view.body
       renderSteps(job)
       if (job.state === 'running') state.textContent = view.title
@@ -205,8 +206,10 @@ function renderOrders() {
         btn.type = 'button'
         btn.className = 'secondary'
         btn.dataset.walletGuard = ''
-        btn.textContent = `Withdraw all ${tok}`
-        btn.setAttribute('aria-label', `Withdraw all ${tok}`)
+        const symbol = symbols[tok === 'token0' ? 0 : 1]
+        btn.dataset.token = tok
+        btn.textContent = `Withdraw all ${symbol}`
+        btn.setAttribute('aria-label', `Withdraw all ${symbol}`)
         btn.disabled = busy
         btn.addEventListener('click', () => {
           run({ action: 'withdraw', token: tok, amount: 'all' })
@@ -383,10 +386,7 @@ function showStatus(text) {
   const pair = displayPair(parsed)
   document.querySelector('#network-pair').textContent = [parsed.network, pair.label].filter(Boolean).join(' · ')
   const [token0, token1] = pair.symbols
-  if (token0 && token1) {
-    labelSide('#side-sell', `Sell ${token0}`, `FOR ${token1}`)
-    labelSide('#side-buy', `Buy ${token0}`, `WITH ${token1}`)
-  }
+  if (token0 && token1) { symbols = [token0, token1]; labelTokens() }
   document.querySelector('#batch-status').textContent = parsed.batch
   const current = parsed.batch.match(/^batch (\d+) /)
   const prep = preparationPanel(parsed.preparation ?? '', current?.[1] ?? null)
@@ -434,17 +434,27 @@ function showStatus(text) {
   const quoteEl = document.querySelector('#quote-line')
   if (quoteEl) {
     const stamped = stampQuote(parsed.quote)
-    quoteEl.textContent = quoteLine(stamped, parsed.quoteRaw)
+    quoteEl.textContent = quoteLine(stamped, parsed.quoteRaw, symbols)
     quoteEl.classList.toggle('stale', Boolean(stamped?.stale))
   }
   const liquidityEl = document.querySelector('#liquidity-line')
   if (liquidityEl) liquidityEl.textContent = liquidityNote(parsed.liquidity)
 }
-function labelSide(selector, title, small) {
-  const node = document.querySelector(selector)
-  node.replaceChildren(document.createTextNode(`${title} `))
-  const note = document.createElement('small'); note.textContent = small; node.append(note)
+/** Swap labels: selling pays token0 and receives token1; buying the reverse. */
+const sideNow = () => document.querySelector('#order input[name=side]:checked')?.value || 'sell'
+function labelTokens() {
+  const [pay, receive] = sideNow() === 'sell' ? symbols : [symbols[1], symbols[0]]
+  document.querySelector('#pay-token').textContent = pay
+  document.querySelector('#receive-token').textContent = receive
+  for (const option of document.querySelectorAll('#funds option[data-role]')) option.textContent = symbols[option.dataset.role === 'token0' ? 0 : 1]
 }
+document.querySelector('#flip').addEventListener('click', () => {
+  const next = document.querySelector(`#order input[name=side][value=${sideNow() === 'sell' ? 'buy' : 'sell'}]`)
+  next.checked = true
+  next.dispatchEvent(new Event('change'))
+  document.querySelector('#minimum-out').value = '' // the old minimum was in the other token
+  labelTokens()
+})
 function decimalsFor(parsed, role) {
   return parsed?.tokens?.find((token) => token.role === role)?.decimals ?? null
 }
@@ -492,7 +502,7 @@ function showReview(text, finished) {
       panel.hidden = false
       panel.classList.add('blocked')
       panel.textContent = `The order changed since the last review.\n${changes.join('\n')}\nReview it again, then confirm.`
-      quote.textContent = quoteLine(stamped.quote, stamped.quoteRaw)
+      quote.textContent = quoteLine(stamped.quote, stamped.quoteRaw, symbols)
       quote.classList.toggle('stale', Boolean(stamped.quote?.stale))
       liquidity.textContent = liquidityNote(stamped.liquidity)
       document.querySelector('#batch-rule').textContent = stamped.oneBatch || 'One batch at a time per account. A new order waits until the current one settles or is released.'
@@ -505,8 +515,8 @@ function showReview(text, finished) {
   lastReview = stamped
   panel.hidden = false
   panel.classList.toggle('blocked', !stamped.ok || Boolean(block) || Boolean(stamped.quote?.stale))
-  panel.textContent = presentJob({ state: 'done', action: 'preflight', output: text }).body
-  quote.textContent = `${quoteLine(stamped.quote, stamped.quoteRaw)} Shown next to your minimum of ${stamped.minimum}.`
+  panel.textContent = presentJob({ state: 'done', action: 'preflight', output: text }, Date.now(), symbols).body
+  quote.textContent = `${quoteLine(stamped.quote, stamped.quoteRaw, symbols)} Shown next to your minimum of ${stamped.minimum}.`
   quote.classList.toggle('stale', Boolean(stamped.quote?.stale))
   liquidity.textContent = liquidityNote(stamped.liquidity)
   document.querySelector('#batch-rule').textContent = stamped.oneBatch || 'One batch at a time per account. A new order waits until the current one settles or is released.'
@@ -598,7 +608,11 @@ setBusy(false)
 // it would mean running a signing CLI on a server. The local server answers unknown job ids with JSON; anything else
 // means no local service, so the page becomes a read-only preview with instructions.
 const localService = fetch('/api/trade/probe', { cache: 'no-store' })
-  .then((r) => (r.headers.get('content-type') ?? '').includes('application/json'), () => false)
+  .then(async (r) => {
+    const local = (r.headers.get('content-type') ?? '').includes('application/json')
+    await r.text().catch(() => {}) // finish the response, or the request stays open
+    return local
+  }, () => false)
 localService.then((local) => {
   if (local) { if (savedJob()) follow(savedJob()); return }
   hosted = true
@@ -661,6 +675,7 @@ async function loadCourt() {
     }
   } catch { document.querySelector('#court-view').hidden = true }
 }
-document.querySelector('#history-refresh').addEventListener('click', loadHistory)
-loadHistory()
+// Arkiv history is hidden for now (its card is commented out in trade.html):
+// document.querySelector('#history-refresh').addEventListener('click', loadHistory)
+// loadHistory()
 loadCourt()

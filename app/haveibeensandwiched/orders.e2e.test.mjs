@@ -145,7 +145,7 @@ test('Keeper outage: user reveals order manually, solver settles, and trader wit
     assert.match(stage, /Filled|Partly filled/i)
 
     // "Withdraw all" must appear
-    const withdrawBtn = page.getByRole('button', { name: /Withdraw all token1/ }) // sold token0, so the proceeds are token1
+    const withdrawBtn = page.locator('button[data-token="token1"]') // sold token0, so the proceeds are token1
     await withdrawBtn.waitFor({ state: 'visible', timeout: 10000 })
 
     const before = await read(token1, 'MockERC20', 'balanceOf', [user(10).address])
