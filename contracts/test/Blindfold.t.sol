@@ -11,6 +11,8 @@ import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {PoolModifyLiquidityTest} from "v4-core/src/test/PoolModifyLiquidityTest.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
+import {CustomRevert} from "v4-core/src/libraries/CustomRevert.sol";
+import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 
 import {BlindfoldVault} from "../src/BlindfoldVault.sol";
 import {BatchAuction} from "../src/BatchAuction.sol";
@@ -83,6 +85,29 @@ contract BlindfoldTest is Test {
     /// @dev Local PoolManager by default; the fork suite overrides this with Unichain's.
     function _manager() internal virtual returns (IPoolManager) {
         return new PoolManager(address(this));
+    }
+
+    // ---- the sealed pool
+
+    /// The hook is the MEV guard: any swap that isn't the settlement's, here a router a searcher would use, reverts.
+    function test_hook_rejectsSwapsOutsideSettlement() public {
+        PoolSwapTest router = new PoolSwapTest(manager);
+        t0.approve(address(router), type(uint256).max);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CustomRevert.WrappedError.selector,
+                address(key.hooks),
+                IHooks.beforeSwap.selector,
+                abi.encodeWithSelector(SealedPoolHook.OnlySettlement.selector, address(router)),
+                abi.encodeWithSelector(Hooks.HookCallFailed.selector)
+            )
+        );
+        router.swap(
+            key,
+            IPoolManager.SwapParams({zeroForOne: true, amountSpecified: -1e18, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1}),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
     }
 
     // ---- end to end
