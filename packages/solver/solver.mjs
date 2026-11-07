@@ -17,7 +17,7 @@ import { mirrorSettlement } from './mirror.mjs'
 const E = process.env
 const RPC_URL = E.RPC_URL || 'http://127.0.0.1:8545'
 const DEPLOYMENTS = E.DEPLOYMENTS || new URL('../../deployments/blindfold.local.json', import.meta.url)
-const ARTIFACT = E.SETTLEMENT_ARTIFACT || artifactPath(new URL('../../contracts/out', import.meta.url).pathname, 'BlindfoldSettlement')
+const ARTIFACT = E.SETTLEMENT_ARTIFACT || artifactPath(E.CONTRACTS_OUT || new URL('../../contracts/out', import.meta.url).pathname, 'BlindfoldSettlement')
 const POLL_MS = Number(E.POLL_MS || 3000)
 // anvil's public test mnemonic; account 2 is the solver (PLAN.md seams)
 const account = E.SOLVER_KEY
