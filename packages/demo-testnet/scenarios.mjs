@@ -42,7 +42,7 @@ async function firstTrade() {
   const w = victim(1)
   say('T01 T02', `${w.name}'s account, network, pair and its wallet / available / reserved / withdrawable balances`)
   show(await cli(w.index, ['status']))
-  const b = await openBatch(30n)
+  const b = await openBatch(50n)
   say('T03 T04 T05', `${w.name} reviews selling 10 token0 for at least 9 token1 in batch ${b}: limit, fee, deposit, funding and deadlines; nothing is sent`)
   show(await cli(w.index, ['commit', 'sell', '10', '9', '--dry-run']))
   say('T05 T07', 'it commits: the client deposits the shortfall, then publishes only ciphertext')
@@ -62,7 +62,7 @@ async function firstTrade() {
 async function repeat() {
   const w = victim(2)
   for (const t of ['token0', 'token1']) show(await cli(w.index, ['deposit', t, '12']))
-  const b = await openBatch(30n)
+  const b = await openBatch(50n)
   say('T08', `${w.name} places two orders in batch ${b} from one funded account; the second preflight counts the first's reservation`)
   show(await cli(w.index, ['commit', 'sell', '5', '4.5']))
   show(await cli(w.index, ['commit', 'buy', '5', '4.5']))
@@ -71,7 +71,7 @@ async function repeat() {
   for (const c of await trackBatch(w, b)) console.log(`    #${c.id}: ${c.state} (${c.what}) ${c.fill}`)
   say('T14', `${w.name} trades again from the vault proceeds, without a wallet round trip`)
   const before = await walletTokens(account(w.index).address)
-  const b2 = await openBatch(30n)
+  const b2 = await openBatch(50n)
   show(await cli(w.index, ['commit', 'sell', '5', '4.5']))
   const after = await walletTokens(account(w.index).address)
   expect(before[0] === after[0] && before[1] === after[1], 'no tokens left the wallet: the vault funded the order')
@@ -84,7 +84,7 @@ async function repeat() {
 async function restore() {
   const w = victim(3)
   const owner = account(w.index).address
-  const b = await openBatch(30n)
+  const b = await openBatch(50n)
   say('T15', `${w.name} commits in batch ${b}; the client writes an encrypted backup after the change`)
   show(await cli(w.index, ['commit', 'sell', '10', '9']))
   const backups = here('.state/backups')
@@ -106,7 +106,11 @@ async function restore() {
 async function noFill() {
   const w = victim(4)
   const other = victim(1)
-  const b = await openBatch(30n)
+  // Fund before choosing the batch: live approvals and deposits can consume most of a short commit window.
+  for (const [who, token, amount] of [[w, 'token0', '10'], [w, 'token1', '1'], [other, 'token1', '11']]) {
+    show(await cli(who.index, ['deposit', token, amount]))
+  }
+  const b = await openBatch(50n)
   say('T03 T11', `${w.name} sells 10 token0 but insists on at least 20 token1, which no price in batch ${b} gives; ${other.name}'s order trades alongside`)
   show(await cli(w.index, ['commit', 'sell', '10', '20']))
   show(await cli(other.index, ['commit', 'buy', '10', '9']))
@@ -125,7 +129,7 @@ async function noFill() {
 
 async function outage() {
   const w = victim(5)
-  let b = await openBatch(30n)
+  let b = await openBatch(50n)
   say('O03', `the solver is down. ${w.name} commits in batch ${b}; the keeper reveals it`)
   show(await cli(w.index, ['commit', 'sell', '10', '9']))
   await revealBatch(b, 1)
@@ -138,7 +142,7 @@ async function outage() {
   console.log(`    past it, the keeper runs the solver's search with its own key: settled ${st?.settled ?? 0}, spent ${st?.spentWei ?? 0} wei`)
   for (const c of await trackBatch(w, b)) console.log(`    #${c.id}: ${c.state} (${c.what}) ${c.fill}`)
 
-  b = await openBatch(30n)
+  b = await openBatch(50n)
   say('T10 T12', `now the keeper and the solver are both down. ${w.name} commits in batch ${b}`)
   show(await cli(w.index, ['commit', 'sell', '10', '9']))
   await waitUntil(await read('revealOpens', [b]), `batch ${b}'s reveal window`)
@@ -161,7 +165,10 @@ async function griefers() {
   const amount = await read('depositAmount')
   await pub.waitForTransactionReceipt({ hash: await wallet(account(ROLES.deployer)).writeContract({ address: dep.depositToken, abi: ERC20.abi, functionName: 'mint', args: [griefer.address, amount] }) })
   show(await cli(ROLES.sniper, ['deposit', dep.depositToken.toLowerCase() === dep.token0.toLowerCase() ? 'token0' : 'token1', String(Number(amount) / 1e18)]))
-  const b = await openBatch(30n)
+  for (const [who, token, value] of [[seller, 'token0', '10'], [seller, 'token1', '1'], [buyer, 'token1', '11']]) {
+    show(await cli(who.index, ['deposit', token, value]))
+  }
+  const b = await openBatch(50n)
   say('O01', `in batch ${b}, ${seller.name} and ${buyer.name} commit real crossing orders; the griefer commits random bytes`)
   show(await cli(seller.index, ['commit', 'sell', '10', '9']))
   show(await cli(buyer.index, ['commit', 'buy', '10', '9']))

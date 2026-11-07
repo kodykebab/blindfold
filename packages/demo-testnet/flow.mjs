@@ -54,12 +54,12 @@ export async function openBatch(minLeft = 25n) {
 }
 
 /** Keeper passes from the drand round until `expected` reveals have landed or the reveal window ends. */
-export async function revealBatch(b, expected) {
+export async function revealBatch(b, expected, env = {}) {
   await waitUntil(await read('revealOpens', [b]), `batch ${b}'s drand round`)
   const closes = await read('revealCloses', [b])
   let revealed = 0
   while (revealed < expected && await chainNow() < closes) {
-    const { st, err } = await keeperOnce()
+    const { st, err } = await keeperOnce(env)
     revealed += st?.revealed ?? 0
     if (st?.errors?.length || (!st && err)) log(`keeper: ${st?.errors?.join('; ') ?? err}`)
     if (revealed < expected) await sleep(3000)
@@ -70,9 +70,9 @@ export async function revealBatch(b, expected) {
 }
 
 /** One solver pass once batch `b`'s settle window opens; returns the solver's own summary line. */
-export async function settleBatch(b) {
+export async function settleBatch(b, env = {}) {
   await waitUntil(await read('revealCloses', [b]), `batch ${b}'s settle window`)
-  const r = await solverOnce()
+  const r = await solverOnce(env)
   const line = [r.out, r.err].join('\n').split('\n').find((l) => l.startsWith(`settled batch ${b}:`))
   if (!line) throw new Error(`solver did not settle batch ${b}: ${r.err || r.out || 'nothing to do'}`)
   log(line)

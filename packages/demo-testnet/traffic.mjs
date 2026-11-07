@@ -74,8 +74,8 @@ async function blindfold(n = VICTIMS, settle = false) {
   }))
   console.log(`orders are sealed until batch ${batch}'s drand round; keeper + solver on ${RPC_URL} reveal and settle them`)
   if (!settle) return
-  await revealBatch(batch, n)
-  await settleBatch(batch)
+  await revealBatch(batch, n, { RPC_URL: MEMPOOL_URL })
+  await settleBatch(batch, { RPC_URL: MEMPOOL_URL })
   for (const i of victims) {
     const mine = parseTrack((await cli(i, ['track'])).out).filter((c) => c.batch === Number(batch))
     if (mine.length !== 1 || mine[0].state !== 'filled') throw new Error(`victim${i + 1} did not fill in batch ${batch}`)

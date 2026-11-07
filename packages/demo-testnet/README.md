@@ -78,7 +78,7 @@ npm run traffic -- blindfold --settle
 ```
 
 ### 3. The user stories, scenario by scenario
-`scenarios.mjs` plays STORIES.md's acceptance scenarios on the testnet deployment. Each prints the story IDs it covers and the evidence the story asks for. Stop any keeper or solver service first: the scenarios run them once each when work is due, and the outage scenario needs them absent.
+`scenarios.mjs` plays STORIES.md's acceptance scenarios on the testnet deployment. Each prints the story IDs it covers and the evidence the story asks for. Keep the sniper running and send scenario RPC calls through its proxy, which also handles long event histories. Stop any keeper or solver service first: the scenarios run them once each when work is due, and the outage scenario needs them absent. For example: `RPC_URL=http://127.0.0.1:8546 npm run scenario -- first-trade` (replace the port if `MEMPOOL_PORT` is set).
 
 | Command | Stories | What happens |
 |---|---|---|
