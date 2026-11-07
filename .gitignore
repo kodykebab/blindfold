@@ -6,5 +6,6 @@ contracts/cache/
 .workspace.md
 contracts/broadcast/
 deployments/*.local.json
+deployments/*.testnet.json
 .arkiv-local/
 .next/

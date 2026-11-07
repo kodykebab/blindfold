@@ -1,0 +1,18 @@
+{
+  "name": "@blindfold/demo-testnet",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "wallets": "node wallets.mjs",
+    "deploy": "node deploy.mjs",
+    "sniper": "node sniper.mjs",
+    "traffic": "node traffic.mjs",
+    "scenario": "node scenarios.mjs",
+    "start": "node sniper.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@uniswap/v3-core": "1.0.1",
+    "viem": "2.21.0"
+  }
+}

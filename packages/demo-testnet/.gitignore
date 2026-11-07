@@ -1,0 +1,6 @@
+.env
+.state/
+node_modules/
+
+contracts/out/
+contracts/cache/
