@@ -16,7 +16,8 @@ import { artifactPath } from '../artifacts.mjs'
 
 const enabled = process.env.SOLVER_E2E === '1'
 const contracts = resolve(process.env.CONTRACTS_DIR || new URL('../../../contracts', import.meta.url).pathname)
-const artifact = (name) => JSON.parse(readFileSync(artifactPath(join(contracts, 'out'), name, ['RouteFactoryMock', 'RoutePoolMock'].includes(name) ? 'UniswapV3Route.t' : name)))
+const contractOut = process.env.CONTRACTS_OUT || join(contracts, 'out')
+const artifact = (name) => JSON.parse(readFileSync(artifactPath(contractOut, name, ['RouteFactoryMock', 'RoutePoolMock'].includes(name) ? 'UniswapV3Route.t' : name)))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // No external RPC, real keys, or live funds: this test owns its fresh anvil process.
@@ -196,7 +197,7 @@ test('solver CLI executes sealed, peer, public and multi-hop batches with recove
       const startBlock = await client.getBlockNumber({ cacheTime: 0 })
       const cli = spawn(process.execPath, [new URL('../solver.mjs', import.meta.url).pathname, '--once'], {
         env: { ...process.env, RPC_URL: rpc, DEPLOYMENTS: deploymentPath,
-          SETTLEMENT_ARTIFACT: artifactPath(join(contracts, 'out'), 'BlindfoldSettlement') }, stdio: ['ignore', 'pipe', 'pipe'],
+          SETTLEMENT_ARTIFACT: artifactPath(contractOut, 'BlindfoldSettlement') }, stdio: ['ignore', 'pipe', 'pipe'],
       })
       let output = ''
       cli.stdout.on('data', (b) => { output += b })

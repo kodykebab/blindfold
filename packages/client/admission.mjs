@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { encodeAbiParameters, toHex } from 'viem'
 import { ROOT, orderHash } from './lib.mjs'
 import { nextFunding } from './admission-state.mjs'
+import { sweepStale } from './sweep.mjs'
 
 function localProcess(executable, args, input) {
   return new Promise((resolve, reject) => {
@@ -12,9 +13,13 @@ function localProcess(executable, args, input) {
     let stdout = ''
     child.stdout.on('data', (b) => { stdout += b; if (stdout.length > 2_000_000) child.kill() })
     child.stderr.resume() // Prover diagnostics may contain private witness values; never forward them.
-    child.on('error', reject)
+    child.on('error', (e) => reject(e.code === 'ENOENT' || e.code === 'EACCES'
+      ? new Error(`local prover not found or not executable at ${executable}; set ADMISSION_PROVER to a built local-prover`)
+      : e))
     child.stdin.on('error', () => {})
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
+      // Killed by the OS (usually out of memory): this device can't run the prover as configured.
+      if (signal) return reject(new Error(`local prover was stopped by ${signal}; this device may not have enough free memory to prove`))
       if (code !== 0) return reject(new Error(`local prover failed (${code}); check the local parameter files and request`))
       try { resolve(JSON.parse(stdout)) } catch { reject(new Error('local prover returned invalid JSON')) }
     })
@@ -32,6 +37,7 @@ function proverConfig(dep, env) {
 const context = (dep, owner, batch, round) => ({ chainId: String(dep.chainId), settlement: dep.settlement.toLowerCase(), owner: owner.toLowerCase(), batch: String(batch), round: String(round) })
 
 async function proveFixture(config, pin, mode, fixture) {
+  sweepStale('blindfold-witness-') // a prover killed mid-proof (e.g. out of memory) skips the cleanup below
   const dir = mkdtempSync(join(tmpdir(), 'blindfold-witness-'))
   try {
     const file = join(dir, 'fixture.json')
