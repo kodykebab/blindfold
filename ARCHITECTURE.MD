@@ -672,19 +672,24 @@ Build artifacts first with `source env.sh` and `forge build --root contracts
 
 `test/swapvm/AquaSettlement.t.sol` exercises the admitted accounting path with verifier
 doubles; its fork subclass uses Unichain's PoolManager. Fresh generated proofs and
-the unmodified client/solver are exercised separately:
+the browser, local client, keeper and solver are exercised separately:
 
 ```bash
 source env.sh
 forge build --root contracts --no-dynamic-test-linking
+npm ci --prefix packages/proof-bench --ignore-scripts
+npm ci --prefix packages/extension-e2e --ignore-scripts
+(cd packages/extension-e2e && npx playwright install chromium)
 AQUA_E2E=1 ADMISSION_PARAMS=/path/to/admission-params \
   ADMISSION_PROVER=/path/to/local-prover \
   node --test packages/proof-bench/test/aqua-e2e.test.mjs
 ```
 
 The gate starts its own Anvil chain, uses recorded drand data, ships a funded strategy,
-accepts two freshly proved orders, runs the keeper to decrypt/reveal, executes both
+funds and submits one fresh-proof order through the browser and a counter-order
+through the CLI, runs the keeper to decrypt/reveal, executes both
 venues through the solver, checks the actual Aqua taker and maker balances, and
-withdraws user proceeds. A snapshot of that isolated batch also tests revoked maker
+withdraws the browser trader's proceeds through the page and the counterparty's through
+the CLI. A snapshot of that isolated batch also tests revoked maker
 allowance, solver refusal, keeper expiry and client withdrawal before restoring the
 fixture for successful settlement.

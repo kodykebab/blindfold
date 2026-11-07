@@ -37,7 +37,7 @@ function animation(reducedMotion, search = '') {
   const scope = vm.createContext({
     innerWidth: 339, innerHeight: 977, devicePixelRatio: 2,
     performance: { now: () => now },
-    document: { documentElement: element('html'), getElementById: element, querySelector: element, createElement: () => element('canvas') },
+    document: { documentElement: element('html'), getElementById: element, querySelector: element, querySelectorAll: () => [], createElement: () => element('canvas') },
     location: { search }, URLSearchParams,
     matchMedia: () => ({ matches: reducedMotion }),
     addEventListener: (name, listener) => listeners.set(name, listener),

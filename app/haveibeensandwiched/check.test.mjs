@@ -140,3 +140,104 @@ test('rpcBatch orders by id and retries what the batch dropped', async () => {
     assert.equal(calls.length, 2)
   } finally { globalThis.fetch = real }
 })
+
+
+test('network selection routes lookups and isolates cached results', async () => {
+  const originalFetch = globalThis.fetch
+  const hash = '0x' + 'fe'.repeat(32), calls = []
+  globalThis.fetch = async (url, init) => {
+    const request = JSON.parse(init.body)
+    calls.push({ url, method: request.method })
+    const result = request.method === 'eth_getTransactionReceipt'
+      ? { blockNumber: '0x1', transactionIndex: '0x0' }
+      : request.method === 'eth_getBlockReceipts' ? []
+        : request.method === 'eth_getBlockByNumber' ? { timestamp: '0x1' } : '0x1'
+    return { json: async () => ({ result }) }
+  }
+  try {
+    const main = await check(hash, 'mainnet')
+    const testnet = await check(hash, 'testnet')
+    assert.equal(main.network, 'mainnet')
+    assert.equal(testnet.network, 'testnet')
+    assert.equal(testnet.cached, undefined)
+    assert.ok(calls.some((c) => c.url.includes('sepolia.unichain.org')))
+    assert.equal((await check(hash, 'testnet')).cached, true)
+    assert.match((await check(hash, 'invalid')).error, /unknown network/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('testnet selects v3 and v4 swap logs', async () => {
+  const { hasSwap } = await import('./check.mjs')
+  const { V3_SWAP, V4_SWAP } = await import('../../packages/court-watcher/lib.mjs')
+  assert.equal(hasSwap({ logs: [{ topics: [V4_SWAP] }] }), true)
+  assert.equal(hasSwap({ logs: [{ topics: [V3_SWAP] }] }), true)
+  assert.equal(hasSwap({ logs: [{ topics: ['0x' + '00'.repeat(32)] }] }), false)
+})
+
+test('testnet replays a v4 sandwich on Unichain Sepolia and prices it in ETH from Blockscout', async () => {
+  const { V4_SWAP } = await import('../../packages/court-watcher/lib.mjs')
+  const originalFetch = globalThis.fetch
+  const PM = '0x00b036b58a818b1bc34d502d3fe730db729e62ac', POOL_ID = '0x' + 'ab'.repeat(32)
+  const hash = (n) => '0x' + n.toString(16).padStart(64, '0')
+  const addr = (n) => '0x' + n.toString(16).padStart(40, '0')
+  const word = (n) => BigInt.asUintN(256, BigInt(n)).toString(16).padStart(64, '0')
+  // v4 Swap amounts are swapper-side: negative is paid in. a0/a1 here are pool-side, as in the v3 test.
+  const receipt = (i, from, caller, a0, a1) => ({
+    status: '0x1', blockNumber: '0x10', transactionIndex: `0x${i.toString(16)}`, transactionHash: hash(i + 101), from: addr(from),
+    logs: [{ address: PM, topics: [V4_SWAP, POOL_ID, hash(caller)], data: '0x' + word(-a0) + word(-a1) }],
+  })
+  const e15 = 10n ** 15n
+  const receipts = [receipt(0, 1, 9, 100n * e15, -90n * e15), receipt(1, 2, 8, 50n * e15, -40n * e15), receipt(2, 1, 9, -105n * e15, 90n * e15)]
+  const urls = []
+  globalThis.fetch = async (url, init) => {
+    urls.push(String(url))
+    if (String(url).includes('blockscout')) return { json: async () => ({ status: '1', result: [{ topics: [hash(0), POOL_ID, hash(0), hash(7)] }] }) }
+    const q = JSON.parse(init.body)
+    const result = q.method === 'eth_getTransactionReceipt' ? receipts[1]
+      : q.method === 'eth_getBlockReceipts' ? receipts
+        : q.method === 'eth_getBlockByNumber' ? { timestamp: '0x100' } : '0x10'
+    return { json: async () => ({ result }) }
+  }
+  try {
+    const s = (await check(hash(102), 'testnet')).txs[0].sandwiches[0] // own hashes: check() caches per network and input
+    assert.equal(s.v4, true)
+    assert.equal(s.pool, PM)
+    assert.equal(s.poolId, POOL_ID)
+    assert.equal(s.profitRaw, String(5n * e15))
+    assert.equal(s.token, addr(0)) // currency0 is native ETH
+    assert.equal(s.symbol, 'ETH')
+    assert.equal(s.amount, 0.005)
+    assert.equal(s.usd, null)
+    assert.ok(urls.some((u) => u.includes(`unichain-sepolia.blockscout.com/api?module=logs&action=getLogs&address=${PM}`) && u.includes(`topic1=${POOL_ID}`)))
+    assert.ok(!urls.some((u) => u.includes('llama')), 'testnet profits are not priced')
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('testnet replays a v3 sandwich and returns its raw profit', async () => {
+  const { V3_SWAP } = await import('../../packages/court-watcher/lib.mjs')
+  const originalFetch = globalThis.fetch
+  const hash = (n) => '0x' + n.toString(16).padStart(64, '0')
+  const addr = (n) => '0x' + n.toString(16).padStart(40, '0')
+  const word = (n) => BigInt.asUintN(256, BigInt(n)).toString(16).padStart(64, '0')
+  const receipt = (i, from, a0, a1) => ({
+    status: '0x1', blockNumber: '0x10', transactionIndex: `0x${i.toString(16)}`,
+    transactionHash: hash(i + 1), from: addr(from),
+    logs: [{ address: POOL, topics: [V3_SWAP, hash(0), hash(from)], data: '0x' + word(a0) + word(a1) }],
+  })
+  const receipts = [receipt(0, 1, 100, -90), receipt(1, 2, 50, -40), receipt(2, 1, -105, 90)]
+  globalThis.fetch = async (_url, init) => {
+    const q = JSON.parse(init.body)
+    const result = q.method === 'eth_getTransactionReceipt' ? receipts[1]
+      : q.method === 'eth_getBlockReceipts' ? receipts
+        : q.method === 'eth_getBlockByNumber' ? { timestamp: '0x100' }
+          : q.method === 'eth_call' ? '0x' + addr(3).slice(2).padStart(64, '0') : '0x10'
+    return { json: async () => ({ result }) }
+  }
+  try {
+    const result = await check(hash(2), 'testnet')
+    assert.equal(result.sandwichCount, 1)
+    assert.equal(result.txs[0].sandwiches[0].profitRaw, '5')
+    assert.equal(result.txs[0].sandwiches[0].usd, null)
+    assert.equal(result.txs[0].sandwiches[0].courtProvable, false)
+  } finally { globalThis.fetch = originalFetch }
+})

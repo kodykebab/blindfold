@@ -14,7 +14,8 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
   const manifestSha256 = process.env.ADMISSION_MANIFEST_SHA256
   assert.match(manifestSha256 ?? '', /^[0-9a-f]{64}$/)
   const timestamp = 1692803367n + (1000000n - 3n) * 3n - 600n // with the start pinned below, batch 1 targets round 1000000 (the recorded beacon)
-  const c = await localChain({ timestamp, admission: { params, manifestSha256 }, schedule: { start: Number(timestamp), batchLength: 300, settleLength: 30 }, fee: 1n })
+  // This isolated recorded-round fixture uses a fixed block interval; it is not a wall-clock cadence measurement.
+  const c = await localChain({ timestamp, timestampInterval: 1, admission: { params, manifestSha256 }, schedule: { start: Number(timestamp), batchLength: 300, settleLength: 30 }, fee: 1n })
   const oldState = process.env.CLIENT_STATE
   try {
     process.env.CLIENT_STATE = join(c.dir, 'state')
@@ -28,6 +29,9 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
     const advanced = await c.cli(10, ['prepare-admission', '1'])
     assert.equal(advanced.code, 0, advanced.err)
     assert.equal(loadState(dep, owner).preparation.batch, '1')
+    const prepStatus = await c.cli(10, ['status'])
+    assert.equal(prepStatus.code, 0, prepStatus.err)
+    assert.match(prepStatus.out, /preparation: prepared for batch 1/)
     const beforeFailure = loadState(dep, owner).preparation
     const failedPrep = await c.cli(10, ['prepare-admission', '1'], { ADMISSION_PROVER: '/usr/bin/false' })
     assert.notEqual(failedPrep.code, 0)

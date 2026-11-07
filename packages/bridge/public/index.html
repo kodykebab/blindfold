@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- In the page so any static host enforces it; frame-ancestors only works as a header (server.mjs, README) -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'">
+  <title>Blindfold bridge</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="bridge.mjs"></script>
+</head>
+<body>
+  <main>
+    <h1>Blindfold bridge</h1>
+    <p>This page passes transactions from the Blindfold extension to your wallet. Your orders are sealed in the
+      extension and never reach this page. Blindfold never asks you to sign a message.</p>
+    <p id="extension" role="status">Connecting to the Blindfold extension...</p>
+    <h2>Wallet</h2>
+    <div id="wallets"></div>
+    <p id="no-wallet"></p>
+    <dl>
+      <dt>Account</dt><dd id="account">not connected</dd>
+      <dt>Chain</dt><dd id="chain">-</dd>
+      <dt>Batching</dt><dd id="batching">-</dd>
+    </dl>
+    <p id="activity" role="status" aria-live="polite"></p>
+  </main>
+</body>
+</html>

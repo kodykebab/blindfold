@@ -21,7 +21,7 @@ npm start -- import-state backup.json      # restore; refused unless every entry
 npm start -- restore-backup                # decrypt the automatic backup with this wallet and import it
 ```
 
-`sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units.
+`sell` sells token0 for token1, `buy` sells token1 for token0. Amounts are decimal token units. `commit` also accepts `--vault-only` to refuse automatic shortfall deposits and `--both-funded` to require nonzero vault balances in both assets. Both flags also apply to `--dry-run`.
 
 Every command except `export-state` and `backup` first checks that the RPC's chain is the deployment's and that the settlement has code there, and names the setting to fix if not.
 
@@ -68,6 +68,19 @@ The client saves each order and salt (`.state/`, or `CLIENT_STATE`) **before** i
 | `CLIENT_BACKUP_PASSPHRASE` | — | Encrypt backups with this passphrase instead of a wallet-derived key |
 | `QUOTE_MAX_AGE_S` | `120` | Refuse a quote when the latest block is older than this; `off` disables |
 | `KEEP_READY_POLL_MS` | `10000` | How often `keep-ready` checks its key |
+| `CLIENT_MIN_LEAD_SECONDS` | `3` | Admission off: seconds a commit needs before commits close. Never below 2 plus one per funding transaction, because the commit lands in a later block |
+
+## Deadlines
+The client uses the contract's comparisons (`BatchAuction.sol`, `BlindfoldSettlement.expire`) and judges each action at the time its transaction can land, one block after the chain time it reads:
+
+| Action | Contract accepts at block time `t` | Client offers it when chain time is `now` |
+|---|---|---|
+| commit | `t < commitsClose` | `commitsClose − now ≥ max(lead, 2 + funding txs)` |
+| reveal | `revealOpens ≤ t < revealCloses` | `revealOpens ≤ now` and `now + 1 < revealCloses` |
+| slash / release | `t ≥ revealCloses` | `now ≥ revealCloses` |
+| expire | `t ≥ settleCloses` | `now ≥ settleCloses` |
+
+In the last second of a reveal window `blockers` says to wait for the slash or release instead of offering a reveal that would land too late.
 
 ## Local end-to-end test
 Starts its own anvil, deploys the vault and settlement from `contracts/out`, and drives the real CLI.

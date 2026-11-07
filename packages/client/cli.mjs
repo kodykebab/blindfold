@@ -15,26 +15,41 @@
 //   npm start -- backup                          write the encrypted backup now (otherwise automatic after every change)
 //   npm start -- restore-backup [file]           decrypt a backup with this wallet (or passphrase) and import it
 // sell = token0 in, token1 out; buy = token1 in, token0 out. Amounts are decimal token units.
-import { formatGwei, formatUnits, parseEventLogs, parseUnits } from 'viem'
+import { encodeFunctionData, formatGwei, formatUnits, parseEventLogs, parseUnits } from 'viem'
 import { connect, encrypt, loadAbi, newSalt, orderHash } from './lib.mjs'
 import { balances, deadlines, depositOutcome, exitPlan, gasLine, isOpen, preflight, track } from './flow.mjs'
 import { exportState, importState, loadState, parseState, saveCommitment, validateState, writeState, withStateLock } from './state.mjs'
 import { readFileSync, writeFileSync, chmodSync } from 'node:fs'
+import { confirmTx, confirmationsFor, describeOutcome } from './tx.mjs'
+import { errorText } from './rpc-error.mjs'
 import { proveAdmission, prepareAdmission, validatePreparation, consumePreparation, admissionLead, measuredSeconds, recordProving, targetBatch } from './admission.mjs'
 import { reconcileFunding, restoreFunding } from './admission-state.mjs'
 import { backupDir, backupPath, openBackup, readBackupFile, writeBackup } from './backup.mjs'
 import { Q96, limitFromQuote, nextPreparation, parseSlippage, preparationStatus, quoteOut, replacements, retryable, routeFeePpm, waitNote } from './quote.mjs'
+import { cleanSymbol, gasQuote, readQuote, statusPayload } from './market-data.mjs'
 
 const ctx = connect()
 const { dep, pub, wallet, account, abi, read } = ctx
 const S = dep.settlement
 const me = account.address
 
+// Refuse mismatched configuration before reading user state or sending any transaction.
+async function validateDeployment() {
+  await checkNetwork()
+  const [vault, token0, token1, depositToken] = await Promise.all(['vault', 'token0', 'token1', 'depositToken'].map((name) => read(S, name)))
+  for (const [name, actual] of Object.entries({ vault, token0, token1, depositToken })) {
+    if (dep[name] != null && (typeof dep[name] !== 'string' || dep[name].toLowerCase() !== actual.toLowerCase())) fail(`deployment ${name} differs from the settlement; select the correct deployment`)
+  }
+  if (BigInt(token0) === 0n || BigInt(token1) === 0n || token0.toLowerCase() === token1.toLowerCase()) fail('settlement token pair is not initialized')
+}
+
 async function tokens() {
   const [t0, t1, depositToken] = await Promise.all([read(S, 'token0'), read(S, 'token1'), read(S, 'depositToken')])
   const meta = async (address) => {
-    const [symbol, decimals] = await Promise.all(['symbol', 'decimals'].map((f) => read(address, f, [], abi.erc20)))
-    return { address, symbol, decimals }
+    let raw = null
+    try { raw = await read(address, 'symbol', [], abi.erc20) } catch { raw = null }
+    const decimals = await read(address, 'decimals', [], abi.erc20)
+    return { address, symbol: cleanSymbol(raw, address), decimals }
   }
   const [token0, token1, dt] = await Promise.all([meta(t0), meta(t1), meta(depositToken)])
   return { token0, token1, depositToken, byAddress: { [depositToken]: dt, [t0]: token0, [t1]: token1 } }
@@ -49,10 +64,11 @@ function fail(msg) {
 
 async function send(address, which, functionName, args) {
   const { request } = await pub.simulateContract({ account, address, abi: which, functionName, args })
-  const hash = await wallet.writeContract(request)
-  const receipt = await pub.waitForTransactionReceipt({ hash })
-  if (receipt.status !== 'success') fail(`${functionName} reverted in ${hash}`)
-  return receipt
+  const nonce = await pub.getTransactionCount({ address: me, blockTag: 'pending' })
+  const hash = await wallet.writeContract({ ...request, nonce })
+  const outcome = await confirmTx(pub, hash, { from: me, nonce, confirmations: confirmationsFor(dep) })
+  if (outcome.status !== 'confirmed') fail(describeOutcome(functionName, outcome))
+  return outcome.receipt
 }
 
 async function vaultView(t) {
@@ -76,30 +92,113 @@ async function schedule(b) {
   return deadlines(v, await admissionRequired())
 }
 
-async function status() {
+async function preparationState(b, now) {
+  if (!dep.admission?.manifestSha256) return null
+  let state
+  try { state = loadState(dep, me) }
+  catch { return 'local state unreadable; restore a backup' }
+  const { preparation: prepared, preparing, consumedPreparation: consumed } = state
+  if (!prepared) return preparationStatus({ preparing, consumed, current: b, running })
+  try {
+    await checkNetwork()
+    const preparedBatch = BigInt(prepared.batch)
+    const round = await read(S, 'targetRound', [preparedBatch])
+    validatePreparation(prepared, { dep, owner: me, batch: preparedBatch, round })
+    const closes = await read(S, 'commitsClose', [preparedBatch])
+    if (now >= closes) return `expired: batch ${preparedBatch} has closed; the next commit discards it`
+    return preparationStatus({ preparation: prepared, preparing, consumed, current: b, running })
+  } catch { return 'invalid for this account, network or deployment' }
+}
+
+const hasSettlement = (name) => abi.settlement.some((item) => item.type === 'function' && item.name === name)
+
+async function quoteFor(batchId, t, block = null) {
+  const sample = block ?? await pub.getBlock()
+  const quote = await readQuote({
+    read: (name, args = []) => read(S, name, args),
+    has: hasSettlement,
+    batchId,
+    decimals0: t.token0.decimals,
+    decimals1: t.token1.decimals,
+    block: sample,
+  })
+  return { block: sample, quote }
+}
+
+async function dryRunReport(t, order, current, enforced) {
+  const { block, quote } = await quoteFor(current, t)
+  if (enforced) return { quote, gas: gasQuote({ block, reason: 'preview does not build an admission proof' }) }
+  try {
+    const salt = newSalt()
+    const hash = orderHash(dep.chainId, S, current, order, salt)
+    const round = await read(S, 'targetRound', [current])
+    const ciphertext = await encrypt(round, order, salt)
+    const units = await pub.estimateContractGas({
+      account, address: S, abi: abi.settlement, functionName: 'commit', args: [current, hash, ciphertext],
+    })
+    return { quote, gas: gasQuote({ units, gasPrice: await pub.getGasPrice(), block }) }
+  } catch (error) {
+    return { quote, gas: gasQuote({ block, reason: error.shortMessage || error.message }) }
+  }
+}
+
+async function status(json = false) {
   const t = await tokens()
   const { open, rows } = await vaultView(t)
+  const [b, block] = await Promise.all([read(S, 'currentBatch'), pub.getBlock()])
+  const now = block.timestamp
+  const times = await schedule(b)
+  const preparation = await preparationState(b, now)
+  if (json) {
+    const { quote } = await quoteFor(b, t, block)
+    console.log(JSON.stringify(statusPayload({
+      account: me, chainId: dep.chainId, token0: t.token0, token1: t.token1, rows,
+      openCommitments: open, batchId: b, now, deadlines: times, preparation, quote,
+    })))
+    return
+  }
   const enforced = await admissionRequired()
   console.log(`network chain ${dep.chainId}; deployment ${dep.mode ?? 'unnamed'}, settlement ${S}, vault ${dep.vault}, ${enforced ? 'proof-enforced admission' : 'unchecked commitments'}`)
   console.log(`pair ${t.token0.symbol} (${t.token0.address}) / ${t.token1.symbol} (${t.token1.address}): sell = ${t.token0.symbol} in, ${t.token1.symbol} out; buy = ${t.token1.symbol} in, ${t.token0.symbol} out; deposit and fee in ${t.byAddress[t.depositToken].symbol}`)
   console.log(`account ${me}`)
+  console.log(`network ${dep.chainId}`)
+  console.log(`pair ${t.token0.symbol} / ${t.token1.symbol}`)
   for (const r of rows) {
     console.log(`  ${r.tok.symbol.padEnd(6)} wallet ${fmt(r.tok, r.wallet)} | available ${fmt(r.tok, r.available)} | reserved ${fmt(r.tok, r.reserved)} | withdrawable ${fmt(r.tok, r.withdrawable)}`)
   }
   console.log(`  open commitments: ${open}${open ? ' (withdrawals blocked until each is revealed and settled, slashed, released or expired)' : ''}`)
-  const [b, now] = await Promise.all([read(S, 'currentBatch'), pub.getBlock().then((x) => x.timestamp)])
-  if (enforced) {
-    const { preparation, preparing, consumedPreparation: consumed } = loadState(dep, me)
-    console.log(`preparation: ${preparationStatus({ preparation, preparing, consumed, current: b, running })}`)
-  }
   console.log(`batch ${b} (chain time ${now})`)
-  for (const d of await schedule(b)) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
+  for (const d of times) console.log(`  ${String(d.at - now).padStart(5)}s  ${d.what}`)
+  if (preparation) console.log(`preparation: ${preparation}`)
+}
+
+// Runtime of TransferProbe, with its code installed on the holder for one eth_call.
+// `transfer` then runs as that holder, so the vault's balance change is visible before any transaction.
+const TRANSFER_PROBE = '0x608060405234801561000f575f80fd5b5060043610610029575f3560e01c80631ead4b791461002d575b5f80fd5b61004760048036038101906100429190610273565b61005d565b60405161005491906102d2565b60405180910390f35b5f808473ffffffffffffffffffffffffffffffffffffffff166370a08231856040518263ffffffff1660e01b815260040161009891906102fa565b602060405180830381865afa1580156100b3573d5f803e3d5ffd5b505050506040513d601f19601f820116820180604052508101906100d79190610327565b90508473ffffffffffffffffffffffffffffffffffffffff1663a9059cbb85856040518363ffffffff1660e01b8152600401610114929190610352565b6020604051808303815f875af1158015610130573d5f803e3d5ffd5b505050506040513d601f19601f8201168201806040525081019061015491906103ae565b50808573ffffffffffffffffffffffffffffffffffffffff166370a08231866040518263ffffffff1660e01b815260040161018f91906102fa565b602060405180830381865afa1580156101aa573d5f803e3d5ffd5b505050506040513d601f19601f820116820180604052508101906101ce9190610327565b6101d89190610406565b9150509392505050565b5f80fd5b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f61020f826101e6565b9050919050565b61021f81610205565b8114610229575f80fd5b50565b5f8135905061023a81610216565b92915050565b5f819050919050565b61025281610240565b811461025c575f80fd5b50565b5f8135905061026d81610249565b92915050565b5f805f6060848603121561028a576102896101e2565b5b5f6102978682870161022c565b93505060206102a88682870161022c565b92505060406102b98682870161025f565b9150509250925092565b6102cc81610240565b82525050565b5f6020820190506102e55f8301846102c3565b92915050565b6102f481610205565b82525050565b5f60208201905061030d5f8301846102eb565b92915050565b5f8151905061032181610249565b92915050565b5f6020828403121561033c5761033b6101e2565b5b5f61034984828501610313565b91505092915050565b5f6040820190506103655f8301856102eb565b61037260208301846102c3565b9392505050565b5f8115159050919050565b61038d81610379565b8114610397575f80fd5b50565b5f815190506103a881610384565b92915050565b5f602082840312156103c3576103c26101e2565b5b5f6103d08482850161039a565b91505092915050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52601160045260245ffd5b5f61041082610240565b915061041b83610240565b9250828203905081811115610433576104326103d9565b5b9291505056fea26469706673582212206c04e8af46716722ea46b1cff64bc7ac999432c34f9c7d5bdf799135dbc23bac64736f6c634300081a0033'
+
+async function arrivedOnTransfer(token, amount) {
+  const data = encodeFunctionData({
+    abi: [{ type: 'function', name: 'arrived', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'uint256' }] }],
+    functionName: 'arrived',
+    args: [token, dep.vault, amount],
+  })
+  const { data: out } = await pub.call({ account: me, to: me, data, stateOverride: [{ address: me, code: TRANSFER_PROBE }] })
+  if (!out || out === '0x') throw new Error('transfer probe returned nothing')
+  return BigInt(out)
 }
 
 async function deposit(name, amount) {
   const t = await tokens()
   const tok = pick(t, name)
   const value = parseUnits(amount, tok.decimals)
+  if (value === 0n) fail('deposit amount must be above zero')
+  // Check the wallet first: the transfer probe below would otherwise fail with an arithmetic error.
+  const held = await read(tok.address, 'balanceOf', [me], abi.erc20)
+  if (held < value) fail(`not enough ${tok.symbol} in the wallet: it holds ${fmt(tok, held)}, the deposit needs ${fmt(tok, value)}`)
+  let arrived
+  try { arrived = await arrivedOnTransfer(tok.address, value) }
+  catch (error) { fail(`could not check how much this token delivers on transfer (${error.shortMessage || error.message})`) }
+  if (arrived < value) fail(`this token takes a fee or rebases on transfer; Blindfold doesn't support it (arrived ${fmt(tok, arrived)})`)
   const allowance = await read(tok.address, 'allowance', [me, dep.vault], abi.erc20)
   if (allowance < value) await send(tok.address, abi.erc20, 'approve', [dep.vault, value])
   await send(dep.vault, abi.vault, 'deposit', [tok.address, value])
@@ -194,7 +293,7 @@ async function marketQuote() {
   return { priceX96, feePpm }
 }
 
-async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
+async function commit(side, amountIn, minOut, dryRun, slippage = 50n, vaultOnly = false, bothFunded = false, json = false) {
   if (side !== 'sell' && side !== 'buy') fail('side must be sell or buy')
   if (amountIn === undefined) fail('usage: commit <sell|buy> <amountIn> [minAmountOut] [--slippage bps] [--dry-run]')
   const t = await tokens()
@@ -214,7 +313,9 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
   const [commitsClose, commits] = await Promise.all([read(S, 'commitsClose', [current]), read(S, 'commitIdsOf', [current])])
   const per = async (f) => Object.fromEntries(await Promise.all(Object.keys(t.byAddress).map(async (a) => [a, await f(a)])))
   const enforced = await admissionRequired()
-  let funding, minLead = 3n, target = { batch: current, prepared: false, close: commitsClose }
+  const leadText = process.env.CLIENT_MIN_LEAD_SECONDS || '3'
+  if (!/^\d+$/.test(leadText)) fail('CLIENT_MIN_LEAD_SECONDS must be a whole number of seconds')
+  let funding, minLead = BigInt(leadText), target = { batch: current, prepared: false, close: commitsClose }
   if (enforced) {
     if (!dep.admission?.manifestSha256) fail('this deployment requires admission; its deployment file must include the parameter manifest')
     const state = loadState(dep, me)
@@ -263,6 +364,11 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
   for (const line of waitNote({ now, revealCloses: await read(S, 'revealCloses', [target.batch]) })) console.log(line)
   if (!enforced) console.log(`keep ${fmt(tin, order.amountIn)} free in the vault until the reveal, or the order is closed as unfunded and the deposit lost`)
   if (!check.ok) fail(`preflight failed:\n  ${check.problems.join('\n  ')}`)
+  if (bothFunded) {
+    const balances = await Promise.all([t.token0, t.token1].map((token) => read(dep.vault, 'balanceOf', [me, token.address])))
+    if (balances.some((balance) => balance === 0n)) fail('fund both tokens in the vault before trading')
+  }
+  if (vaultOnly && check.funding.some((f) => f.shortfall > 0n)) fail('fund the required vault balances before trading; automatic deposits are disabled')
   const salt = newSalt()
   const hash = orderHash(dep.chainId, S, target.batch, order, salt)
   const round = await read(S, 'targetRound', [target.batch])
@@ -273,7 +379,10 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
     try { ciphertext = await encrypt(round, order, salt) } catch (e) { beacon = e.shortMessage ?? e.message }
   }
   await gasReview(t, check.funding, enforced ? undefined : ciphertext ? [current, hash, ciphertext] : { why: `(can't reach the drand beacon to encrypt the order: ${beacon})` })
-  if (dryRun) return console.log('dry run: nothing sent')
+  if (dryRun) {
+    if (json) console.log(JSON.stringify(await dryRunReport(t, order, target.batch, enforced)))
+    return console.log('dry run: nothing sent')
+  }
   if (beacon) fail(`can't reach the drand beacon to encrypt the order (${beacon}); nothing was sent. Check the network, or set DRAND to a recorded fixture for local chains`)
   for (const f of check.funding) {
     if (!f.shortfall) continue
@@ -299,7 +408,8 @@ async function commit(side, amountIn, minOut, dryRun, slippage = 50n) {
     }
     await checkNetwork() // again after proving, before anything is sent
     const latest = (await pub.getBlock()).timestamp
-    if (latest >= target.close) fail(`proof completed after batch ${target.batch} closed; nothing submitted. This device's margin now reflects the slower proof; commit again`)
+    if (latest + 1n >= target.close) // the submission lands at least one block later
+      fail(`proof completed after batch ${target.batch} closed; nothing submitted. This device's margin now reflects the slower proof; commit again`)
     reconcileFunding(dep, me, funding, await fundingOnchain(), latest)
     const state = loadState(dep, me)
     state.commitments.push({ id: null, batchId: target.batch, round, hash, order, salt })
@@ -386,12 +496,21 @@ async function resumeAdmission() {
   let tx = pending.tx
   if (!tx) {
     const { request } = await pub.simulateContract({ account, address: S, abi: abi.settlement, functionName: 'admit', args: [pending.batch, pending.hash, pending.ciphertext, pending.proof] })
-    tx = await wallet.writeContract(request)
-    state.admission.pending.tx = tx
+    const nonce = await pub.getTransactionCount({ address: me, blockTag: 'pending' })
+    tx = await wallet.writeContract({ ...request, nonce })
+    Object.assign(state.admission.pending, { tx, nonce })
     writeState(dep, me, state)
   }
-  const receipt = await pub.waitForTransactionReceipt({ hash: tx })
-  if (receipt.status !== 'success') fail(`admission reverted in ${tx}; pending state retained until its batch closes`)
+  const outcome = await confirmTx(pub, tx, { from: me, nonce: pending.nonce ?? state.admission.pending.nonce, confirmations: confirmationsFor(dep) })
+  if (outcome.status === 'dropped') {
+    // Nothing reached the chain: forget the hash so the next resume-admission sends the same proof again.
+    delete state.admission.pending.tx; delete state.admission.pending.nonce
+    writeState(dep, me, state)
+    fail(`admission ${tx} was dropped before inclusion; run resume-admission again to resend it`)
+  }
+  if (outcome.status === 'replaced') fail(`${describeOutcome('admission', outcome)}; pending state retained, run resume-admission to reconcile`)
+  if (outcome.status !== 'confirmed') fail(`admission reverted in ${tx}; pending state retained until its batch closes`)
+  const receipt = outcome.receipt
   const [ev] = parseEventLogs({ abi: abi.settlement, logs: receipt.logs, eventName: 'Committed' })
   if (!ev || ev.args.hash !== pending.hash) fail('admission receipt did not contain the expected commitment; pending state retained')
   const c = state.commitments.find((c) => c.hash === pending.hash)
@@ -405,35 +524,71 @@ const myCommitments = async () =>
   track(await pub.getContractEvents({ address: S, abi: abi.settlement, fromBlock: BigInt(dep.deployBlock ?? 0) }), me)
 
 /** Every commitment and its outcome (T11): what was spent and received at which price, and where the fee and deposit went. */
-async function trackAll() {
+async function trackAll(asJson) {
   const t = await tokens()
   const mine = await myCommitments()
-  if (!mine.size) return console.log('no commitments')
-  const has = (n) => abi.settlement.some((f) => f.type === 'function' && f.name === n)
-  const [depositAmount, bountyBps, fee] = await Promise.all([read(S, 'depositAmount'), read(S, 'bountyBps'), has('commitFee') ? read(S, 'commitFee') : 0n])
-  const dt = t.byAddress[t.depositToken]
-  const links = replacements(mine, loadState(dep, me).commitments)
-  const label = { partial: 'partially filled' }
-  for (const c of mine.values()) {
-    const o = c.order
-    const [tin, tout] = o?.zeroForOne ? [t.token0, t.token1] : [t.token1, t.token0]
-    const what = o ? `${o.zeroForOne ? 'sell' : 'buy'} ${fmt(tin, o.amountIn)} for at least ${fmt(tout, o.minAmountOut)}` : 'sealed'
-    const link = links.get(c.id) ?? {}
-    const notes = [
-      link.replaces !== undefined && `replaces #${link.replaces}`,
-      link.replacedBy !== undefined && `replaced by ${link.replacedBy === 'pending' ? 'a pending commitment' : `#${link.replacedBy}`}`,
-    ].filter(Boolean)
-    console.log(`#${c.id} batch ${c.batchId}: ${label[c.state] ?? c.state} (${what})${notes.length ? `, ${notes.join(', ')}` : ''}`)
-    if (c.state === 'filled' || c.state === 'partial') {
-      const unspent = o.amountIn - c.amountIn
-      console.log(`  spent ${fmt(tin, c.amountIn)}, received ${fmt(tout, c.amountOut)} into the vault${unspent ? `; ${fmt(tin, unspent)} unspent, free again` : ''}`)
+  if (!asJson) {
+    if (!mine.size) return console.log('no commitments')
+    const has = (n) => abi.settlement.some((f) => f.type === 'function' && f.name === n)
+    const [depositAmount, bountyBps, fee] = await Promise.all([read(S, 'depositAmount'), read(S, 'bountyBps'), has('commitFee') ? read(S, 'commitFee') : 0n])
+    const dt = t.byAddress[t.depositToken]
+    const links = replacements(mine, loadState(dep, me).commitments)
+    const label = { partial: 'partially filled' }
+    for (const c of mine.values()) {
+      const o = c.order
+      const [tin, tout] = o?.zeroForOne ? [t.token0, t.token1] : [t.token1, t.token0]
+      const what = o ? `${o.zeroForOne ? 'sell' : 'buy'} ${fmt(tin, o.amountIn)} for at least ${fmt(tout, o.minAmountOut)}` : 'sealed'
+      const link = links.get(c.id) ?? {}
+      const notes = [
+        link.replaces !== undefined && `replaces #${link.replaces}`,
+        link.replacedBy !== undefined && `replaced by ${link.replacedBy === 'pending' ? 'a pending commitment' : `#${link.replacedBy}`}`,
+      ].filter(Boolean)
+      console.log(`#${c.id} batch ${c.batchId}: ${label[c.state] ?? c.state} (${what})${notes.length ? `, ${notes.join(', ')}` : ''}`)
+      if (c.state === 'filled' || c.state === 'partial') {
+        const unspent = o.amountIn - c.amountIn
+        console.log(`  spent ${fmt(tin, c.amountIn)}, received ${fmt(tout, c.amountOut)} into the vault${unspent ? `; ${fmt(tin, unspent)} unspent, free again` : ''}`)
+      }
+      if (c.settleTx) console.log(`  settled at ${c.priceX96 === undefined ? 'an unknown price' : price(t, c.priceX96)} in ${c.settleTx}`)
+      const d = depositOutcome(c, { depositAmount, bountyBps, owner: me })
+      const deposit = d.held ? `${fmt(dt, d.held)} held until it is revealed or released`
+        : [d.returned && `${fmt(dt, d.returned)} returned`, d.bounty && `${fmt(dt, d.bounty)} bounty to ${c.by}`, d.lost && `${fmt(dt, d.lost)} forfeited`].filter(Boolean).join(', ') || 'none'
+      console.log(`  fee ${fmt(dt, fee)} (non-refundable); deposit ${deposit}`)
     }
-    if (c.settleTx) console.log(`  settled at ${c.priceX96 === undefined ? 'an unknown price' : price(t, c.priceX96)} in ${c.settleTx}`)
-    const d = depositOutcome(c, { depositAmount, bountyBps, owner: me })
-    const deposit = d.held ? `${fmt(dt, d.held)} held until it is revealed or released`
-      : [d.returned && `${fmt(dt, d.returned)} returned`, d.bounty && `${fmt(dt, d.bounty)} bounty to ${c.by}`, d.lost && `${fmt(dt, d.lost)} forfeited`].filter(Boolean).join(', ') || 'none'
-    console.log(`  fee ${fmt(dt, fee)} (non-refundable); deposit ${deposit}`)
+    return
   }
+  const has = (n) => abi.settlement.some((f) => f.type === 'function' && f.name === n)
+  const [depositAmount, bountyBps, now, enforced] = await Promise.all([
+    read(S, 'depositAmount'),
+    has('bountyBps') ? read(S, 'bountyBps') : 0n,
+    pub.getBlock().then((x) => x.timestamp),
+    admissionRequired(),
+  ])
+  const fee = has('commitFee') ? await read(S, 'commitFee') : 0n
+  const dt = t.byAddress[t.depositToken]
+  const policy = {
+    depositToken: dt.symbol,
+    depositAmount: formatUnits(depositAmount, dt.decimals),
+    commitFee: formatUnits(fee, dt.decimals),
+    bountyBps: Number(bountyBps),
+    admissionRequired: Boolean(enforced),
+  }
+  const open = [...mine.values()]
+  const sched = new Map()
+  for (const b of new Set(open.map((c) => c.batchId))) {
+    const [revealOpens, revealCloses, settleCloses] = await Promise.all(['revealOpens', 'revealCloses', 'settleCloses'].map((f) => read(S, f, [b])))
+    sched.set(b, { revealOpens, revealCloses, settleCloses })
+  }
+  const kept = new Map(loadState(dep, me).commitments.map((x) => [x.hash, x]))
+  const { ordersPayload } = await import('./orders.mjs')
+  const payload = ordersPayload({
+    policy,
+    now: Number(now),
+    commitments: [...mine.values()],
+    tokens: t,
+    saved: kept,
+    schedules: sched,
+  })
+  console.log(JSON.stringify(payload))
 }
 
 /** A clearing price (raw token1 per token0 × 2^96) in whole tokens: token1 per one token0. */
@@ -455,29 +610,49 @@ async function exitSteps() {
 const describe = ({ c, action, at, why }, now) =>
   `#${c.id} batch ${c.batchId} (${c.state}): ${action === 'wait' ? `wait ${at - now}s` : action} — ${why}`
 
-async function blockers() {
+async function blockers(asJson) {
   const { now, steps } = await exitSteps()
+  if (asJson) {
+    const { blockersPayload } = await import('./orders.mjs')
+    return console.log(JSON.stringify(blockersPayload({ now, steps })))
+  }
   if (!steps.length) return console.log('nothing blocks withdrawal')
   for (const s of steps) console.log(describe(s, now))
 }
 
 /** Guided exit: one transaction per step, in order; reports what still blocks withdrawal. */
-async function cleanup(dryRun) {
+async function cleanup(dryRun, asJson) {
   const { now, kept, steps } = await exitSteps()
   const expired = new Set()
+  const done = []
   for (const s of steps) {
-    console.log(describe(s, now))
-    if (dryRun || s.action === 'wait') continue
+    if (!asJson) console.log(describe(s, now))
+    if (s.action === 'wait') continue
     const { id, batchId } = s.c
-    if (s.action === 'reveal') await send(S, abi.settlement, 'reveal', [id, kept.get(s.c.hash).order, kept.get(s.c.hash).salt])
-    if (s.action === 'slash' || s.action === 'release') await send(S, abi.settlement, 'slashUnrevealed', [id])
-    if (s.action === 'expire' && !expired.has(batchId)) {
-      expired.add(batchId)
-      await send(S, abi.settlement, 'expire', [batchId])
+    let tx = null
+    if (!dryRun) {
+      if (s.action === 'reveal') {
+        const receipt = await send(S, abi.settlement, 'reveal', [id, kept.get(s.c.hash).order, kept.get(s.c.hash).salt])
+        tx = receipt.transactionHash
+      }
+      if (s.action === 'slash' || s.action === 'release') {
+        const receipt = await send(S, abi.settlement, 'slashUnrevealed', [id])
+        tx = receipt.transactionHash
+      }
+      if (s.action === 'expire' && !expired.has(batchId)) {
+        expired.add(batchId)
+        const receipt = await send(S, abi.settlement, 'expire', [batchId])
+        tx = receipt.transactionHash
+      }
     }
+    done.push({ id: String(id), action: s.action, tx })
+  }
+  const open = await read(dep.vault, 'openCommitments', [me])
+  if (asJson) {
+    const { cleanupPayload } = await import('./orders.mjs')
+    return console.log(JSON.stringify(cleanupPayload({ dryRun, done, stillBlocking: open })))
   }
   if (dryRun) return console.log('dry run: nothing sent')
-  const open = await read(dep.vault, 'openCommitments', [me])
   console.log(open ? `${open} commitment(s) still block withdrawal; run blockers` : 'nothing blocks withdrawal')
 }
 
@@ -585,16 +760,16 @@ const [cmd, ...args] = process.argv.slice(2)
 const flag = (name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1] }
 const positional = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--slippage')
 const commands = {
-  status: () => status(),
+  status: () => status(args.includes('--json')),
   deposit: () => deposit(args[0], args[1]),
-  commit: () => commit(positional[0], positional[1], positional[2], args.includes('--dry-run'), parseSlippage(flag('--slippage') ?? '50')),
+  commit: () => commit(positional[0], positional[1], positional[2], args.includes('--dry-run'), parseSlippage(flag('--slippage') ?? '50'), args.includes('--vault-only'), args.includes('--both-funded'), args.includes('--json')),
   resubmit: () => resubmit(args.includes('--dry-run'), flag('--slippage')),
   'keep-ready': () => keepReady(args.includes('--once')),
-  track: () => trackAll(),
+  track: () => trackAll(args.includes('--json')),
   'prepare-admission': () => prepare(args[0]),
   'resume-admission': () => resumeAdmission(),
-  blockers: () => blockers(),
-  cleanup: () => cleanup(args.includes('--dry-run')),
+  blockers: () => blockers(args.includes('--json')),
+  cleanup: () => cleanup(args.includes('--dry-run'), args.includes('--json')),
   withdraw: () => withdraw(args[0], args[1] ?? 'all'),
   'export-state': () => exportCmd(args[0]),
   'import-state': () => importCmd(args[0]),
@@ -605,10 +780,10 @@ if (!commands[cmd]) fail(`usage: npm start -- <${Object.keys(commands).join('|')
 try {
   // keep-ready takes the lock only while it prepares, so the same account can commit while it runs
   const mutates = ['prepare-admission', 'commit', 'resubmit', 'resume-admission', 'import-state', 'restore-backup', 'cleanup', 'withdraw', 'deposit'].includes(cmd)
+  if (cmd !== 'export-state' && cmd !== 'backup') await validateDeployment()
   const before = mutates ? exportState(dep, me) : null
   // Every command but the purely local ones needs this RPC and deployment file to agree (T01). Commands check once here;
   // only steps that follow a long local proof check again.
-  if (cmd !== 'export-state' && cmd !== 'backup') await checkNetwork()
   try {
     await (mutates ? withStateLock(dep, me, commands[cmd]) : commands[cmd]())
   } finally {
@@ -619,4 +794,4 @@ try {
     }
   }
 }
-catch (e) { console.error(`client: ${e.shortMessage ?? e.message}`); process.exitCode = 1 }
+catch (e) { console.error(`client: ${errorText(e)}`); process.exitCode = 1 }

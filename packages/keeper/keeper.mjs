@@ -11,6 +11,7 @@ import { createPublicClient, createWalletClient, defineChain, http, toHex } from
 import { mnemonicToAccount, privateKeyToAccount } from 'viem/accounts'
 // shortcut: reuses the client's helpers in place, so packages/client must be installed too; publish them as a package if a third consumer appears
 import { TEST_MNEMONIC, decrypt, drandClient, loadAbi, loadDeployment, orderHash } from '../client/lib.mjs'
+import { errorText } from '../client/rpc-error.mjs'
 import { canSpend, due, lostRace, opened, settledBatches } from './work.mjs'
 
 const E = process.env
@@ -26,7 +27,7 @@ const account = E.KEEPER_KEY ? privateKeyToAccount(E.KEEPER_KEY) : mnemonicToAcc
 const SETTLE_GRACE = (E.KEEPER_SETTLE_GRACE_S ?? '15') === 'off' ? null : Number(E.KEEPER_SETTLE_GRACE_S ?? 15)
 if (SETTLE_GRACE !== null && !(Number.isInteger(SETTLE_GRACE) && SETTLE_GRACE >= 0)) throw new Error('KEEPER_SETTLE_GRACE_S must be a non-negative integer or off')
 const SOLVER = E.KEEPER_SOLVER || fileURLToPath(new URL('../solver/solver.mjs', import.meta.url))
-const solverKey = E.KEEPER_KEY ?? toHex(account.getHdKey().privateKey)
+const solverKey = E.KEEPER_KEY || toHex(account.getHdKey().privateKey)
 
 const dep = loadDeployment()
 const abi = loadAbi('BlindfoldSettlement')
@@ -81,7 +82,7 @@ async function cycle() {
       st[{ reveal: 'revealed', slash: 'slashed', expire: 'expired' }[kind]]++
     } catch (e) {
       if (lostRace(e)) st.lostRace++
-      else st.errors.push(`${kind} ${args[0]}: ${e.shortMessage ?? e.message}`)
+      else st.errors.push(`${kind} ${args[0]}: ${errorText(e)}`)
     }
   }
 
@@ -137,11 +138,11 @@ async function settleMissed(batchIds, st, balance) {
 }
 
 if (once) {
-  const st = await cycle().catch((e) => ({ errors: [e.shortMessage ?? e.message] }))
+  const st = await cycle().catch((e) => ({ errors: [errorText(e)] }))
   if (st.errors.length) console.error(`keeper: ${st.errors.join('; ')}`)
   process.exit(st.errors.length ? 1 : 0)
 }
 for (;;) {
-  await cycle().catch((e) => console.error(`keeper: ${e.shortMessage ?? e.message}`)) // RPC hiccup: try again next poll
+  await cycle().catch((e) => console.error(`keeper: ${errorText(e)}`)) // RPC hiccup: try again next poll
   await new Promise((r) => setTimeout(r, POLL_MS))
 }

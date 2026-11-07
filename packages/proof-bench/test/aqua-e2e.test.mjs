@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { once } from 'node:events'
 import { createServer } from 'node:net'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -19,7 +20,7 @@ const user = (i) => mnemonicToAccount(mnemonic, { addressIndex: i })
 const e18 = 10n ** 18n, Q96 = 1n << 96n
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-test('real admission -> keeper -> solver -> Aqua/v4 fills and expiry -> withdrawals', { skip: process.env.AQUA_E2E !== '1', timeout: 600000 }, async () => {
+test('browser -> real admission -> keeper -> solver -> Aqua/v4 fills and expiry -> withdrawals', { skip: process.env.AQUA_E2E !== '1', timeout: 600000 }, async () => {
   const params = process.env.ADMISSION_PARAMS
   assert.ok(params, 'ADMISSION_PARAMS is required')
   const manifestSha256 = createHash('sha256').update(readFileSync(join(params, 'manifest.json'))).digest('hex')
@@ -39,6 +40,7 @@ test('real admission -> keeper -> solver -> Aqua/v4 fills and expiry -> withdraw
   const read = (address, name, functionName, args = []) => pub.readContract({ address, abi: art(name).abi, functionName, args })
   const write = (address, name, functionName, args = [], who = user(0)) => wallet(who).writeContract({ address, abi: art(name).abi, functionName, args }).then(wait)
   const warp = async (t) => { await pub.request({ method: 'evm_setNextBlockTimestamp', params: [Number(t)] }); await pub.request({ method: 'evm_mine', params: [] }) }
+  let web, browser
   try {
     for (let i = 0; ; i++) { try { await pub.getChainId(); break } catch (e) { if (i === 100) throw e; await sleep(50) } }
     const a = await deploy('MockERC20', ['A', 'TKA', 18]), b = await deploy('MockERC20', ['B', 'TKB', 18])
@@ -81,9 +83,40 @@ test('real admission -> keeper -> solver -> Aqua/v4 fills and expiry -> withdraw
     const keeperEnv = { ...env, KEEPER_SETTLE_GRACE_S: 'off', KEEPER_STATUS: join(dir, 'keeper.json'), KEEPER_BUDGET_WEI: String(100n * e18), KEEPER_MIN_BALANCE_WEI: '0' }
     const keeper = async () => { await exec(process.execPath, [join(ROOT, 'packages/keeper/keeper.mjs'), '--once'], { env: keeperEnv }); return JSON.parse(readFileSync(keeperEnv.KEEPER_STATUS, 'utf8')) }
     const cli = (i, args) => exec(process.execPath, [join(ROOT, 'packages/client/cli.mjs'), ...args], { env: { ...env, CLIENT_ACCOUNT_INDEX: String(i) }, maxBuffer: 2 ** 22 })
-    // Two actual clients generate fresh proofs and fund/submit their own orders.
-    assert.match((await cli(10, ['commit', 'sell', '10', '9'])).stdout, /admitted #/)
-    console.log('first fresh-proof order admitted')
+    // The first trader uses the actual browser and local CLI bridge; the counter-order uses the CLI.
+    const { freePort, jobDone } = await import('../../../app/haveibeensandwiched/browser-stack.mjs')
+    const { chromium } = await import('../../extension-e2e/node_modules/playwright/index.mjs')
+    const webPort = await freePort()
+    web = spawn(process.execPath, [join(ROOT, 'app/haveibeensandwiched/server.mjs')], { env: { ...env, PORT: String(webPort), CLIENT_ACCOUNT_INDEX: '10', PRIVATE_KEY: '', OFFLINE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] })
+    await Promise.race([once(web.stdout, 'data'), once(web, 'exit').then(([code]) => { throw Error(`web server exited ${code}`) })])
+    browser = await chromium.launch({ headless: true })
+    const page = await browser.newPage()
+    await page.goto(`http://127.0.0.1:${webPort}/trade`)
+    await page.waitForLoadState('networkidle')
+    const funds = async (action, token, amount) => {
+      await page.selectOption('#funds select[name=token]', token)
+      await page.fill('#funds input[name=amount]', amount)
+      await page.click(`#funds button[value=${action}]`)
+      await jobDone(page)
+      await page.waitForFunction(() => !document.querySelector('#preview').disabled)
+    }
+    for (const token of ['token0', 'token1']) await funds('deposit', token, '30')
+    await page.fill('#prepare input[name=batch]', '0')
+    await page.click('#prepare button')
+    await jobDone(page, 240000)
+    await page.locator('[data-action=status]').first().click()
+    await page.waitForFunction(() => /Prepared for batch 0/.test(document.querySelector('#preparation-state').textContent))
+    await page.waitForFunction(() => !document.querySelector('#preview').disabled)
+    console.log('browser advance preparation ready')
+    await page.fill('#amount-in', '10')
+    await page.fill('#minimum-out', '9')
+    await page.click('#preview')
+    await page.waitForSelector('#confirm:not([disabled])')
+    await page.click('#confirm')
+    await page.waitForFunction(() => /Waiting for reveal/i.test(document.querySelector('#orders-table-body').textContent) || document.querySelector('#job-state').textContent === 'FAILED', null, { timeout: 300000 })
+    assert.match(await page.locator('#orders-table-body').innerText(), /Waiting for reveal/i, await page.locator('#output').innerText())
+    await page.waitForFunction(() => /Nothing is prepared/.test(document.querySelector('#preparation-state').textContent))
+    console.log('first fresh-proof order admitted; browser preparation consumed')
     assert.match((await cli(11, ['commit', 'buy', '5', '4.5'])).stdout, /admitted #/)
     console.log('second fresh-proof order admitted')
     const committed = await pub.getContractEvents({ address: settlement, abi: art('AquaAdmittedSettlement').abi, eventName: 'Committed', fromBlock: 0n })
@@ -134,12 +167,17 @@ test('real admission -> keeper -> solver -> Aqua/v4 fills and expiry -> withdraw
     assert.equal(parseEventLogs({ abi: art('BlindfoldAquaRouter').abi, logs: receipt.logs, eventName: 'Swapped' })[0].args.taker.toLowerCase(), settlement.toLowerCase())
     for (const i of [10, 11]) {
       assert.match((await cli(i, ['track'])).stdout, /: filled /)
-      for (const token of ['token0', 'token1']) await cli(i, ['withdraw', token, 'all'])
+      if (i === 10) {
+        await page.click('#orders [data-action=track]')
+        await page.waitForFunction(() => /Filled|Partly filled/i.test(document.querySelector('#orders-table-body').textContent))
+        await page.waitForFunction(() => !document.querySelector('#preview').disabled)
+        for (const token of ['token0', 'token1']) await funds('withdraw', token, 'all')
+      } else for (const token of ['token0', 'token1']) await cli(i, ['withdraw', token, 'all'])
       assert.equal(await read(vault, 'BlindfoldVault', 'openCommitments', [user(i).address]), 0n)
     }
     for (const token of [token0, token1]) {
       for (const address of [settlement, route, router]) assert.equal(await read(token, 'MockERC20', 'balanceOf', [address]), 0n)
     }
     console.log(JSON.stringify({ settlement, route, gasUsed: String(receipt.gasUsed), solver: solved.stdout.trim() }))
-  } finally { anvil.kill() }
+  } finally { await browser?.close(); web?.kill(); anvil.kill() }
 })

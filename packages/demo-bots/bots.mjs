@@ -8,7 +8,7 @@
 // Env: RPC_URL (http://127.0.0.1:8545), LEAKY_PORT (8546), MNEMONIC (anvil's), RECEIPTS (.demo/receipts.jsonl),
 // VICTIM_IN (10 ETH, in wei), SLIPPAGE_BPS (300), BOT_ETH (100 ETH, in wei).
 // Accounts (PLAN.md seams): 0 deployer, 4 leaky-RPC signer, 5 sandwich bot, 10 victim.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -18,6 +18,7 @@ import {
 import { mnemonicToAccount } from 'viem/accounts'
 import { planSandwich } from './lib.mjs'
 import { createLeakyRpc } from './rpc.mjs'
+import { artifactPath } from '../solver/artifacts.mjs'
 
 const E = process.env
 const RPC_URL = E.RPC_URL || 'http://127.0.0.1:8545'
@@ -36,14 +37,9 @@ const readJson = (path, hint) => {
     throw new Error(`can't read ${path} (${e.code ?? e.message}). ${hint}`)
   }
 }
-/** contracts/out/<file>/<name>.json, or <name>.<solc>.json when forge compiled the file under two solc versions. */
+/** Resolve the same isolated build output and compiler profile as the service runner. */
 function artifact(file, name) {
-  const dir = root(`contracts/out/${file}`)
-  let f = `${name}.json`
-  try {
-    f = readdirSync(dir).find((n) => n === f || (n.startsWith(`${name}.`) && n.endsWith('.json'))) ?? f
-  } catch {}
-  return readJson(`${dir}/${f}`, 'Run `forge build` in contracts/.')
+  return readJson(artifactPath(E.CONTRACTS_OUT || root('contracts/out'), name, file.replace(/\.sol$/, '')), 'Run `forge build` in contracts/.')
 }
 const ROUTER = artifact('DemoSwap.sol', 'DemoRouter')
 const BOT = artifact('DemoSwap.sol', 'SandwichBot')
@@ -134,8 +130,7 @@ async function leakAndSandwich() {
       maxPriorityFeePerGas: tip, maxFeePerGas: maxFee,
     })
     const front = await leg([k, zeroForOne, plan.frontIn], 0, tx.maxPriorityFeePerGas + parseGwei('1'), tx.maxFeePerGas + parseGwei('1'))
-    const back = await leg([k, !zeroForOne, 0n], 1, tx.maxPriorityFeePerGas / 2n, tx.maxFeePerGas)
-    sandwich = { front, back, plan }
+    sandwich = { front, plan, sendBack: () => leg([k, !zeroForOne, 0n], 1, tx.maxPriorityFeePerGas / 2n, tx.maxFeePerGas) }
     console.log(`bot: saw the leaked tx; front ${eth(plan.frontIn)} in, back sells all ${formatEther(plan.bought)} DEMO`)
   }
 
@@ -151,7 +146,7 @@ async function leakAndSandwich() {
     upstream: RPC_URL, signer: rpcSigner, registry: court.bondRegistry, chainId: chain.id, cover, onLeak, onReceipt,
   })
   const server = await rpc.listen(LEAKY_PORT)
-  // anvil mines every tx alone by default; hold them so the three share a block, ordered by tip
+  // The local fixture holds all three transactions and submits front, victim, back to its FIFO block.
   await pub.request({ method: 'evm_setAutomine', params: [false] })
   let victimTx
   try {
@@ -159,6 +154,7 @@ async function leakAndSandwich() {
       address: demo.router, abi: ROUTER.abi, functionName: 'swapExactIn', args: swapArgs(minOut), value: amountIn,
       gas: 300_000n, maxPriorityFeePerGas: parseGwei('2'),
     })
+    if (sandwich) sandwich.back = await sandwich.sendBack()
     await pub.request({ method: 'evm_mine', params: [] })
   } finally {
     await pub.request({ method: 'evm_setAutomine', params: [true] })

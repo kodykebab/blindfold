@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blindfold</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="pixel-network" aria-hidden="true">
+    <i></i><i></i><i></i><i></i><i></i><i></i>
+    <i></i><i></i><i></i><i></i><i></i><i></i>
+  </div>
+  <main class="shell">
+    <header class="header">
+      <div>
+        <p class="eyebrow">BLINDFOLD / TRADING</p>
+        <h1>Trade behind the blindfold.</h1>
+        <p class="intro">Seal an order, follow your batch, and manage your funds in one place.</p>
+      </div>
+      <div class="connection" aria-live="polite"><span class="status-dot" aria-hidden="true"></span><span id="session" role="status">Checking connection…</span></div>
+    </header>
+
+    <div class="layout">
+      <div class="main-column">
+        <section class="panel order-panel" aria-labelledby="order-heading">
+          <div class="panel-heading"><div><p class="eyebrow">01 / ORDER</p><h2 id="order-heading">Place an order</h2></div><span class="tag">Sealed batch</span></div>
+          <p class="description">Choose a side and set the minimum you’re willing to receive.</p>
+          <label class="field">Side <select id="side"><option value="sell">Sell token0 for token1</option><option value="buy">Buy token0 with token1</option></select></label>
+          <div class="fields-two">
+            <label class="field">Amount in <input id="amount-in" inputmode="decimal" placeholder="0.0"></label>
+            <label class="field">Minimum out <input id="min-out" inputmode="decimal" placeholder="0.0"></label>
+          </div>
+          <div class="actions"><button class="secondary" data-run="preflight">Preflight</button><button class="primary" data-run="commit">Seal and commit <span aria-hidden="true">↗</span></button></div>
+        </section>
+
+        <section class="panel" aria-labelledby="funds-heading">
+          <div class="panel-heading"><div><p class="eyebrow">02 / FUNDS</p><h2 id="funds-heading">Your vault</h2></div><button class="text-button" data-run="status">Refresh balances ↗</button></div>
+          <p class="description">Deposit tokens before trading. Withdraw available funds when your commitments are closed.</p>
+          <div class="funds-grid">
+            <div class="fund-action"><h3>Deposit</h3><div class="inline-fields"><label class="field">Token <select id="deposit-token"><option>token0</option><option>token1</option></select></label><label class="field">Amount <input id="deposit-amount" inputmode="decimal" placeholder="0.0"></label></div><button class="secondary full" data-run="deposit">Deposit</button></div>
+            <div class="fund-action"><h3>Withdraw</h3><div class="inline-fields"><label class="field">Token <select id="withdraw-token"><option>token0</option><option>token1</option></select></label><label class="field">Amount <input id="withdraw-amount" value="all"></label></div><button class="secondary full" data-run="withdraw">Withdraw</button></div>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="activity-heading">
+          <div class="panel-heading"><div><p class="eyebrow">03 / ACTIVITY</p><h2 id="activity-heading">Your batch</h2></div></div>
+          <p class="description">Track orders and complete any steps that are due.</p>
+          <div class="actions wrap"><button class="secondary" data-run="track">Track orders</button><button class="secondary" data-run="blockers">Check blockers</button><button class="secondary" data-run="cleanup">Cleanup</button><button class="secondary" data-run="resume">Resume admission</button></div>
+          <label class="check"><input id="cleanup-dry" type="checkbox"> Preview cleanup without sending</label>
+        </section>
+
+        <section class="panel output-panel" aria-labelledby="output-heading"><div class="panel-heading"><div><p class="eyebrow">RESULT</p><h2 id="output-heading">Activity log</h2></div></div><pre id="out" role="log" aria-live="polite">Your results will appear here.</pre></section>
+      </div>
+
+      <aside class="side-column" aria-label="Account and settings">
+        <section id="unlock" class="panel" aria-labelledby="private-heading"><p class="eyebrow">YOUR ACCOUNT</p><h2 id="private-heading">Private state</h2><p class="description">Unlock to access your orders and private funding state.</p><label class="field">Passphrase <input id="passphrase" type="password" autocomplete="current-password" placeholder="Enter passphrase"></label><div class="actions wrap"><button class="primary" data-call="unlock">Unlock</button><button class="secondary" data-call="setup">Create passphrase</button><button class="text-button" data-call="lock">Lock</button></div><p class="note">A forgotten passphrase cannot be recovered. Keep an export.</p></section>
+        <section class="panel" aria-labelledby="wallet-heading"><p class="eyebrow">CONNECTION</p><h2 id="wallet-heading">Wallet</h2><p class="description">Your wallet signs on the <a id="bridge-link" target="_blank" rel="noopener">bridge page ↗</a>.</p><div id="wallets" class="wallet-list"></div></section>
+        <section class="panel" aria-labelledby="backup-heading"><p class="eyebrow">YOUR DATA</p><h2 id="backup-heading">Backup</h2><p class="description">Exports contain your private orders, salts and funding state. Keep the file private.</p><div class="actions wrap"><button class="secondary" data-run="export">Export</button><label class="file-button">Import <input id="import-file" type="file" accept="application/json,.json"></label></div></section>
+        <details class="panel settings"><summary><span><span class="eyebrow">CONFIGURATION</span><strong>Settings</strong></span><span aria-hidden="true">+</span></summary><div class="settings-content"><label class="field">RPC URL <input id="rpc-url" placeholder="http://127.0.0.1:8545"></label><label class="field">Deployment JSON <textarea id="deployment" rows="6"></textarea></label><label class="field">Recorded drand rounds (optional, local mode) <textarea id="drand" rows="3"></textarea></label><button class="secondary" data-call="config">Save settings</button></div></details>
+      </aside>
+    </div>
+    <footer><span>BLINDFOLD</span><span>Sealed orders. One clearing price.</span></footer>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
