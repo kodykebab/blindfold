@@ -50,7 +50,7 @@ until cast block-number --rpc-url "$RPC_URL" >/dev/null 2>&1; do sleep 0.2; done
 
 built=$(mark)
 step "build"
-(cd contracts && forge build --silent)
+(cd contracts && forge build --silent --no-dynamic-test-linking)
 print_txs "$built"
 for p in demo-bots court-watcher; do
   [ -d "packages/$p/node_modules" ] || (cd "packages/$p" && npm ci --silent --ignore-scripts)
