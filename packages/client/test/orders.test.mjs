@@ -247,3 +247,12 @@ test('cleanupPayload: formats dry run and completed actions', () => {
     stillBlocking: 0,
   })
 })
+
+test('canonical partial state exposes the browser fill amounts and unused input', () => {
+  const row = orderView({ id: 1n, batchId: 0n, state: 'partial', order: { zeroForOne: true, amountIn: 10n * 10n ** 18n, minAmountOut: 9n * 10n ** 18n }, amountIn: 4n * 10n ** 18n, amountOut: 4n * 10n ** 18n }, { tokens })
+  assert.equal(row.state, 'filled')
+  assert.equal(row.fill, 'partial')
+  assert.equal(row.executedIn, '4')
+  assert.equal(row.received, '4')
+  assert.equal(row.unusedIn, '6')
+})

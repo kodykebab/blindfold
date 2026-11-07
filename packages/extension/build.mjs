@@ -4,7 +4,8 @@
 // Env: CONTRACTS_OUT (default ../../contracts/out); BRIDGE_ORIGIN (default http://localhost:4317, D9: the release build
 // passes the production https origin).
 import * as esbuild from 'esbuild'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { artifactPath } from '../solver/artifacts.mjs'
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -16,10 +17,7 @@ if (!/^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(origin)) throw new Error(`BRIDGE_OR
 
 /** Foundry suffixes artifacts built by more than one compiler profile; prefer the v4-compatible 0.8.26 build. */
 function abi(name) {
-  const dir = join(out, `${name}.sol`)
-  const file = [`${name}.0.8.26.json`, `${name}.json`].find((f) => existsSync(join(dir, f)))
-  if (!file) throw new Error(`no ${name} artifact in ${out}; run \`forge build\` in contracts/ or set CONTRACTS_OUT`)
-  return JSON.parse(readFileSync(join(dir, file), 'utf8')).abi
+  return JSON.parse(readFileSync(artifactPath(out, name), 'utf8')).abi
 }
 
 function statics() {

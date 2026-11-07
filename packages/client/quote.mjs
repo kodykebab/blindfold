@@ -52,6 +52,39 @@ export function retryable(tracked, saved) {
 }
 
 /**
+ * Which tracked commitment replaced which, from the saved `resubmittedAs` links (T13): Map(id → {replacedBy, replaces}).
+ * replacedBy is 'pending' while the replacement has no commitment id yet.
+ */
+export function replacements(tracked, saved) {
+  const idOf = new Map([...tracked.values()].map((c) => [c.hash?.toLowerCase(), c.id]))
+  const links = new Map()
+  const at = (id) => links.get(id) ?? links.set(id, {}).get(id)
+  for (const s of saved) {
+    if (!s.resubmittedAs) continue
+    const from = idOf.get(s.hash?.toLowerCase()), to = idOf.get(s.resubmittedAs.toLowerCase())
+    if (from === undefined) continue
+    at(from).replacedBy = to ?? 'pending'
+    if (to !== undefined) at(to).replaces = from
+  }
+  return links
+}
+
+/**
+ * What `status` says about advance preparation (T06): generating, ready, expired, consumed or none.
+ * preparing: the marker `prepare-admission` saves while it proves; running(pid) tells whether that process still runs.
+ */
+export function preparationStatus({ preparation, preparing, consumed, current, running }) {
+  if (preparing && running(preparing.pid)) return `generating for batch ${preparing.batch} (round ${preparing.round}) in process ${preparing.pid}`
+  if (preparation) {
+    return BigInt(preparation.batch) >= BigInt(current)
+      ? `ready for batch ${preparation.batch} (round ${preparation.round}): an order in that batch needs only the online proof`
+      : `expired: batch ${preparation.batch} has closed; the next commit discards it`
+  }
+  if (consumed) return `none ready; the last one was consumed by an order for batch ${consumed.batch}. Run prepare-admission, or keep-ready while you trade`
+  return 'none ready; run prepare-admission, or keep-ready while you trade'
+}
+
+/**
  * Which batch to prepare a key for so that one is always ready, or null when the ready one still serves. The earliest
  * batch this device can still prepare for and then prove an order in (`preparation` + `online` seconds before it closes).
  * A key for that batch or a later one is kept; one for an earlier or closed batch is replaced.

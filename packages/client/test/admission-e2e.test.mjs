@@ -39,7 +39,7 @@ test('real proofs: admission rejection, resumable submission, cumulative state, 
     const wrongNetwork = join(c.dir, 'wrong-network.json')
     writeFileSync(wrongNetwork, JSON.stringify({ ...dep, chainId: 1 }))
     const foreign = await c.cli(10, ['prepare-admission', '1'], { DEPLOYMENTS: wrongNetwork })
-    assert.notEqual(foreign.code, 0); assert.match(foreign.err, /RPC network differs/)
+    assert.notEqual(foreign.code, 0); assert.match(foreign.err, /the RPC is on chain 31337 but the deployment is on chain 1/)
 
     // An early order goes into the current batch inline and leaves the later batch's preparation untouched.
     const early = await c.cli(10, ['commit', 'sell', '1', '1', '--dry-run'])

@@ -6,6 +6,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {DeployBlindfold} from "../script/DeployBlindfold.s.sol";
 import {BlindfoldVault} from "../src/BlindfoldVault.sol";
+import {AquaAdmittedSettlement} from "../src/admission/AquaAdmittedSettlement.sol";
 import {AdmittedSettlement} from "../src/admission/AdmittedSettlement.sol";
 import {SealedPoolHook} from "../src/SealedPoolHook.sol";
 import {IExternalMarket} from "../src/market/IExternalMarket.sol";
@@ -37,7 +38,8 @@ contract DeployBlindfoldTest is Test {
             d.market,
             d.marketKind,
             d.preparationVerifier,
-            d.onlineVerifier
+            d.onlineVerifier,
+            d.aquaRoute
         );
     }
 
@@ -73,6 +75,28 @@ contract DeployBlindfoldTest is Test {
         assertEq(AdmittedSettlement(address(d.settlement)).preparationVerifier(), prep);
         assertEq(AdmittedSettlement(address(d.settlement)).onlineVerifier(), online);
         script.check(d);
+    }
+
+    function test_aquaDeploymentPinsRouteAndUsesSealedPriceValidation() public {
+        address registry = deployCode("Aqua.sol:Aqua");
+        address router =
+            deployCode("BlindfoldAquaRouter.sol:BlindfoldAquaRouter", abi.encode(registry, address(0), address(this)));
+        address route = deployCode("AquaResidual.sol:AquaResidual", abi.encode(router, address(this), uint256(5000)));
+        DeployBlindfold.Params memory p = _params();
+        p.admitted = true;
+        p.preparationVerifier = address(new StubVerifier());
+        p.onlineVerifier = address(new StubVerifier());
+        p.aquaRoute = route;
+        vm.expectRevert(bytes("Aqua requires ADMISSION=on and MARKET=none"));
+        script.deploy(p, address(this));
+        p.marketKind = "none";
+        DeployBlindfold.Deployment memory d = script.deploy(p, address(this));
+        assertEq(AquaAdmittedSettlement(address(d.settlement)).aquaRoute(), route);
+        assertEq(address(d.settlement.externalMarket()), address(0));
+        script.check(d);
+        p.admitted = false;
+        vm.expectRevert(bytes("Aqua requires ADMISSION=on and MARKET=none"));
+        script.deploy(p, address(this));
     }
 
     function test_checksRejectBrokenRelationships() public {

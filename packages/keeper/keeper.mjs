@@ -27,7 +27,7 @@ const account = E.KEEPER_KEY ? privateKeyToAccount(E.KEEPER_KEY) : mnemonicToAcc
 const SETTLE_GRACE = (E.KEEPER_SETTLE_GRACE_S ?? '15') === 'off' ? null : Number(E.KEEPER_SETTLE_GRACE_S ?? 15)
 if (SETTLE_GRACE !== null && !(Number.isInteger(SETTLE_GRACE) && SETTLE_GRACE >= 0)) throw new Error('KEEPER_SETTLE_GRACE_S must be a non-negative integer or off')
 const SOLVER = E.KEEPER_SOLVER || fileURLToPath(new URL('../solver/solver.mjs', import.meta.url))
-const solverKey = E.KEEPER_KEY ?? toHex(account.getHdKey().privateKey)
+const solverKey = E.KEEPER_KEY || toHex(account.getHdKey().privateKey)
 
 const dep = loadDeployment()
 const abi = loadAbi('BlindfoldSettlement')

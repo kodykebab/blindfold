@@ -80,15 +80,23 @@ test('full, partial and unfilled orders settle in one batch, an unsettled batch 
     assert.equal(await c.read(c.settlement, 'BlindfoldSettlement', 'finalized', [0n]), true)
 
     // what each user sees: state, executed input, received output and unused input
-    const units = (v) => formatUnits(v, 18).replace('.', '\\.')
     const row = async (i, id) => {
-      const r = await c.cli(i, ['track'])
+      const r = await c.cli(i, ['track', '--json'])
       assert.equal(r.code, 0, r.err)
-      return r.out.split('\n').find((l) => l.startsWith(`#${id} `))
+      return JSON.parse(r.out).orders.find((o) => o.id === String(id))
     }
-    assert.match(await row(10, ids.A), new RegExp(`^#${ids.A} batch 0: filled \\(sell ${amount('100')}\\) → got ${units(filled.get(ids.A).amountOut)} TK. \\[full fill: 100 TK. of 100 TK.\\]$`))
-    assert.match(await row(11, ids.B), new RegExp(`^#${ids.B} batch 0: filled \\(sell ${amount('1000')}\\) → got ${units(partial.amountOut)} TK. \\[partial fill: ${units(partial.amountIn)} TK. of 1000 TK.\\]$`))
-    assert.match(await row(12, ids.C), new RegExp(`^#${ids.C} batch 0: unfilled \\(sell ${amount('100')}\\)$`))
+    const fullRow = await row(10, ids.A), partialRow = await row(11, ids.B), unfilledRow = await row(12, ids.C)
+    assert.equal(fullRow.state, 'filled')
+    assert.equal(fullRow.fill, 'full')
+    assert.equal(fullRow.executedIn, '100')
+    assert.equal(fullRow.received, formatUnits(filled.get(ids.A).amountOut, 18))
+    assert.equal(partialRow.state, 'filled')
+    assert.equal(partialRow.fill, 'partial')
+    assert.equal(partialRow.executedIn, formatUnits(partial.amountIn, 18))
+    assert.equal(partialRow.received, formatUnits(partial.amountOut, 18))
+    assert.equal(partialRow.unusedIn, formatUnits(amount('1000') - partial.amountIn, 18))
+    assert.equal(unfilledRow.state, 'unfilled')
+    assert.equal(unfilledRow.unusedIn, '100')
     // unused input: nothing locked, and the vault holds exactly what was deposited minus what executed
     const vault = (i, token) => c.read(c.vault, 'BlindfoldVault', 'balanceOf', [user(i).address, token])
     for (const [name, o] of Object.entries(ORDERS)) {
@@ -112,7 +120,7 @@ test('full, partial and unfilled orders settle in one batch, an unsettled batch 
     assert.equal(r.code, 0, r.err)
     assert.match(r.out, new RegExp(`#${expiring} batch 1 \\(revealed\\): expire`))
     assert.match(r.out, /nothing blocks withdrawal/)
-    assert.match(await row(10, expiring), new RegExp(`^#${expiring} batch 1: expired \\(sell ${amount('10')}\\)$`))
+    assert.equal((await row(10, expiring)).state, 'expired')
     assert.equal(await c.read(c.settlement, 'BlindfoldSettlement', 'clearingPriceX96', [1n]), 0n, 'batch 1 never settled')
 
     // everyone withdraws everything; the vault owes them nothing more and no commitment is open

@@ -130,6 +130,8 @@ Local proving configuration: `ADMISSION_PROVER` defaults to `packages/proof-benc
 
 Client account selection: `CLIENT_ACCOUNT_INDEX` selects the local Anvil account (default 10). Existing numeric `USER` values remain supported; ordinary OS usernames do not override the default. `PRIVATE_KEY` continues to take precedence.
 
+Aqua pair deployment: `AquaAdmittedSettlement` retains the existing admitted and settlement APIs and adds `aquaRoute()`. Its immutable executor's `router()`, `maker()`, `shareBps()` and `order(settlement)` identify the exact strategy to ship. `AquaResidualFilled(strategyHash,zeroForOne,amountIn,amountOut)` is emitted by settlement alongside the existing `Settled` event. `DeployBlindfold` accepts optional `AQUA_ROUTE` only with `ADMISSION=on` and `MARKET=none`, and adds `aquaRoute` to its deployment JSON when selected. The existing solver's `settle` simulations include the fixed split without a new solver flag. Route deployment accepts `AQUA_REGISTRY` (required off Anvil), `AQUA_MAKER` (default deployer), `AQUA_SHARE_BPS` (default 5000) and `AQUA_ROUTE_OUT` (default `deployments/aqua.local.json`). Shipping reads `DEPLOYMENTS`, `MAKER_KEY` (local account 0 by default), and explicit raw allocations `AQUA_BALANCE0`/`AQUA_BALANCE1`. The opt-in local real-proof gate uses `AQUA_E2E=1` with the existing admission prover/parameter settings. See ARCHITECTURE §15 for the workflow.
+
 ### Contracts (producer → consumers)
 | Seam | Producer | Consumers | Exact shape |
 |---|---|---|---|

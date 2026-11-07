@@ -84,3 +84,13 @@ test('backup reminder clears only after an export that follows the last submissi
   s = backupReminder(backupReminder(s, 'exported', 140), 'acknowledged', 150)
   assert.equal(s.pending, false)
 })
+
+test('preparation panel accepts the current CLI status lifecycle', async () => {
+  const { preparationStatus } = await import('../../packages/client/quote.mjs')
+  const view = (state) => preparationPanel(preparationStatus({ current: 2n, running: () => true, ...state }), '2')
+  assert.equal(view({}).state, 'none')
+  assert.equal(view({ consumed: { batch: '2' } }).state, 'none')
+  assert.equal(view({ preparation: { batch: '3', round: '100' } }).state, 'ready')
+  assert.equal(view({ preparation: { batch: '1', round: '100' } }).state, 'stale')
+  assert.equal(view({ preparing: { batch: '3', round: '100', pid: 1 } }).state, 'preparing')
+})

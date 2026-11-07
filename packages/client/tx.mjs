@@ -37,7 +37,10 @@ export async function confirmTx(pub, hash, { from, nonce, confirmations = 1, tim
     await sleep(interval)
   }
   // Still pending in a mempool is not dropped: only conclude once the node no longer knows the transaction.
-  const known = await pub.getTransaction({ hash }).then(() => true, () => false)
+  const known = await pub.getTransaction({ hash }).then(() => true, (error) => {
+    if (error.name === 'TransactionNotFoundError') return false
+    throw error
+  })
   if (known) throw new Error(`transaction ${hash} is still pending after ${timeout / 1000}s; run the same command again later`)
   return { status: 'dropped', hash }
 }
@@ -47,7 +50,7 @@ export function describeOutcome(action, o) {
   switch (o.status) {
     case 'confirmed': return `${action} confirmed in ${o.receipt.transactionHash}`
     case 'reverted': return `${action} reverted in ${o.receipt.transactionHash}; nothing changed onchain, check status before retrying`
-    case 'dropped': return `${action} ${o.hash} was dropped before inclusion; nothing changed onchain, it is safe to run the command again`
+    case 'dropped': return `${action} ${o.hash} is no longer known to this RPC; check onchain status before retrying`
     case 'replaced': return `${action} ${o.hash} was replaced by another transaction from this account; check status before retrying`
     default: return `${action}: unknown outcome`
   }

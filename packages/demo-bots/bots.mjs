@@ -134,8 +134,7 @@ async function leakAndSandwich() {
       maxPriorityFeePerGas: tip, maxFeePerGas: maxFee,
     })
     const front = await leg([k, zeroForOne, plan.frontIn], 0, tx.maxPriorityFeePerGas + parseGwei('1'), tx.maxFeePerGas + parseGwei('1'))
-    const back = await leg([k, !zeroForOne, 0n], 1, tx.maxPriorityFeePerGas / 2n, tx.maxFeePerGas)
-    sandwich = { front, back, plan }
+    sandwich = { front, plan, sendBack: () => leg([k, !zeroForOne, 0n], 1, tx.maxPriorityFeePerGas / 2n, tx.maxFeePerGas) }
     console.log(`bot: saw the leaked tx; front ${eth(plan.frontIn)} in, back sells all ${formatEther(plan.bought)} DEMO`)
   }
 
@@ -151,7 +150,7 @@ async function leakAndSandwich() {
     upstream: RPC_URL, signer: rpcSigner, registry: court.bondRegistry, chainId: chain.id, cover, onLeak, onReceipt,
   })
   const server = await rpc.listen(LEAKY_PORT)
-  // anvil mines every tx alone by default; hold them so the three share a block, ordered by tip
+  // The local fixture holds all three transactions and submits front, victim, back to its FIFO block.
   await pub.request({ method: 'evm_setAutomine', params: [false] })
   let victimTx
   try {
@@ -159,6 +158,7 @@ async function leakAndSandwich() {
       address: demo.router, abi: ROUTER.abi, functionName: 'swapExactIn', args: swapArgs(minOut), value: amountIn,
       gas: 300_000n, maxPriorityFeePerGas: parseGwei('2'),
     })
+    if (sandwich) sandwich.back = await sandwich.sendBack()
     await pub.request({ method: 'evm_mine', params: [] })
   } finally {
     await pub.request({ method: 'evm_setAutomine', params: [true] })

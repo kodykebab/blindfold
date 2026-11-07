@@ -36,7 +36,7 @@ export function orderView(c, { policy, tokens, saved, schedule } = {}) {
     amountIn = formatUnits(order.amountIn, tIn.decimals)
     minOut = formatUnits(order.minAmountOut, tOut.decimals)
 
-    if (c.state === 'filled') {
+    if (c.state === 'filled' || c.state === 'partial') {
       if (c.amountIn != null) executedIn = formatUnits(c.amountIn, tIn.decimals)
       if (c.amountOut != null) received = formatUnits(c.amountOut, tOut.decimals)
       if (c.amountIn != null) {
@@ -60,7 +60,7 @@ export function orderView(c, { policy, tokens, saved, schedule } = {}) {
   const row = {
     id: c.id != null ? String(c.id) : null,
     batch: c.batchId != null ? String(c.batchId) : null,
-    state: c.state,
+    state: c.state === 'partial' ? 'filled' : c.state,
     side,
     amountIn,
     tokenIn,

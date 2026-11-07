@@ -79,7 +79,7 @@ export function drandClient(fixture = E.DRAND) {
 /** Foundry suffixes artifacts built by more than one compiler profile; prefer the v4-compatible 0.8.26 build. */
 export function artifactPath(out, name, file = name) {
   const dir = join(out, `${file}.sol`)
-  for (const file of [`${name}.0.8.26.json`, `${name}.json`]) if (existsSync(join(dir, file))) return join(dir, file)
+  for (const file of [`${name}.0.8.26.json`, `${name}.0.8.26.default.json`, `${name}.json`]) if (existsSync(join(dir, file))) return join(dir, file)
   const files = readdirSync(dir).filter((f) => f.startsWith(`${name}.`) && f.endsWith('.json'))
   if (files.length !== 1) throw new Error(`select an explicit artifact for ${name}; found ${files.length} variants`)
   return join(dir, files[0])

@@ -240,3 +240,12 @@ test('server and network errors never reach the page raw', () => {
     assert.match(e.title, title); assert.ok(!e.sentence.includes(text) && e.next.length > 0)
   }
 })
+
+test('current CLI review preserves order, nonrefundable fee and deposit', () => {
+  const result = parsePreflight('order: sell 10 TKA for at least 9 TKB in batch 7, or you keep your funds\ncosts: deposit 5 TKB (returned minus the revealer bounty), fee 1 TKB (non-refundable)\ndry run: nothing sent')
+  assert.equal(result.batch, '7')
+  assert.equal(result.amount, '10 TKA')
+  assert.equal(result.minimum, '9 TKB')
+  assert.equal(result.deposit, '5 TKB')
+  assert.equal(result.fee, '1 TKB')
+})

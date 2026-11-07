@@ -11,7 +11,7 @@ function fake({ receipts = [null], head = 10n, mined = 0, known = false }) {
     getTransactionReceipt: async () => { const r = receipts[Math.min(i++, receipts.length - 1)]; if (!r) throw notFound(); return r },
     getBlockNumber: async () => (typeof head === 'function' ? head() : head),
     getTransactionCount: async () => mined,
-    getTransaction: async () => { if (!known) throw new Error('not found'); return {} },
+    getTransaction: async () => { if (!known) throw Object.assign(new Error('not found'), { name: 'TransactionNotFoundError' }); return {} },
   }
 }
 const fast = { interval: 0, sleep: async () => {} }
@@ -60,5 +60,13 @@ test('confirmation policy: 1 locally, 3 elsewhere, overridable and bounded', () 
 test('every outcome has a next step', () => {
   for (const o of [{ status: 'confirmed', receipt: receipt('success') }, { status: 'reverted', receipt: receipt('reverted') }, { status: 'dropped', hash: '0xa' }, { status: 'replaced', reason: 'unknown', hash: '0xa' }]) {
     assert.match(describeOutcome('withdraw', o), /^withdraw .+/)
+  }
+})
+
+test('transaction lookup transport errors remain uncertain rather than dropped', async () => {
+  for (const message of ['RPC 503 unavailable', 'request timed out']) {
+    const pub = fake({})
+    pub.getTransaction = async () => { throw new Error(message) }
+    await assert.rejects(confirmTx(pub, '0xa', { ...fast, from: '0x1', nonce: 0, timeout: 0 }), { message })
   }
 })

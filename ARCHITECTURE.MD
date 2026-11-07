@@ -615,3 +615,81 @@ Remaining surplus is returned proportionally to contributors of that token. When
 `packages/proof-bench/src/bin/global-prepare.rs` creates a fresh private preparation witness using OS entropy. The Go circuit CLI supports reusable proving keys bound to the serialized circuit identity; an ordinary subsequent proof loads existing keys instead of creating a new verifier. Preparation and online keys remain distinct.
 
 Verification commands and private file formats are documented in `packages/global-auction/README.md` and `packages/proof-bench/circuit/README.md`. Contract tests cover cycles, per-token conservation, mixed raw-unit prices, fraction fairness, fee-aware price vectors, maximum batches, callback/transfer boundaries, rollback and cleanup. Fork tests execute real WBTC/WETH/USDC routes. A separate real-proof harness exercises actual admission, settlement and withdrawal, and independent tlock-js decryption recomputes the global ABI hashes. Current measurements and review/deployment gates are recorded in REVIEW.md.
+
+## 15. Aqua execution for admitted pair auctions
+
+`AquaAdmittedSettlement` uses the existing admitted order format, verifier pair, vault,
+reveal/settle/expire lifecycle and both `settle` overloads. Its immutable `aquaRoute`
+selects an `AquaResidual` executor. The executor has no mutable storage and runs by
+`delegatecall` only from the PoolManager unlock callback. Consequently the vault
+operator, hook-authorized swapper and SwapVM taker are the settlement address.
+This separates execution bytecode while keeping batch state in one contract.
+
+The route fixes a maker, `BlindfoldAquaRouter` and input share in basis points at
+construction. The share is strictly between zero and 10,000. For each nonzero
+residual, Aqua receives the floored share and v4 receives the rest; a share that
+rounds to zero skips Aqua. The maker ships `abi.encode(route.order(settlement))`
+to the router's Aqua registry. The generated strategy contains only SealedClearing,
+with no maker hooks or taker callbacks. Input uses SwapVM's transferFrom/Aqua-push
+mode with an exact approval. Actual token balance changes must match its result.
+
+SealedClearing reads the canonical token0/token1 active price. Sell output is
+`floor(input * p / Q96)`; buy output is `floor(input * Q96 / p)`. Exact-output
+inputs round up using the corresponding direct ratio. Computing buys from a
+rounded reciprocal is avoided. The legacy `activeClearingPriceX96` ABI is unchanged.
+
+Aqua and v4 outputs jointly cover the batch's residual liability. Aggregate surplus
+is donated to v4 liquidity while the manager is unlocked. Settlement then pushes
+exactly the owed output into the vault, checks the final v4 marginal price and pays
+users. Any failed leg, insufficient output or bad price reverts the whole operation.
+Expiry remains the existing permissionless exit. The immutable strategy is allowed
+to become unavailable when its maker docks it, spends inventory or revokes allowance.
+
+The existing solver simulates `settle`, so its candidate search and fresh pre-send
+simulation include both venues. Deployment uses `ADMISSION=on`, `MARKET=none` and
+`AQUA_ROUTE`: the ordinary external-market path remains a separate deployment choice.
+
+### Deploy and ship
+
+Build artifacts first with `source env.sh` and `forge build --root contracts
+--no-dynamic-test-linking`. On a local Anvil chain:
+
+1. Run `contracts/script/swapvm/DeployAquaRoute.s.sol` with `forge script` from
+   `contracts/`, supplying the RPC and `--broadcast`. It writes
+   `deployments/aqua.local.json`. `AQUA_MAKER` defaults to the deployer and
+   `AQUA_SHARE_BPS` defaults to 5000. `AQUA_REGISTRY` selects an existing registry;
+   omitting it deploys the pinned Aqua source only on chain 31337.
+2. Read `route` from that manifest and pass it as `AQUA_ROUTE` to the existing
+   `DeployBlindfold.s.sol`, with `ADMISSION=on`, both verifier addresses, the
+   parameter-manifest hash and `MARKET=none`. Its manifest includes `aquaRoute`.
+3. Fund the configured maker's wallet with the pair tokens, then run
+   `script/swapvm/ShipAquaStrategy.s.sol`. `DEPLOYMENTS` selects the auction manifest;
+   `MAKER_KEY` selects its configured maker (local default: Anvil account 0).
+   `AQUA_BALANCE0` and `AQUA_BALANCE1` are explicit raw token allocations. The script
+   checks chain, route binding, maker identity and wallet funding before shipping.
+4. Seed the sealed v4 pool and use the existing client, keeper and solver commands.
+   The settlement ABI consumed by these services is unchanged.
+
+`test/swapvm/AquaSettlement.t.sol` exercises the admitted accounting path with verifier
+doubles; its fork subclass uses Unichain's PoolManager. Fresh generated proofs and
+the browser, local client, keeper and solver are exercised separately:
+
+```bash
+source env.sh
+forge build --root contracts --no-dynamic-test-linking
+npm ci --prefix packages/proof-bench --ignore-scripts
+npm ci --prefix packages/extension-e2e --ignore-scripts
+(cd packages/extension-e2e && npx playwright install chromium)
+AQUA_E2E=1 ADMISSION_PARAMS=/path/to/admission-params \
+  ADMISSION_PROVER=/path/to/local-prover \
+  node --test packages/proof-bench/test/aqua-e2e.test.mjs
+```
+
+The gate starts its own Anvil chain, uses recorded drand data, ships a funded strategy,
+funds and submits one fresh-proof order through the browser and a counter-order
+through the CLI, runs the keeper to decrypt/reveal, executes both
+venues through the solver, checks the actual Aqua taker and maker balances, and
+withdraws the browser trader's proceeds through the page and the counterparty's through
+the CLI. A snapshot of that isolated batch also tests revoked maker
+allowance, solver refusal, keeper expiry and client withdrawal before restoring the
+fixture for successful settlement.

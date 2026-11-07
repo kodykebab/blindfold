@@ -18,6 +18,7 @@ import {BlindfoldVault} from "../src/BlindfoldVault.sol";
 import {BlindfoldSettlement} from "../src/BlindfoldSettlement.sol";
 import {SealedPoolHook} from "../src/SealedPoolHook.sol";
 import {AdmissionVault} from "../src/admission/AdmissionVault.sol";
+import {AquaAdmittedSettlement} from "../src/admission/AquaAdmittedSettlement.sol";
 import {AdmittedSettlement} from "../src/admission/AdmittedSettlement.sol";
 import {IExternalMarket, IV3Factory, IV3Pool} from "../src/market/IExternalMarket.sol";
 import {UniswapV3Market} from "../src/market/UniswapV3Market.sol";
@@ -60,6 +61,7 @@ contract DeployBlindfold is Script {
         string marketKind;
         address preparationVerifier;
         address onlineVerifier;
+        address aquaRoute;
     }
 
     /// @notice Every deployment setting, so tests can pass them directly; `params()` reads them from the environment.
@@ -91,6 +93,7 @@ contract DeployBlindfold is Script {
         uint256 maxDeviationBps;
         address preparationVerifier;
         address onlineVerifier;
+        address aquaRoute;
     }
 
     function run() external returns (Deployment memory d) {
@@ -107,6 +110,7 @@ contract DeployBlindfold is Script {
 
     /// @notice The environment's settings, with the defaults documented above.
     function params() public view returns (Params memory p) {
+        p.aquaRoute = vm.envOr("AQUA_ROUTE", address(0));
         p.admitted = keccak256(bytes(vm.envOr("ADMISSION", string("off")))) == keccak256("on");
         p.token0 = vm.envOr("TOKEN0", address(0));
         p.token1 = vm.envOr("TOKEN1", address(0));
@@ -137,6 +141,13 @@ contract DeployBlindfold is Script {
     }
 
     function deploy(Params memory p, address deployer) public returns (Deployment memory d) {
+        if (p.aquaRoute != address(0)) {
+            require(
+                p.admitted && keccak256(bytes(p.marketKind)) == keccak256("none"),
+                "Aqua requires ADMISSION=on and MARKET=none"
+            );
+        }
+        d.aquaRoute = p.aquaRoute;
         d.admitted = p.admitted;
         (d.token0, d.token1) = _tokens(p);
         d.manager = p.manager == address(0) ? IPoolManager(address(new PoolManager(deployer))) : IPoolManager(p.manager);
@@ -148,7 +159,9 @@ contract DeployBlindfold is Script {
                 "admission needs both verifier addresses"
             );
             (d.preparationVerifier, d.onlineVerifier) = (p.preparationVerifier, p.onlineVerifier);
-            d.settlement = new AdmittedSettlement(c, d.preparationVerifier, d.onlineVerifier);
+            d.settlement = p.aquaRoute == address(0)
+                ? new AdmittedSettlement(c, d.preparationVerifier, d.onlineVerifier)
+                : new AquaAdmittedSettlement(c, d.preparationVerifier, d.onlineVerifier, p.aquaRoute);
         } else {
             d.settlement = new BlindfoldSettlement(c);
         }
@@ -256,6 +269,11 @@ contract DeployBlindfold is Script {
         (uint160 price,,,) = d.manager.getSlot0(d.key.toId());
         require(price != 0, "pool is not initialized");
         require(s.settleLength() <= s.batchLength(), "settle window longer than a batch");
+        if (d.aquaRoute != address(0)) {
+            require(address(s).code.length <= 24_576, "Aqua settlement exceeds EIP-170");
+            require(AquaAdmittedSettlement(address(s)).aquaRoute() == d.aquaRoute, "wrong Aqua route");
+            require(address(d.market) == address(0), "Aqua uses the sealed-pool price check");
+        }
         if (address(d.market) == address(0)) return;
         require(address(s.externalMarket()) == address(d.market), "settlement does not use the market");
         require(d.market.settlement() == address(s), "market serves another settlement");
@@ -276,6 +294,7 @@ contract DeployBlindfold is Script {
         vm.serializeUint(k, "chainId", block.chainid);
         vm.serializeUint(k, "deployBlock", block.number);
         vm.serializeString(k, "mode", d.admitted ? "admitted" : "local");
+        if (d.aquaRoute != address(0)) vm.serializeAddress(k, "aquaRoute", d.aquaRoute);
         vm.serializeAddress(k, "vault", address(d.vault));
         vm.serializeAddress(k, "settlement", address(d.settlement));
         vm.serializeAddress(k, "token0", d.token0);

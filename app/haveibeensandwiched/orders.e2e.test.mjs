@@ -98,6 +98,12 @@ test('Keeper outage: user reveals order manually, solver settles, and trader wit
     await page.click('#confirm')
     await jobDone(page)
 
+    // Submit matching counter-order from user 11 so auction clears
+    const env11 = { ...env, CLIENT_ACCOUNT_INDEX: '11', CLIENT_STATE: join(dir, 'user11') }
+    await command(join(root, 'packages/client/cli.mjs'), ['deposit', 'token0', '20'], env11)
+    await command(join(root, 'packages/client/cli.mjs'), ['deposit', 'token1', '20'], env11)
+    await command(join(root, 'packages/client/cli.mjs'), ['commit', 'buy', '10', '9'], env11)
+
     // Move chain time to reveal window
     const revealOpens = await read(settlement, 'BlindfoldSettlement', 'revealOpens', [0n])
     await jumpTo(revealOpens)
@@ -117,11 +123,6 @@ test('Keeper outage: user reveals order manually, solver settles, and trader wit
     await revealBtn.click()
     await jobDone(page)
 
-    // Submit matching counter-order from user 11 so auction clears
-    const env11 = { ...env, CLIENT_ACCOUNT_INDEX: '11', CLIENT_STATE: join(dir, 'user11') }
-    await command(join(root, 'packages/client/cli.mjs'), ['deposit', 'token0', '20'], env11)
-    await command(join(root, 'packages/client/cli.mjs'), ['deposit', 'token1', '20'], env11)
-    await command(join(root, 'packages/client/cli.mjs'), ['commit', 'buy', '10', '9'], env11)
     await command(join(root, 'packages/client/cli.mjs'), ['cleanup'], env11)
 
     // Move time past revealCloses

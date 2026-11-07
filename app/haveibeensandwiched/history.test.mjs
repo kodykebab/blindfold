@@ -1,5 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { loadHistory } from './history.mjs'
 import { courtRows, loadCourt } from './court-view.mjs'
 
@@ -10,8 +13,10 @@ test('history stays unavailable when Arkiv is down, without throwing', async () 
   assert.deepEqual(history.batches, [])
 })
 
-test('an in-memory Arkiv still answers with an empty public history', async () => {
-  const history = await loadHistory({ ARKIV: 'off' })
+test('a fresh local Arkiv answers with an empty public history', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'blindfold-history-test-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const history = await loadHistory({ ARKIV: 'off', ARKIV_FILE: join(dir, 'history.json') })
   assert.equal(history.unavailable, false)
   assert.deepEqual(history.batches, [])
 })

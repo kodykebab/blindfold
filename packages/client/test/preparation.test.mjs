@@ -37,6 +37,12 @@ test('consumption survives interruption and repeated calls; exports cannot resur
     assert.ok(taken)
     // Simulated process death immediately after consumption, before online proving produces anything.
     assert.equal(loadState(dep, owner).preparation, undefined)
+    // status can say which batch used it; like the key, that and the in-progress marker stay on this device
+    assert.deepEqual(loadState(dep, owner).consumedPreparation, { batch: '1', round: '1000' })
+    writeState(dep, owner, { ...loadState(dep, owner), preparing: { batch: '2', round: '1001', pid: 1 } })
+    const later = JSON.parse(exportState(dep, owner))
+    assert.equal(later.consumedPreparation, undefined)
+    assert.equal(later.preparing, undefined)
     assert.equal(consumePreparation(loadState(dep, owner), expected, () => assert.fail('nothing to consume')), undefined)
     importState(dep, owner, { ...backup, preparation: ready() })
     assert.equal(loadState(dep, owner).preparation, undefined)

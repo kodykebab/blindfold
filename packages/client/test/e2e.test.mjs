@@ -26,12 +26,31 @@ test('S10: preflight, commit, track and withdraw through the CLI', { skip: !enab
     let r = await c.cli(10, ['status'])
     assert.equal(r.code, 0, r.err)
     assert.match(r.out, /wallet 100 TK.\s+\| available 0 TK. \| reserved 0 TK. \| withdrawable 0/)
+    assert.match(r.out, new RegExp(`network chain 31337; deployment local, settlement ${c.settlement}`, 'i'))
+    assert.match(r.out, /pair TKA \(0x[0-9a-fA-F]{40}\) \/ TKB \(0x[0-9a-fA-F]{40}\): sell = TKA in, TKB out; buy = TKB in, TKA out; deposit and fee in TKB/)
+
+    // a deployment file for another chain, or with no contract behind it, stops every chain command with the fix
+    const dep = JSON.parse(readFileSync(c.deployments, 'utf8'))
+    const other = join(c.dir, 'other.json')
+    writeFileSync(other, JSON.stringify({ ...dep, chainId: 1 }))
+    r = await c.cli(10, ['commit', 'sell', '10', '9', '--dry-run'], { DEPLOYMENTS: other })
+    assert.equal(r.code, 1)
+    assert.match(r.err, /the RPC is on chain 31337 but the deployment is on chain 1; select the matching RPC_URL or DEPLOYMENTS/)
+    writeFileSync(other, JSON.stringify({ ...dep, settlement: `0x${'42'.repeat(20)}` }))
+    r = await c.cli(10, ['status'], { DEPLOYMENTS: other })
+    assert.equal(r.code, 1)
+    assert.match(r.err, /no settlement contract at 0x4242.* the deployment file is stale/)
 
     // preflight catches the missing vault funds before anything is sent; --dry-run sends nothing
     r = await c.cli(10, ['commit', 'sell', '10', '9', '--dry-run'])
     assert.equal(r.code, 0, r.err)
     assert.match(r.out, /funding TK.: need 10 TK., vault free 0 TK., deposit 10 TK. first \(needs approval\)/)
     assert.match(r.out, /funding TK.: need 5 TK., vault free 0 TK., deposit 5 TK. first/)
+    // gas: estimated where it can be now, unavailable (not zero) where it waits on an earlier transaction
+    assert.match(r.out, /gas: estimated units, priced at the current [\d.]+ gwei/)
+    assert.match(r.out, /approve TKA: ~\d+ gas ≈ [\d.]+ ETH/)
+    assert.match(r.out, /deposit 10 TKA: unavailable until the approval lands/)
+    assert.match(r.out, /commit: unavailable until the deposits land/)
     assert.match(r.out, /dry run: nothing sent/)
     assert.equal(await c.read(c.vault, 'BlindfoldVault', 'openCommitments', [u]), 0n)
 
@@ -64,7 +83,8 @@ test('S10: preflight, commit, track and withdraw through the CLI', { skip: !enab
     await c.write(c.settlement, 'BlindfoldSettlement', 'expire', [saved.batchId], user(1))
 
     r = await c.cli(10, ['track'])
-    assert.match(r.out, new RegExp(`#0 batch ${saved.batchId}: expired \\(sell 10000000000000000000\\)`))
+    assert.match(r.out, new RegExp(`#0 batch ${saved.batchId}: expired \\(sell 10 TKA for at least 9 TKB\\)`))
+    assert.match(r.out, /fee [\d.]+ TKB \(non-refundable\); deposit [\d.]+ TKB returned, [\d.]+ TKB bounty to 0x/)
     r = await c.cli(10, ['withdraw', 'token0', 'all'])
     assert.equal(r.code, 0, r.err)
     assert.match(r.out, /withdrew 10 TK./)
@@ -303,6 +323,10 @@ test('fixes 4-5: quote-based limits, refusals without a usable market, resubmit 
 
     // resubmit places it again with a fresh quote, in the batch that is open now, and only once
     await c.write(market, 'MockExternalMarket', 'setPrice', [(2n << 96n)]) // the market moved: 2 TKB per TKA
+    // the vault already holds what the order needs, so the review estimates the commit itself
+    r = await c.cli(10, ['resubmit', '--dry-run'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /\n  commit: ~\d+ gas ≈ [\d.]+ ETH/)
     r = await c.cli(10, ['resubmit'])
     assert.equal(r.code, 0, r.err)
     assert.match(r.out, /resubmitting #0 \(expired in batch 0\): sell 10 TKA with a fresh quote; a new commitment pays the commit fee again/)
@@ -311,6 +335,9 @@ test('fixes 4-5: quote-based limits, refusals without a usable market, resubmit 
     assert.equal(state.commitments.length, 2)
     assert.equal(state.commitments[0].resubmittedAs, state.commitments[1].hash)
     assert.ok(state.commitments[1].batchId > 0n)
+    r = await c.cli(10, ['track'])
+    assert.match(r.out, /#0 batch 0: expired \(sell 10 TKA .*\), replaced by #1/)
+    assert.match(r.out, /#1 batch \d+: committed \(sealed\), replaces #0/)
     r = await c.cli(10, ['resubmit'])
     assert.notEqual(r.code, 0)
     assert.match(r.err, /no unfilled or expired order to resubmit/)
@@ -403,7 +430,7 @@ test('client refuses a mismatched chain, vault or pair before signing', { skip: 
     const dep = JSON.parse(readFileSync(c.deployments, 'utf8'))
     const nonce = await c.pub.getTransactionCount({ address: owner })
     for (const [change, expected] of [
-      [{ chainId: 1 }, /RPC network differs/],
+      [{ chainId: 1 }, /the RPC is on chain 31337 but the deployment is on chain 1/],
       [{ vault: user(5).address }, /deployment vault differs/],
       [{ token0: c.token1 }, /deployment token0 differs/],
       [{ depositToken: c.token0 }, /deployment depositToken differs/],
@@ -439,4 +466,28 @@ test('a fee-on-transfer token is refused before the vault is credited', { skip: 
     assert.equal(await c.read(feeToken, 'MockERC20', 'balanceOf', [c.vault]), 0n)
     assert.equal(await c.read(c.vault, 'BlindfoldVault', 'balanceOf', [owner, feeToken]), 0n)
   } finally { c.stop() }
+})
+
+test('an unreachable drand beacon: the dry run still reviews the order, a real commit sends nothing', { skip: !enabled, timeout: 120_000 }, async () => {
+  const c = await localChain()
+  try {
+    const u = user(10).address
+    for (const tok of [c.token0, c.token1]) await c.mint(u, tok, parseEther('100'))
+    const offline = { DRAND: join(c.dir, 'no-such-drand.json') }
+    let r = await c.cli(10, ['commit', 'sell', '10', '9', '--dry-run'], offline)
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /order: sell 10 TKA for at least 9 TKB/)
+    assert.match(r.out, /commit: unavailable \(can't reach the drand beacon to encrypt the order/)
+    assert.doesNotMatch(r.out, /commit: ~0 gas/)
+    assert.match(r.out, /dry run: nothing sent/)
+    r = await c.cli(10, ['commit', 'sell', '10', '9'], offline)
+    assert.notEqual(r.code, 0)
+    assert.match(r.err, /can't reach the drand beacon.*nothing was sent/)
+    for (const tok of [c.token0, c.token1]) {
+      assert.equal(await c.read(tok, 'MockERC20', 'balanceOf', [u]), parseEther('100'), 'no deposit left the wallet')
+    }
+    assert.equal(await c.read(c.settlement, 'BlindfoldSettlement', 'commitCount'), 0n)
+  } finally {
+    c.stop()
+  }
 })

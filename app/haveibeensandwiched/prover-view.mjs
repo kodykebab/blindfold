@@ -49,10 +49,12 @@ export function preparationPanel(line, batch = null) {
   const next = batch != null && /^\d+$/.test(String(batch)) ? String(BigInt(batch) + 1n) : null
   const prepareNext = next ? { label: `Prepare for batch ${next}`, batch: next } : null
   if (!text) return { state: 'off', text: 'Preparation is not required by this deployment.', action: null }
-  if (text === 'none') return { state: 'none', text: 'Nothing is prepared (a submission uses up its preparation). Preparing ahead takes the slow part of proving out of your order.', action: prepareNext }
+  if (text === 'none' || text.startsWith('none ready;')) return { state: 'none', text: 'Nothing is prepared (a submission uses up its preparation). Preparing ahead takes the slow part of proving out of your order.', action: prepareNext }
   if (/local state unreadable/.test(text)) return { state: 'unreadable', text: 'Local private state can’t be read. Restore a backup before preparing or trading.', action: null }
   if (/invalid for this account, network or deployment/.test(text)) return { state: 'invalid', text: 'The saved preparation is for another account, network or deployment. Prepare again.', action: prepareNext }
-  const m = text.match(/^(.+?) for batch (\d+)$/)
+  if (text.startsWith('generating for batch ')) return { state: 'preparing', text, action: null }
+  if (text.startsWith('expired:')) return { state: 'stale', text, action: prepareNext }
+  const m = text.match(/^(prepared|ready|expired) for batch (\d+)(?: \(round \d+\):.*)?$/)
   if (m) {
     const [, state, prepared] = m
     // The client prints `prepared` or `expired`; a preparation a submission used is removed and reads `none`.

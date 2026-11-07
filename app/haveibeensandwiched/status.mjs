@@ -294,9 +294,9 @@ const DECIMAL_TOKEN = '(\\d+(?:\\.\\d+)?) (\\S+)'
 
 export function parsePreflight(text, now = Date.now()) {
   const lines = String(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  const order = lines.map((line) => line.match(new RegExp(`^order: (sell|buy) ${DECIMAL_TOKEN} for at least ${DECIMAL_TOKEN} in batch (\\d+)$`))).find(Boolean)
+  const order = lines.map((line) => line.match(new RegExp(`^order: (sell|buy) ${DECIMAL_TOKEN} for at least ${DECIMAL_TOKEN} in batch (\\d+)(?:, or you keep your funds)?$`))).find(Boolean)
   if (!order) return null
-  const costs = lines.map((line) => line.match(new RegExp(`^costs: deposit ${DECIMAL_TOKEN} \\((.+)\\), fee ${DECIMAL_TOKEN}$`))).find(Boolean)
+  const costs = lines.map((line) => line.match(new RegExp(`^costs: deposit ${DECIMAL_TOKEN} \\((.+)\\), fee ${DECIMAL_TOKEN}(?: \\(non-refundable\\))?$`))).find(Boolean)
   const funding = []
   for (const line of lines) {
     const match = line.match(new RegExp(`^funding (\\S+): need ${DECIMAL_TOKEN}, vault free ${DECIMAL_TOKEN}(?:, deposit ${DECIMAL_TOKEN} first( \\(needs approval\\))?)?$`))

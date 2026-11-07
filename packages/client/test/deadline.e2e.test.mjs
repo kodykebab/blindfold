@@ -166,7 +166,7 @@ test('a commit killed after sending its transaction is tracked and recoverable, 
     assert.match(r.err, /removed a stale state lock left by exited process \d+/)
     assert.match(r.out, /#0 batch 0 \(committed\): reveal/)
     r = await c.cli(10, ['track'])
-    assert.match(r.out, /#0 batch 0: revealed \(sell 10000000000000000000\)/)
+    assert.match(r.out, /#0 batch 0: revealed \(sell 10 TKA for at least 9 TKB\)/)
     await c.warp(s.settleCloses)
     r = await c.cli(10, ['cleanup'])
     assert.match(r.out, /nothing blocks withdrawal/)

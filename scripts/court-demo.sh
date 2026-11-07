@@ -43,7 +43,7 @@ if cast block-number --rpc-url "$RPC_URL" >/dev/null 2>&1; then
   echo "port $PORT already serves a chain; stop it or set PORT" >&2 # never run the demo on someone else's chain
   exit 1
 fi
-anvil --port "$PORT" --accounts 20 --silent &
+anvil --port "$PORT" --accounts 20 --order fifo --silent &
 anvil_pid=$!
 trap 'kill "$anvil_pid" 2>/dev/null; rm -rf "$work"' EXIT
 until cast block-number --rpc-url "$RPC_URL" >/dev/null 2>&1; do sleep 0.2; done
